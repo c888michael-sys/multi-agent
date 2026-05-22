@@ -7,6 +7,8 @@ import type { CompleteOptions } from "./provider.js";
 export { Router } from "./router.js";
 export { GeminiProvider } from "./providers/gemini.js";
 export { GroqProvider, GroqError } from "./providers/groq.js";
+export { OpenRouterProvider } from "./providers/openrouter.js";
+export { OpenAICompatError } from "./providers/openai-compat.js";
 export {
   ProviderPool,
   type PoolMode,
@@ -22,6 +24,7 @@ export {
 export {
   loadGeminiProvidersFromEnv,
   loadGroqProvidersFromEnv,
+  loadOpenRouterProvidersFromEnv,
   loadAllProvidersFromEnv,
 } from "./config.js";
 export {

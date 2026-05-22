@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { GeminiProvider } from "./providers/gemini.js";
 import { GroqProvider } from "./providers/groq.js";
+import { OpenRouterProvider } from "./providers/openrouter.js";
 import type { Provider } from "./provider.js";
 
 /**
@@ -51,7 +52,29 @@ export function loadGroqProvidersFromEnv(opts?: { model?: string }): Provider[] 
   ];
 }
 
+/**
+ * Load OpenRouter provider from env. Returns [] if OPENROUTER_KEY is unset.
+ * Defaults to DeepSeek R1 (full 671B) free variant.
+ */
+export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provider[] {
+  const key = (process.env.OPENROUTER_KEY ?? "").trim();
+  if (!key) return [];
+  return [
+    new OpenRouterProvider({
+      id: "openrouter:deepseek-v4",
+      apiKey: key,
+      appName: "multi-agent",
+      appUrl: "https://github.com/c888michael-sys/multi-agent",
+      ...(opts?.model && { model: opts.model }),
+    }),
+  ];
+}
+
 /** Load every provider whose key is present in env. Used by the CLI's router setup. */
 export function loadAllProvidersFromEnv(): Provider[] {
-  return [...loadGeminiProvidersFromEnv(), ...loadGroqProvidersFromEnv()];
+  return [
+    ...loadGeminiProvidersFromEnv(),
+    ...loadGroqProvidersFromEnv(),
+    ...loadOpenRouterProvidersFromEnv(),
+  ];
 }

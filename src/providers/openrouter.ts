@@ -14,36 +14,48 @@ import {
   retryAfterMsFromHeaders,
 } from "./openai-compat.js";
 
-export interface GroqProviderOptions {
+export interface OpenRouterProviderOptions {
   id: string;
   apiKey: string;
-  /** Defaults to llama-3.3-70b-versatile. */
+  /**
+   * Model ID. For free-tier models, MUST end with `:free` or you'll be billed
+   * (and refused, if no credits). Defaults to deepseek/deepseek-v4-flash:free
+   * (the strongest free reasoning model on OpenRouter as of May 2026 — 284B
+   * MoE / 13B active, 1M context, native reasoning).
+   */
   model?: string;
-  /** Override for tests. */
+  /** Optional attribution headers — OpenRouter uses these for analytics; not required. */
+  appName?: string;
+  appUrl?: string;
   baseUrl?: string;
-  /** Override for tests. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
 
 /**
- * Groq provider — OpenAI-compatible REST API. Uses Node 18+'s built-in fetch.
+ * OpenRouter provider — routes to many backend models via OpenAI-compatible
+ * REST. Free-tier free models share a daily budget (~50/day total across all
+ * `:free` models on an account, or ~1000/day after a $10 lifetime top-up).
+ * So OpenRouter is best used for one rare-but-important role (e.g., reasoning
+ * with DeepSeek R1), not for high-volume work.
  *
- * Rate limits are account-wide on the free tier (30 RPM / 6K TPM / 1000 RPD
- * across ALL models on this key). Putting multiple Groq models in the pool
- * doesn't give independent quotas — one strong Groq model per account.
+ * Provider id convention: `openrouter:<short-model-name>`.
  */
-export class GroqProvider implements Provider {
+export class OpenRouterProvider implements Provider {
   readonly id: string;
   readonly model: string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly extraHeaders: Record<string, string>;
   private readonly fetchImpl?: typeof fetch;
 
-  constructor(opts: GroqProviderOptions) {
+  constructor(opts: OpenRouterProviderOptions) {
     this.id = opts.id;
-    this.model = opts.model ?? "llama-3.3-70b-versatile";
+    this.model = opts.model ?? "deepseek/deepseek-v4-flash:free";
     this.apiKey = opts.apiKey;
-    this.baseUrl = opts.baseUrl ?? "https://api.groq.com/openai/v1";
+    this.baseUrl = opts.baseUrl ?? "https://openrouter.ai/api/v1";
+    this.extraHeaders = {};
+    if (opts.appUrl) this.extraHeaders["HTTP-Referer"] = opts.appUrl;
+    if (opts.appName) this.extraHeaders["X-Title"] = opts.appName;
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
   }
 
@@ -59,7 +71,8 @@ export class GroqProvider implements Provider {
       apiKey: this.apiKey,
       baseUrl: this.baseUrl,
       body,
-      providerName: "Groq",
+      providerName: "OpenRouter",
+      extraHeaders: this.extraHeaders,
       ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
     });
     return extractTextFromCompletion(res);
@@ -82,7 +95,8 @@ export class GroqProvider implements Provider {
       apiKey: this.apiKey,
       baseUrl: this.baseUrl,
       body,
-      providerName: "Groq",
+      providerName: "OpenRouter",
+      extraHeaders: this.extraHeaders,
       ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
     });
     return parseOpenAIToolResponse(res);
@@ -96,10 +110,3 @@ export class GroqProvider implements Provider {
     return retryAfterMsFromHeaders(err);
   }
 }
-
-// Re-exports for back-compat (groq.test.ts imports these from this file).
-export {
-  OpenAICompatError as GroqError,
-  historyToOpenAIMessages,
-  parseOpenAIToolResponse,
-} from "./openai-compat.js";

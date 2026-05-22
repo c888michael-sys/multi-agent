@@ -44,8 +44,14 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     description:
       "Plan-of-attack, hard decisions, deliberation. Highest-effort thinking mode.",
     candidates: [
-      // Placeholder: OpenRouter DeepSeek R1 will go here once that provider is wired.
-      // { providerId: "openrouter:deepseek-r1" },
+      // Primary: DeepSeek V4 Flash (284B MoE / 13B active, 1M context, native
+      // reasoning). Strongest free reasoning model on OpenRouter as of May 2026.
+      // ~50/day shared OpenRouter budget — adequate for a rarely-called role.
+      { providerId: "openrouter:deepseek-v4" },
+      // Fallbacks: Gemini Flash with thinking=high when R1 is unavailable or
+      // when OPENROUTER_KEY isn't set. Roughly the same benchmark scores on
+      // GPQA reasoning; different model family so it's a real fallback, not
+      // just degraded.
       ...GEMINI_FALLBACK.map((c) => ({ ...c, mode: { thinking: "high" as const } })),
     ],
     systemPromptTemplate:

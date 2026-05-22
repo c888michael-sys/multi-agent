@@ -94,7 +94,7 @@ Functional roles replace fixed sub-agent rosters. Each role declares a *capabili
 | Role | Description | Primary model | Why |
 |---|---|---|---|
 | Perception | Data collection (web browsing, document reading) | Gemini 3.5 Flash + `--search` | Only free model with native Google Search grounding |
-| Reasoning | Plan-of-attack, hard decisions, deliberation | DeepSeek R1 (full 671B) via OpenRouter | Top reasoning model accessible for free; called rarely (50/day cap suits the use case) |
+| Reasoning | Plan-of-attack, hard decisions, deliberation | DeepSeek V4 Flash (284B MoE / 13B active) via OpenRouter | Strongest free reasoning model on OpenRouter as of May 2026; 1M context; native reasoning. R1 free retired by OpenRouter — V4-Flash is the current free option in the same family |
 | Orchestration | Decide which role(s) to invoke; synthesize outputs | Gemini 3.5 Flash (default mode) | 1M context fits roster + intermediate state; low hallucination matters for routing |
 | Action A (code) | Code-specialized execution | Codestral via Mistral | Code-specialized; generous Experiment-plan quota |
 | Action B (structural) | General execution; formatting; structured outputs | Llama 3.3 70B via Groq | 300 tok/sec; 1000 RPD on its own pool |
@@ -158,7 +158,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
 - [x] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) — routes role calls to constrained provider subsets, falls back through candidates, validates registration
 - [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
-- [ ] Stage 6: OpenRouter provider + DeepSeek R1 as `reasoning`
+- [x] Stage 6: OpenRouter provider + DeepSeek V4 Flash as `reasoning` (live-verified; R1 free retired by OpenRouter, V4-Flash is the current free reasoning option)
 - [ ] Stage 6: Cerebras provider + Llama 4 Scout as `action-repetitive`
 - [ ] Stage 6: Mistral provider + Codestral as `action-code`
 - [ ] Stage 6: roster-aware orchestrator routing
