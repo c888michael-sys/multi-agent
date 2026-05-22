@@ -23,7 +23,11 @@ import {
   loadGeminiProvidersFromEnv,
   formatUsageReport,
   type ControllerMode,
+  type CompleteOptions,
+  type ThinkingLevel,
 } from "./index.js";
+
+const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
 
 function buildRouter(): Router {
   const providers = loadGeminiProvidersFromEnv();
@@ -62,18 +66,23 @@ function buildDefaultAgents(router: Router): Agent[] {
   ];
 }
 
-async function cmdAsk(prompt: string): Promise<void> {
+async function cmdAsk(prompt: string, opts: CompleteOptions): Promise<void> {
   const router = buildRouter();
-  const out = await router.complete(prompt);
+  const out = await router.complete(prompt, opts);
   console.log(out);
   console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
 }
 
-async function cmdAgents(prompt: string, mode: ControllerMode, trace: boolean): Promise<void> {
+async function cmdAgents(
+  prompt: string,
+  mode: ControllerMode,
+  trace: boolean,
+  opts: CompleteOptions,
+): Promise<void> {
   const router = buildRouter();
   const subs = buildDefaultAgents(router);
   const controller = new Controller({ router, subAgents: subs, mode });
-  const result = await controller.runWithTrace(prompt);
+  const result = await controller.runWithTrace(prompt, opts);
 
   if (trace) {
     if (result.pickedAgentId) {
@@ -102,13 +111,20 @@ Commands:
   agents <prompt>          orchestrate sub-agents (default: parallel, 3 agents)
   usage                    print router state (counts, cooldowns, % remaining)
 
+Flags (both ask and agents):
+  --serious                       enable extended reasoning (thinkingLevel=high)
+  --thinking=minimal|low|medium|high
+                                  finer-grained control over extended reasoning
+
 Flags for 'agents':
-  --mode=parallel|specialist   default: parallel
-  --trace                      print per-agent outputs before synthesis
+  --mode=parallel|specialist      default: parallel
+  --trace                         print per-agent outputs before synthesis
 
 Examples:
   npm run cli -- ask "What's 2+2?"
+  npm run cli -- ask --serious "Prove there are infinitely many primes."
   npm run cli -- agents --mode=parallel --trace "Is X a good idea?"
+  npm run cli -- agents --serious "Design a cache invalidation strategy for X."
 `);
 }
 
@@ -132,6 +148,8 @@ async function main(): Promise<void> {
     options: {
       mode: { type: "string", default: "parallel" },
       trace: { type: "boolean", default: false },
+      serious: { type: "boolean", default: false },
+      thinking: { type: "string" },
     },
     allowPositionals: true,
     strict: true,
@@ -144,8 +162,22 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // Resolve thinking level: explicit --thinking wins, --serious is shorthand for high.
+  let thinking: ThinkingLevel | undefined;
+  if (values.thinking !== undefined) {
+    const t = values.thinking as string;
+    if (!(VALID_THINKING as string[]).includes(t)) {
+      console.error(`Error: --thinking must be one of ${VALID_THINKING.join("|")} (got: ${t})`);
+      process.exit(2);
+    }
+    thinking = t as ThinkingLevel;
+  } else if (values.serious) {
+    thinking = "high";
+  }
+  const completeOpts: CompleteOptions = thinking !== undefined ? { thinking } : {};
+
   if (command === "ask") {
-    await cmdAsk(prompt);
+    await cmdAsk(prompt, completeOpts);
     return;
   }
 
@@ -155,7 +187,7 @@ async function main(): Promise<void> {
       console.error(`Error: --mode must be 'parallel' or 'specialist' (got: ${mode})`);
       process.exit(2);
     }
-    await cmdAgents(prompt, mode, Boolean(values.trace));
+    await cmdAgents(prompt, mode, Boolean(values.trace), completeOpts);
     return;
   }
 

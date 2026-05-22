@@ -123,3 +123,42 @@ describe("Controller — construction", () => {
     expect(() => new Controller({ router, subAgents: [], mode: "specialist" })).toThrow();
   });
 });
+
+describe("Controller — CompleteOptions propagation", () => {
+  it("threads opts (e.g., thinking) into every underlying call in parallel mode", async () => {
+    const { router, provider } = routerWithScript([
+      { kind: "ok", text: "a1" },
+      { kind: "ok", text: "a2" },
+      { kind: "ok", text: "synth" },
+    ]);
+    const subs = ["a1", "a2"].map(
+      (id) => new Agent({ id, role: "r", systemPrompt: id, router }),
+    );
+    const c = new Controller({ router, subAgents: subs, mode: "parallel" });
+
+    await c.run("task", { thinking: "high" });
+
+    // 2 sub-agent calls + 1 synthesis = 3 calls. All should carry thinking=high.
+    expect(provider.calls).toHaveLength(3);
+    for (const call of provider.calls) {
+      expect(call.opts?.thinking).toBe("high");
+    }
+  });
+
+  it("threads opts into routing decision and chosen agent in specialist mode", async () => {
+    const { router, provider } = routerWithScript([
+      { kind: "ok", text: "a1" },
+      { kind: "ok", text: "specialist answer" },
+    ]);
+    const subs = ["a1", "a2"].map(
+      (id) => new Agent({ id, role: "r", systemPrompt: id, router }),
+    );
+    const c = new Controller({ router, subAgents: subs, mode: "specialist" });
+
+    await c.run("task", { thinking: "low" });
+
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0]!.opts?.thinking).toBe("low"); // routing
+    expect(provider.calls[1]!.opts?.thinking).toBe("low"); // chosen agent
+  });
+});

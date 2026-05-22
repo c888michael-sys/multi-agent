@@ -19,12 +19,19 @@ export class GeminiProvider implements Provider {
   }
 
   async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
+    // thinkingConfig is a Gemini 3.x feature; the older SDK's generationConfig
+    // type doesn't include it yet, but the underlying API forwards it. Cast
+    // here, drop the cast when @google/generative-ai catches up to 3.x.
+    const generationConfig: Record<string, unknown> = {
+      ...(opts?.maxTokens !== undefined && { maxOutputTokens: opts.maxTokens }),
+      ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+      ...(opts?.thinking !== undefined && {
+        thinkingConfig: { thinkingLevel: opts.thinking },
+      }),
+    };
     const model = this.client.getGenerativeModel({
       model: this.model,
-      generationConfig: {
-        ...(opts?.maxTokens !== undefined && { maxOutputTokens: opts.maxTokens }),
-        ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
-      },
+      generationConfig: generationConfig as never,
     });
     const result = await model.generateContent(prompt);
     return result.response.text();

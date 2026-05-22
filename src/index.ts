@@ -11,7 +11,7 @@ export {
   type ProviderConfig,
   type ProviderSnapshot,
 } from "./pool.js";
-export type { Provider, CompleteOptions } from "./provider.js";
+export type { Provider, CompleteOptions, ThinkingLevel } from "./provider.js";
 export {
   RouterError,
   AllProvidersExhaustedError,

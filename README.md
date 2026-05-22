@@ -92,7 +92,9 @@ Explicitly out of scope until 1–4 are working.
 - [x] Stage 3: end-to-end demo verified live against Gemini 3.5 Flash
 - [ ] Stage 3: prompt tuning pass (currently functional but verbose)
 - [x] Stage 4: local CLI (`ask`, `agents`, `usage`)
+- [x] Stage 4: serious mode (`--serious` / `--thinking=<level>`) — Gemini 3.x extended reasoning
 - [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
+- [ ] Stage 4: persist usage state across CLI invocations (current snapshot resets every run)
 - [ ] Stage 5: web + bot integrations
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -139,3 +141,18 @@ npm run cli -- agents --trace "your prompt"                 # print per-agent ou
 npm run cli -- usage                                        # router snapshot
 npm run cli -- --help
 ```
+
+### Serious mode (Gemini 3.x extended reasoning)
+
+`--serious` enables Gemini 3.5 Flash's "thinking" variant for the call (and, in
+`agents`, for every underlying sub-agent + synthesis call). Use it on hard
+problems — proofs, design decisions, debugging. It spends more tokens
+internally but still counts as 1 request per call against your daily quota.
+
+```
+npm run cli -- ask --serious "Prove there are infinitely many primes."
+npm run cli -- agents --serious "Design a cache invalidation strategy for X."
+```
+
+For finer control: `--thinking=minimal|low|medium|high`. `--serious` is just
+shorthand for `--thinking=high`. Default (no flag) uses the model's default.

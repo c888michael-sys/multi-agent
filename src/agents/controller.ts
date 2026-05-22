@@ -1,4 +1,5 @@
 import type { Router } from "../router.js";
+import type { CompleteOptions } from "../provider.js";
 import { Agent } from "./agent.js";
 import { CONTROLLER_PRIMING, buildRoutingPrompt, buildSynthesisPrompt } from "./prompts.js";
 
@@ -43,35 +44,37 @@ export class Controller {
     this.controllerSystem = opts.controllerSystemPrompt ?? CONTROLLER_PRIMING;
   }
 
-  async run(task: string): Promise<string> {
-    return (await this.runWithTrace(task)).finalOutput;
+  async run(task: string, opts?: CompleteOptions): Promise<string> {
+    return (await this.runWithTrace(task, opts)).finalOutput;
   }
 
-  async runWithTrace(task: string): Promise<RunTrace> {
-    if (this.mode === "specialist") return this.runSpecialist(task);
-    return this.runParallel(task);
+  async runWithTrace(task: string, opts?: CompleteOptions): Promise<RunTrace> {
+    if (this.mode === "specialist") return this.runSpecialist(task, opts);
+    return this.runParallel(task, opts);
   }
 
-  private async runSpecialist(task: string): Promise<RunTrace> {
+  private async runSpecialist(task: string, opts?: CompleteOptions): Promise<RunTrace> {
     const roster = this.subAgents.map((a) => ({ id: a.id, role: a.role }));
     const routingPrompt = buildRoutingPrompt(task, roster);
-    const decision = (await this.router.complete(routingPrompt)).trim().split(/\s|\n/)[0] ?? "";
+    const decision = (await this.router.complete(routingPrompt, opts))
+      .trim()
+      .split(/\s|\n/)[0] ?? "";
     const picked = this.subAgentsById.get(decision);
 
     if (!picked) {
       // Controller couldn't / wouldn't pick. Fall back to first agent rather than erroring;
       // failure modes here are a tuning concern once real keys are in play.
       const fallback = this.subAgents[0]!;
-      const output = await fallback.run(task);
+      const output = await fallback.run(task, opts);
       return { mode: "specialist", pickedAgentId: fallback.id, finalOutput: output };
     }
 
-    const output = await picked.run(task);
+    const output = await picked.run(task, opts);
     return { mode: "specialist", pickedAgentId: picked.id, finalOutput: output };
   }
 
-  private async runParallel(task: string): Promise<RunTrace> {
-    const settled = await Promise.allSettled(this.subAgents.map((a) => a.run(task)));
+  private async runParallel(task: string, opts?: CompleteOptions): Promise<RunTrace> {
+    const settled = await Promise.allSettled(this.subAgents.map((a) => a.run(task, opts)));
     const perAgent: { id: string; output: string }[] = [];
 
     settled.forEach((res, i) => {
@@ -92,7 +95,7 @@ export class Controller {
       task,
       perAgent.map((p) => ({ id: p.id, text: p.output })),
     );
-    const final = await this.router.complete(synthesisPrompt);
+    const final = await this.router.complete(synthesisPrompt, opts);
     return { mode: "parallel", perAgent, finalOutput: final };
   }
 }
