@@ -19,9 +19,9 @@ export class GeminiProvider implements Provider {
   }
 
   async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
-    // thinkingConfig is a Gemini 3.x feature; the older SDK's generationConfig
-    // type doesn't include it yet, but the underlying API forwards it. Cast
-    // here, drop the cast when @google/generative-ai catches up to 3.x.
+    // Both thinkingConfig and tools are Gemini 3.x features the older SDK's
+    // typed surface doesn't fully cover. The API itself forwards them — cast
+    // and drop once @google/generative-ai catches up to 3.x.
     const generationConfig: Record<string, unknown> = {
       ...(opts?.maxTokens !== undefined && { maxOutputTokens: opts.maxTokens }),
       ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
@@ -29,12 +29,20 @@ export class GeminiProvider implements Provider {
         thinkingConfig: { thinkingLevel: opts.thinking },
       }),
     };
-    const model = this.client.getGenerativeModel({
+    const modelArgs: Record<string, unknown> = {
       model: this.model,
-      generationConfig: generationConfig as never,
-    });
+      generationConfig,
+    };
+    if (opts?.useSearch) {
+      // Google Search grounding. Model decides whether to search and may
+      // issue multiple internal queries per call.
+      modelArgs.tools = [{ googleSearch: {} }];
+    }
+    const model = this.client.getGenerativeModel(modelArgs as never);
     const result = await model.generateContent(prompt);
-    return result.response.text();
+    const text = result.response.text();
+    if (!opts?.useSearch) return text;
+    return appendSources(text, result.response);
   }
 
   isRateLimitError(err: unknown): boolean {
@@ -64,4 +72,44 @@ export class GeminiProvider implements Provider {
 function extractStatus(err: unknown): number | null {
   const e = err as { status?: number; statusCode?: number; response?: { status?: number } };
   return e?.status ?? e?.statusCode ?? e?.response?.status ?? null;
+}
+
+/**
+ * Pull groundingMetadata off a grounded response and append a Markdown-ish
+ * "Sources" footer. Defensive: if structure isn't what we expect, return
+ * text unchanged rather than throwing.
+ *
+ * Exported for unit testing.
+ */
+export function appendSources(text: string, response: unknown): string {
+  try {
+    const r = response as {
+      candidates?: Array<{
+        groundingMetadata?: {
+          groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
+          webSearchQueries?: string[];
+        };
+      }>;
+    };
+    const meta = r.candidates?.[0]?.groundingMetadata;
+    const chunks = meta?.groundingChunks ?? [];
+    if (chunks.length === 0) return text;
+
+    const seen = new Set<string>();
+    const sources: string[] = [];
+    for (const c of chunks) {
+      const uri = c.web?.uri;
+      if (!uri || seen.has(uri)) continue;
+      seen.add(uri);
+      const title = c.web?.title ?? uri;
+      sources.push(`- [${title}](${uri})`);
+    }
+    if (sources.length === 0) return text;
+
+    const queries = meta?.webSearchQueries ?? [];
+    const queryLine = queries.length > 0 ? `  (searched: ${queries.join(" | ")})\n` : "";
+    return `${text}\n\nSources:\n${queryLine}${sources.join("\n")}`;
+  } catch {
+    return text;
+  }
 }

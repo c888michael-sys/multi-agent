@@ -10,7 +10,8 @@ export interface RouterOptions {
    * When every provider in the pool is cooling down, wait until at least one
    * recovers (capped at maxRetryWaitMs total wait per complete() call) before
    * throwing AllProvidersExhaustedError. 0 disables — old behavior, throws
-   * immediately. Default 60_000 (1 min — matches typical per-minute recovery).
+   * immediately. Default 90_000 (90s — leaves headroom over the typical 60s
+   * per-minute recovery so one retry cycle actually fits under the cap).
    */
   maxRetryWaitMs?: number;
   /** Override for tests. Default delegates to global setTimeout. */
@@ -43,7 +44,7 @@ export class Router {
       ...(options?.mode && { mode: options.mode }),
       ...(options?.stateStore && { stateStore: options.stateStore }),
     });
-    this.maxRetryWaitMs = options?.maxRetryWaitMs ?? 60_000;
+    this.maxRetryWaitMs = options?.maxRetryWaitMs ?? 90_000;
     this.sleep = options?.sleep ?? DEFAULT_SLEEP;
     this.jitter = options?.jitterMs ?? DEFAULT_JITTER;
   }

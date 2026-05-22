@@ -27,7 +27,7 @@ describe("Router", () => {
   it("throws AllProvidersExhaustedError when every provider rate-limits", async () => {
     const a = new FakeProvider("a", [{ kind: "rate" }]);
     const b = new FakeProvider("b", [{ kind: "rate" }]);
-    const r = new Router([a, b]);
+    const r = new Router([a, b], { maxRetryWaitMs: 0 }); // opt out of backoff for this test
 
     await expect(r.complete("hi")).rejects.toBeInstanceOf(AllProvidersExhaustedError);
     expect(a.calls).toHaveLength(1);
@@ -181,5 +181,24 @@ describe("Router — backoff retry when all providers cooled", () => {
     const a = new FakeProvider("a", [{ kind: "rate", retryAfterMs: 100 }]);
     const r = new Router([a], { maxRetryWaitMs: 0 });
     await expect(r.complete("hi")).rejects.toBeInstanceOf(AllProvidersExhaustedError);
+  });
+
+  it("retries when cooldown is at the cap boundary (previously gave up due to off-by-jitter)", async () => {
+    let now = 1_000_000;
+    const sleep = async (ms: number) => {
+      now += ms;
+    };
+    // Cooldown 60s; cap 90s. Should comfortably retry.
+    const a = new FakeProvider("a", [
+      { kind: "rate", retryAfterMs: 60_000 },
+      { kind: "ok", text: "recovered" },
+    ]);
+    const r = new Router([a], {
+      now: () => now,
+      sleep,
+      jitterMs: () => 250,
+      maxRetryWaitMs: 90_000,
+    });
+    expect(await r.complete("hi")).toBe("recovered");
   });
 });

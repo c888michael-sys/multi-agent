@@ -103,6 +103,10 @@ Explicitly out of scope until 1–4 are working.
 - [x] Stage 4: parallel dispatch stagger (300ms default) so 3 agents don't hit the per-minute window in the same wall-clock ms
 - [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
 - [x] Stage 4: persistent usage state across CLI invocations (`~/.multi-agent/state.json`, daily UTC rollover)
+- [x] Stage 4: web browsing via Google Search grounding (`--search`, free up to 5000 grounded prompts/mo)
+- [ ] Stage 4: local file tools (read/write/list via function calling)
+- [ ] Stage 4: bash exec tool
+- [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
 - [ ] Stage 5: web + bot integrations
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -165,3 +169,22 @@ npm run cli -- agents --serious "Design a cache invalidation strategy for X."
 
 For finer control: `--thinking=minimal|low|medium|high`. `--serious` is just
 shorthand for `--thinking=high`. Default (no flag) uses the model's default.
+
+### Web browsing (Google Search grounding)
+
+`--search` enables Gemini 3.x's native Google Search grounding. The model
+decides when to search, may issue multiple internal queries per call, and the
+response gets a `Sources:` footer with the actual URLs cited.
+
+```
+npm run cli -- ask --search "What's the latest stable Node.js LTS?"
+npm run cli -- agents --search "Compare React 19 and Svelte 5 performance benchmarks."
+```
+
+**Cost on free tier:** 5,000 grounded prompts per month across all Gemini 3.x
+usage. Plenty for personal use, but use deliberately — not by default. Each
+grounded prompt also consumes one of your daily-request budget on the chosen
+key, same as a normal call.
+
+Combine with other flags: `--search --serious` makes the model think *and*
+verify against the web for hard questions.

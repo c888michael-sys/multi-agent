@@ -116,6 +116,8 @@ Flags (both ask and agents):
   --serious                       enable extended reasoning (thinkingLevel=high)
   --thinking=minimal|low|medium|high
                                   finer-grained control over extended reasoning
+  --search                        enable Google Search grounding (free tier: 5000/mo)
+                                  appends a Sources block with cited URLs
 
 Flags for 'agents':
   --mode=parallel|specialist      default: parallel
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
       trace: { type: "boolean", default: false },
       serious: { type: "boolean", default: false },
       thinking: { type: "string" },
+      search: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: true,
@@ -175,7 +178,10 @@ async function main(): Promise<void> {
   } else if (values.serious) {
     thinking = "high";
   }
-  const completeOpts: CompleteOptions = thinking !== undefined ? { thinking } : {};
+  const completeOpts: CompleteOptions = {
+    ...(thinking !== undefined && { thinking }),
+    ...(values.search && { useSearch: true }),
+  };
 
   if (command === "ask") {
     await cmdAsk(prompt, completeOpts);
