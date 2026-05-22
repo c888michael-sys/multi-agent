@@ -9,6 +9,7 @@ export { GeminiProvider } from "./providers/gemini.js";
 export { GroqProvider, GroqError } from "./providers/groq.js";
 export { OpenRouterProvider } from "./providers/openrouter.js";
 export { CerebrasProvider } from "./providers/cerebras.js";
+export { MistralProvider } from "./providers/mistral.js";
 export { OpenAICompatError } from "./providers/openai-compat.js";
 export {
   ProviderPool,
@@ -27,6 +28,7 @@ export {
   loadGroqProvidersFromEnv,
   loadOpenRouterProvidersFromEnv,
   loadCerebrasProvidersFromEnv,
+  loadMistralProvidersFromEnv,
   loadAllProvidersFromEnv,
 } from "./config.js";
 export {

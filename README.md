@@ -160,7 +160,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
 - [x] Stage 6: OpenRouter provider + DeepSeek V4 Flash as `reasoning` (live-verified; R1 free retired by OpenRouter, V4-Flash is the current free reasoning option)
 - [x] Stage 6: Cerebras provider + Llama 3.1 8B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, 3.1 8B is the right shape for bulk/speed)
-- [ ] Stage 6: Mistral provider + Codestral as `action-code`
+- [x] Stage 6: Mistral provider + Codestral as `action-code` (live-verified via `--role=action-code`)
 - [ ] Stage 6: roster-aware orchestrator routing
 - [ ] Stage 5: web + bot integrations
 

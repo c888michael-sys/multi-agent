@@ -3,6 +3,7 @@ import { GeminiProvider } from "./providers/gemini.js";
 import { GroqProvider } from "./providers/groq.js";
 import { OpenRouterProvider } from "./providers/openrouter.js";
 import { CerebrasProvider } from "./providers/cerebras.js";
+import { MistralProvider } from "./providers/mistral.js";
 import type { Provider } from "./provider.js";
 
 /**
@@ -87,6 +88,22 @@ export function loadCerebrasProvidersFromEnv(opts?: { model?: string }): Provide
   ];
 }
 
+/**
+ * Load Mistral provider from env. Returns [] if MISTRAL_KEY is unset.
+ * Defaults to codestral-latest — code-specialized for the action-code role.
+ */
+export function loadMistralProvidersFromEnv(opts?: { model?: string }): Provider[] {
+  const key = (process.env.MISTRAL_KEY ?? "").trim();
+  if (!key) return [];
+  return [
+    new MistralProvider({
+      id: "mistral:codestral",
+      apiKey: key,
+      ...(opts?.model && { model: opts.model }),
+    }),
+  ];
+}
+
 /** Load every provider whose key is present in env. Used by the CLI's router setup. */
 export function loadAllProvidersFromEnv(): Provider[] {
   return [
@@ -94,5 +111,6 @@ export function loadAllProvidersFromEnv(): Provider[] {
     ...loadGroqProvidersFromEnv(),
     ...loadOpenRouterProvidersFromEnv(),
     ...loadCerebrasProvidersFromEnv(),
+    ...loadMistralProvidersFromEnv(),
   ];
 }

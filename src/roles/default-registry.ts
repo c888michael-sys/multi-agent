@@ -69,8 +69,9 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     name: "action-code",
     description: "Code-specialized execution: write, modify, debug code.",
     candidates: [
-      // Placeholder: Mistral Codestral will go here.
-      // { providerId: "mistral:codestral" },
+      // Primary: Mistral Codestral — code-specialized, generous Experiment-plan
+      // quota (~1B tokens/month). Different model family from the others.
+      { providerId: "mistral:codestral" },
       ...GEMINI_FALLBACK,
     ],
     systemPromptTemplate:
