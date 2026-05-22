@@ -10,6 +10,27 @@ A multi-agent AI orchestration system built on free-tier LLM APIs, designed for 
 
 A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, with token-efficient inter-agent communication, persistent usage tracking, and graceful failover across multiple accounts and providers. Designed so that the orchestrator picks the right *role* for each task (perception, reasoning, action, etc.) and the right *model* for each role is just configuration.
 
+## Capabilities at a glance
+
+**Live and tested** (against Gemini 3.5 Flash, free tier):
+
+- Multi-account / multi-project rotation with cooldown tracking + automatic failover
+- Conservation mode (round-robin ↔ serial with hysteresis based on remaining quota)
+- Persistent per-provider usage stats (`~/.multi-agent/state.json`, resets at UTC midnight)
+- Parallel and specialist multi-agent orchestration with token-efficient synthesis
+- "Serious" mode using Gemini 3.x extended reasoning (`thinkingLevel: high`)
+- Google Search grounding for live web data — free up to 5000 grounded prompts/month
+- Local file tools (`read_file`, `write_file`, `list_dir`) sandboxed to a working dir
+- Bash exec tool with timeout, output cap, and process-tree kill on Windows
+- Backoff-and-retry when all providers are cooling
+- CLI: `ask`, `agents`, `usage`, `verify-keys`, `smoke`
+
+**In progress / not yet built:**
+
+- Role-based multi-provider architecture (Stage 6 — adds Groq/OpenRouter/Mistral/Cerebras, lets each functional role use the best-suited model)
+- Multi-turn conversation + automatic context management
+- Web UI + bot integrations (Stage 5)
+
 ## Build order
 
 The full vision is large, so the work is decomposed into independent stages. Each stage stands alone and gets its own design + implementation cycle.
@@ -151,23 +172,89 @@ See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys
 
 ```
 multi-agent/
-  README.md           — this file (the plan)
+  README.md             — this file
+  CLAUDE.md             — standing rules for any Claude session in this repo
   src/
-    index.ts          — public entry: complete()
-    router.ts         — rotation + failover
-    provider.ts       — Provider interface
+    index.ts            — public exports + the convenience complete() entry
+    cli.ts              — CLI (ask, agents, usage, --help)
+    provider.ts         — Provider interface + CompleteOptions + ThinkingLevel
+    router.ts           — pool-aware completion + backoff + tool-use passthrough
+    pool.ts             — per-provider state, mode (round-robin/serial), pick logic
+    state.ts            — StateStore interface + InMemory/File implementations
+    config.ts           — env-driven provider construction
+    conservation.ts     — ConservationPolicy + formatUsageReport
+    errors.ts           — RouterError / AllProvidersExhaustedError / ...
     providers/
-      gemini.ts       — Gemini implementation
-    pool.ts           — per-provider quota/cooldown state
-    errors.ts
-    config.ts         — load keys from env
-  tests/              — vitest, mocked SDK
-  docs/specs/         — per-stage design docs
-  .env.example
-  .gitignore
+      gemini.ts         — GeminiProvider + helpers (history conversion, source extraction)
+    agents/
+      agent.ts          — stateless system-prompt + router wrapper
+      controller.ts     — multi-agent orchestrator (parallel + specialist modes)
+      prompts.ts        — CONTROLLER_PRIMING + routing/synthesis prompt templates
+    tools/
+      types.ts          — Tool / ToolDeclaration / ConversationPart
+      runner.ts         — multi-turn tool-call loop (the "agent runtime")
+      file-tools.ts     — FileTools (read/write/list, path-sandboxed)
+      bash-tool.ts      — BashTool (cmd.exe/sh, timeout + output cap)
+    roles/              — Stage 6 (in progress)
+      types.ts          — RoleConfig / RoleName / ProviderRef
+  tests/                — vitest, mocked SDK throughout
+    fixtures.ts         — FakeProvider, ToolFakeProvider, RateLimitedError
+  scripts/
+    smoke.ts            — npm run smoke (1 real call)
+    verify-keys.ts      — npm run verify-keys (1 call per configured key)
+    demo-parallel.ts    — multi-agent demo against real keys
+  docs/specs/           — per-stage design docs
+  .env.example          — documented env var layout
+  .gitignore            — covers .env, node_modules, dist, etc.
   package.json
-  tsconfig.json
+  tsconfig.json         — strict mode, noUncheckedIndexedAccess
 ```
+
+## Architecture
+
+```
+                  ┌─────────────────────────────┐
+                  │ CLI (src/cli.ts)            │
+                  │  ask / agents / usage       │
+                  └──────────────┬──────────────┘
+                                 │
+       ┌─────────────────────────┼─────────────────────────┐
+       ↓                         ↓                         ↓
+  ┌─────────┐            ┌──────────────┐          ┌────────────┐
+  │  Agent  │            │  Controller  │          │ ToolRunner │
+  │(1-shot) │            │ (multi-agent │          │ (tool-call │
+  │         │            │  orchestr.)  │          │  loop)     │
+  └────┬────┘            └──────┬───────┘          └─────┬──────┘
+       │                        │                        │
+       └───────────────┬────────┴────────────────────────┘
+                       ↓
+              ┌────────────────┐
+              │     Router     │ ← rotation, cooldown, backoff,
+              └────────┬───────┘   completeWithTools passthrough
+                       ↓
+              ┌────────────────┐
+              │  ProviderPool  │ ← provider state, mode (RR/serial),
+              └────────┬───────┘   pickAvailable + cooldown logic
+                       ↓
+              ┌────────────────┐
+              │   StateStore   │ ← optional JSON persistence
+              └────────────────┘   (~/.multi-agent/state.json)
+
+  Provider implementations (src/providers/*) — one per LLM backend
+  Tool implementations    (src/tools/*)     — bash, file, plus future others
+```
+
+**Key abstractions, in order of dependency:**
+
+- **`Provider`** (`src/provider.ts`) — unified interface every LLM backend implements. `complete()` for text; optional `completeWithTools()` for function calling. Knows how to classify its own rate-limit errors (`isRateLimitError`) and extract `Retry-After` (`retryAfterMs`).
+- **`ProviderPool`** (`src/pool.ts`) — holds provider state: cooldown timestamps, success/rate-limit counters, optional daily-budget estimates. Pick strategy is pluggable (round-robin vs serial). Hydrates from `StateStore` on construction, persists after every counter change.
+- **`Router`** (`src/router.ts`) — the workhorse. `complete()` picks a provider from the pool, calls it, rotates on 429, backs off when all are cooling, retries until success or `maxRetryWaitMs` is hit. `completeWithTools()` is the same machinery for function-calling providers.
+- **`StateStore`** (`src/state.ts`) — JSON-on-disk persistence behind an interface. Per-provider counters + cooldowns survive process restarts; daily counters auto-reset at UTC midnight. Corrupt files fall back to empty state with a warning (never crash on read).
+- **`Agent`** (`src/agents/agent.ts`) — stateless. Applies a system prompt to a user input, calls the router. Used as a sub-agent in multi-agent flows.
+- **`Controller`** (`src/agents/controller.ts`) — multi-agent orchestrator with two runtime modes: `parallel` (all sub-agents independently → synthesize) and `specialist` (controller picks one sub-agent for the task). Threads `CompleteOptions` through to every underlying call.
+- **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
+- **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual — no internal timer.
+- **`RoleConfig`** (`src/roles/types.ts`) — Stage 6: functional role → preferred provider mapping. Resolver picks the right model for the role at call time.
 
 ## Setup
 
@@ -277,3 +364,65 @@ SIGKILL on Unix); 50KB output cap with truncation note.
 files, push to git, install packages. The `--allow-bash` flag (separate from
 `--tools`) is the only gate. Don't pair it with prompts that grant the model
 broad autonomy unless you're prepared for the consequences.
+
+---
+
+## Testing
+
+- `npm test` — full mocked suite, runs in under 1s. **Always run before committing.**
+- `npm run test:watch` — vitest watch mode.
+- `npm run typecheck` — TypeScript strict-mode check, no emit. Should always pass.
+- `npm run smoke` — single real round-trip to confirm at least one key works (1 quota).
+- `npm run verify-keys` — calls every configured key once, prints ✓/✗ per slot (1 quota per key).
+
+**Test layout mirrors source.** `tests/router.test.ts` covers `src/router.ts`, etc. New tests go in the matching file. `tests/fixtures.ts` provides `FakeProvider` (for `complete()` paths) and `ToolFakeProvider` (for tool-use paths) — both let you script deterministic responses.
+
+**Test discipline:**
+- Always cover new functionality with mocks first; only spend real quota when validating the API integration path itself (provider implementations, end-to-end behavior).
+- Tests that don't care about backoff should opt out via `maxRetryWaitMs: 0` — keeps the suite fast (the default 90s wait would otherwise stall any test that legitimately exhausts a pool).
+- Tests that exercise the parallel-mode Controller should opt out of dispatch stagger via `dispatchStaggerMs: 0` for the same reason.
+
+## How to extend: add a new provider
+
+1. **Create** `src/providers/<name>.ts` implementing the `Provider` interface from `src/provider.ts`:
+   - Required: `id`, `model`, `complete()`, `isRateLimitError()`, `retryAfterMs()`.
+   - Optional but recommended: `completeWithTools()` for function calling support.
+2. **Add a loader** in `src/config.ts` that reads the provider's env key (e.g., `GROQ_KEY`) and constructs Provider instances. Follow the `loadGeminiProvidersFromEnv` pattern.
+3. **Export** the provider class + loader from `src/index.ts`.
+4. **Wire into the Router** in `src/index.ts`'s default-router builder or in `src/cli.ts`'s `buildRouter()`. Just push the new provider(s) into the pool array.
+5. **Write tests** in `tests/<name>.test.ts` — minimum coverage:
+   - `isRateLimitError` handles the provider's actual error shape (status code, error field name, message strings).
+   - `retryAfterMs` parses whatever header/field the provider uses.
+   - If implementing tool use: history conversion + response parsing.
+6. **Document** the env var in `README.md` setup table + in `.env.example`.
+
+The Router does NOT need changes — it's provider-agnostic. As long as your Provider correctly classifies rate-limit errors, all rotation/cooldown/backoff machinery works automatically.
+
+## How to extend: add a new CLI command
+
+1. Add a new `cmdX()` function in `src/cli.ts`.
+2. Add the command name to the dispatcher's `if (command === ...)` chain in `main()`.
+3. Update `printHelp()` to document the command and its flags.
+4. If introducing new flags, register them in the `parseArgs({ options: ... })` call.
+5. Update the CLI section of `README.md` per the CLAUDE.md convention.
+
+## Known gotchas
+
+- **Gemini 3.x requires `thoughtSignature` echoed back on multi-turn tool calls.** Without it, the API returns 400 with "Function call is missing a thought_signature." Captured in `parseToolResponse`, re-attached in `historyToGeminiContents`. Don't strip it from `ToolCallRequest.signature`.
+- **Windows `child.kill()` only kills `cmd.exe`, not its descendants.** A spawned `node` subprocess keeps running. `BashTool` uses `taskkill /F /T` to kill the entire process tree. Without this, timeout tests hang indefinitely and workdir cleanup fails with EPERM.
+- **OpenRouter free models require the `:free` suffix in the model ID.** Without it, calls go to the paid version (rejected if you have no credits). When constructing OpenRouter Provider model IDs, always use `:free`.
+- **Groq and OpenRouter rate-limit account-wide, not per-model.** Putting two models from the same provider into the pool doesn't double quota — they fight for the same bucket. Use different providers for different roles when possible.
+- **Gemini rate-limits per-project, not per-key.** Generating 3 keys inside one Google Cloud project = 3 strings sharing one quota pool. To actually scale, use 3 separate projects (recommended) or 3 separate Google accounts (Sybil — ToS gray area).
+- **PowerShell wraps native exe stderr as red error text.** A successful `git push` will look like a failure in PowerShell output. Look at the final lines and exit codes for the real outcome, not the red wrapper.
+- **Backoff `maxRetryWaitMs` must exceed the typical cooldown duration.** Default cooldown is 60s; default `maxRetryWaitMs` is 90s. With matching values, the retry math gives up at the boundary before sleeping. Found this the hard way in live testing.
+- **State file at `~/.multi-agent/state.json` persists across runs and across tests if you ever point a `FileStateStore` at the default path.** Tests should use `InMemoryStateStore` or temporary paths.
+
+## Project conventions
+
+A `CLAUDE.md` file at the repo root documents standing rules for any Claude-Code session working on this project. The most important one:
+
+> **Any meaningful or permanent change to the system MUST be reflected in `README.md` as part of the same commit.**
+
+Don't ship a feature commit without the README update. Bug fixes that preserve behavior, internal refactors, dependency bumps — those don't need README changes.
+
+Other standing rules in CLAUDE.md: never commit `.env`, never weaken `.gitignore`, never migrate language/stack without explicit user approval, flag credential leaks if the user pastes keys in chat.
