@@ -3,16 +3,12 @@
 .env.local
 *.key
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.vitest-cache/
 
 # Editors / OS
 .vscode/

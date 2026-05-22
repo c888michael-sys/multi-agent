@@ -16,11 +16,11 @@ The full vision is large, so the work is decomposed into independent stages. Eac
 
 ### Stage 1 — `llm_router` (foundation) ← starting here
 
-A Python module that hides the multi-key/multi-account chaos behind one function:
+A TypeScript module that hides the multi-key/multi-account chaos behind one function:
 
-```python
-from llm_router import complete
-text = complete("Hello, world.")
+```typescript
+import { complete } from "./src";
+const text = await complete("Hello, world.");
 ```
 
 **Stage 1 scope:**
@@ -36,7 +36,9 @@ text = complete("Hello, world.")
 
 **Out of scope for Stage 1:** any agent logic, any orchestrator, any UI, conservation mode, quota dashboards.
 
-**Test approach:** mock HTTP — no real quota spent during development.
+**Stack:** TypeScript (Node 20+), `@google/generative-ai` SDK, vitest for tests, `dotenv` for config. Chosen over Python because the eventual Stage 5 web UI will share types/code with the core.
+
+**Test approach:** mock the SDK — no real quota spent during development.
 
 ### Stage 2 — conservation mode
 
@@ -93,21 +95,32 @@ Explicitly out of scope until 1–4 are working.
 
 ---
 
-## Repo layout (planned)
+## Repo layout
 
 ```
 multi-agent/
   README.md           — this file (the plan)
-  llm_router/         — Stage 1
-  tests/              — pytest, mocked HTTP
+  src/
+    index.ts          — public entry: complete()
+    router.ts         — rotation + failover
+    provider.ts       — Provider interface
+    providers/
+      gemini.ts       — Gemini implementation
+    pool.ts           — per-provider quota/cooldown state
+    errors.ts
+    config.ts         — load keys from env
+  tests/              — vitest, mocked SDK
   docs/specs/         — per-stage design docs
-  .env.example        — GEMINI_KEY_1, GEMINI_KEY_2, ...
+  .env.example
   .gitignore
-  pyproject.toml      — added when Stage 1 implementation starts
+  package.json
+  tsconfig.json
 ```
 
-## Setup (will fill in as Stage 1 lands)
+## Setup
 
 1. Create 2 (eventually 3) Google accounts; generate one Gemini API key each at https://aistudio.google.com/apikey
-2. Copy `.env.example` to `.env` and fill in keys
-3. (TBD — install + usage instructions added with Stage 1 code)
+2. `cp .env.example .env` and fill in `GEMINI_KEY_1`, `GEMINI_KEY_2`
+3. `npm install`
+4. `npm test` to run the mocked test suite
+5. `npm run smoke` to make a real round-trip call against your keys (uses ~1 request from one account)
