@@ -38,3 +38,19 @@ export interface RoleConfig {
    */
   systemPromptTemplate?: string;
 }
+
+/** Surfaced via RoleResolver's onEvent callback whenever a role's call deviates from happy path. */
+export type RoleEvent =
+  | {
+      type: "fallback-within-role";
+      role: RoleName;
+      primaryProviderId: string;
+      usedProviderId: string;
+    }
+  | {
+      type: "cross-role-substitution";
+      role: RoleName;
+      primaryProviderId: string;
+      usedProviderId: string;
+    }
+  | { type: "role-exhausted"; role: RoleName; primaryProviderId: string };

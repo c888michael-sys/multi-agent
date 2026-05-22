@@ -34,7 +34,27 @@ import {
   type CompleteOptions,
   type ThinkingLevel,
   type RoleName,
+  type RoleEvent,
 } from "./index.js";
+
+/** Stderr warning printer for role-resolution events. */
+function printRoleEvent(e: RoleEvent): void {
+  switch (e.type) {
+    case "fallback-within-role":
+      console.error(
+        `⚠ role '${e.role}': primary ${e.primaryProviderId} cooling, used backup ${e.usedProviderId}`,
+      );
+      break;
+    case "cross-role-substitution":
+      console.error(
+        `⚠ role '${e.role}' exhausted; substituting from outside the role's candidate list (one of: ${e.usedProviderId}). Capabilities may be degraded.`,
+      );
+      break;
+    case "role-exhausted":
+      console.error(`⚠ role '${e.role}' fully exhausted — no provider could serve.`);
+      break;
+  }
+}
 
 const VALID_ROLES: RoleName[] = [
   "perception",
@@ -99,7 +119,7 @@ async function cmdAskRole(
   opts: CompleteOptions,
 ): Promise<void> {
   const router = buildRouter();
-  const resolver = new RoleResolver(router, DEFAULT_ROLES);
+  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
   const candidate = resolver.resolveCandidate(role);
   if (!candidate) {
     console.error(
@@ -179,7 +199,7 @@ function cmdUsage(): void {
 
 async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions): Promise<void> {
   const router = buildRouter();
-  const resolver = new RoleResolver(router, DEFAULT_ROLES);
+  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
   const unsat = resolver.unsatisfiedRoles();
   if (unsat.length > 0) {
     console.error(

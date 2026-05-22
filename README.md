@@ -321,6 +321,24 @@ npm run cli -- task --trace "Find recent SQLite benchmarks and analyze them."
 
 The orchestrator's plan-generation output is parsed as JSON with defensive fallback: malformed plans degrade to a single `action-structural` call instead of throwing.
 
+### Failover and visibility
+
+When a role's primary candidate is exhausted, the resolver:
+
+1. **Falls back through the role's own candidate list first** (e.g., reasoning: DeepSeek V4 → Gemini-thinking-high fallbacks).
+2. **If the role's whole candidate list is exhausted**, borrows ANY healthy provider from outside the role's list as a last-resort substitute. Capabilities may degrade — for example, a borrow that subs Groq for perception loses the live web search feature.
+3. **If nothing in the pool can serve**, throws `AllProvidersExhaustedError`.
+
+Every deviation from the happy path prints a warning to stderr:
+
+```
+⚠ role 'reasoning': primary openrouter:deepseek-v4 cooling, used backup gemini:1
+⚠ role 'perception' exhausted; substituting from outside the role's candidate list (one of: groq:llama-70b|cerebras:llama3-8b). Capabilities may be degraded.
+⚠ role 'action-code' fully exhausted — no provider could serve.
+```
+
+Disable cross-role substitution with `crossRoleFailover: false` when constructing `RoleResolver` programmatically (CLI defaults to enabled).
+
 ### Serious mode (Gemini 3.x extended reasoning)
 
 `--serious` enables Gemini 3.5 Flash's "thinking" variant for the call (and, in

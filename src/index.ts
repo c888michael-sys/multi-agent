@@ -66,7 +66,8 @@ export {
   UnknownRoleError,
   NoCandidatesAvailableError,
 } from "./roles/resolver.js";
-export type { RoleName, RoleConfig, ProviderRef } from "./roles/types.js";
+export type { RoleName, RoleConfig, ProviderRef, RoleEvent } from "./roles/types.js";
+export type { RoleResolverOptions } from "./roles/resolver.js";
 export { DEFAULT_ROLES } from "./roles/default-registry.js";
 
 // Agents

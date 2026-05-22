@@ -5,7 +5,7 @@ import {
   UnknownRoleError,
   NoCandidatesAvailableError,
 } from "../src/roles/resolver.js";
-import type { RoleConfig } from "../src/roles/types.js";
+import type { RoleConfig, RoleEvent } from "../src/roles/types.js";
 import { FakeProvider, ToolFakeProvider } from "./fixtures.js";
 
 describe("Router — providerIds constraint", () => {
@@ -167,6 +167,94 @@ describe("RoleResolver", () => {
     const desc = resolver.rosterDescription();
     expect(desc).toContain("perception (a)");
     expect(desc).toContain("reasoning [UNAVAILABLE]");
+  });
+});
+
+describe("RoleResolver — event emission and cross-role failover", () => {
+  it("emits fallback-within-role when secondary candidate is used", async () => {
+    const a = new FakeProvider("a", [{ kind: "rate" }]);
+    const b = new FakeProvider("b", [{ kind: "ok", text: "from-b" }]);
+    const router = new Router([a, b], { maxRetryWaitMs: 0 });
+    const events: RoleEvent[] = [];
+    const resolver = new RoleResolver(
+      router,
+      [
+        {
+          name: "reasoning",
+          description: "x",
+          candidates: [{ providerId: "a" }, { providerId: "b" }],
+        },
+      ],
+      { onEvent: (e) => events.push(e) },
+    );
+
+    expect(await resolver.runRole("reasoning", "x")).toBe("from-b");
+    expect(events).toEqual([
+      { type: "fallback-within-role", role: "reasoning", primaryProviderId: "a", usedProviderId: "b" },
+    ]);
+  });
+
+  it("does not emit fallback event when primary works", async () => {
+    const a = new FakeProvider("a", [{ kind: "ok", text: "ok" }]);
+    const router = new Router([a], { maxRetryWaitMs: 0 });
+    const events: RoleEvent[] = [];
+    const resolver = new RoleResolver(
+      router,
+      [{ name: "reasoning", description: "x", candidates: [{ providerId: "a" }] }],
+      { onEvent: (e) => events.push(e) },
+    );
+
+    await resolver.runRole("reasoning", "x");
+    expect(events).toEqual([]);
+  });
+
+  it("uses cross-role substitution when all role candidates exhausted", async () => {
+    const a = new FakeProvider("a", [{ kind: "rate" }]);
+    const b = new FakeProvider("b", [{ kind: "ok", text: "substituted-from-b" }]);
+    const router = new Router([a, b], { maxRetryWaitMs: 0 });
+    const events: RoleEvent[] = [];
+    const resolver = new RoleResolver(
+      router,
+      [{ name: "perception", description: "x", candidates: [{ providerId: "a" }] }],
+      { onEvent: (e) => events.push(e) },
+    );
+
+    const out = await resolver.runRole("perception", "x");
+    expect(out).toBe("substituted-from-b");
+    expect(events).toEqual([
+      { type: "cross-role-substitution", role: "perception", primaryProviderId: "a", usedProviderId: "b" },
+    ]);
+  });
+
+  it("emits role-exhausted and throws when crossRoleFailover is disabled", async () => {
+    const a = new FakeProvider("a", [{ kind: "rate" }]);
+    const b = new FakeProvider("b", [{ kind: "ok", text: "ignored" }]);
+    const router = new Router([a, b], { maxRetryWaitMs: 0 });
+    const events: RoleEvent[] = [];
+    const resolver = new RoleResolver(
+      router,
+      [{ name: "perception", description: "x", candidates: [{ providerId: "a" }] }],
+      { crossRoleFailover: false, onEvent: (e) => events.push(e) },
+    );
+
+    await expect(resolver.runRole("perception", "x")).rejects.toThrow();
+    expect(events.some((e) => e.type === "role-exhausted")).toBe(true);
+    expect(b.calls).toHaveLength(0); // foreign provider was NOT borrowed
+  });
+
+  it("emits role-exhausted when nothing in the pool can serve", async () => {
+    const a = new FakeProvider("a", [{ kind: "rate" }]);
+    const b = new FakeProvider("b", [{ kind: "rate" }]);
+    const router = new Router([a, b], { maxRetryWaitMs: 0 });
+    const events: RoleEvent[] = [];
+    const resolver = new RoleResolver(
+      router,
+      [{ name: "perception", description: "x", candidates: [{ providerId: "a" }] }],
+      { onEvent: (e) => events.push(e) },
+    );
+
+    await expect(resolver.runRole("perception", "x")).rejects.toThrow();
+    expect(events.some((e) => e.type === "role-exhausted")).toBe(true);
   });
 });
 
