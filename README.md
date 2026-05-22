@@ -105,7 +105,7 @@ Explicitly out of scope until 1–4 are working.
 - [x] Stage 4: persistent usage state across CLI invocations (`~/.multi-agent/state.json`, daily UTC rollover)
 - [x] Stage 4: web browsing via Google Search grounding (`--search`, free up to 5000 grounded prompts/mo)
 - [x] Stage 4: local file tools (`--tools`: read_file, write_file, list_dir, path-confined to `--workdir`)
-- [ ] Stage 4: bash exec tool
+- [x] Stage 4: bash exec tool (`--allow-bash`: cross-platform, timeout + output-cap, kills process tree on Windows)
 - [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
 - [ ] Stage 5: web + bot integrations
 
@@ -211,3 +211,22 @@ dotfiles — if you ask the model to read `.env`, it will read `.env`. Use
 **Cost.** Each tool-using request makes 2+ real model calls (one to decide on
 the tool, one for the final answer, plus one per additional tool round).
 Trace mode (`--trace`) shows the exact call sequence.
+
+### Bash tool
+
+`--allow-bash` adds a `bash` tool to the set. The model can run any shell
+command in `--workdir` (cmd.exe on Windows, /bin/sh on Unix). Combined
+stdout+stderr plus exit code is returned to the model.
+
+```
+npm run cli -- ask --tools --allow-bash "Run git status and summarize the state."
+npm run cli -- ask --tools --allow-bash "Run npm test and tell me if anything failed."
+```
+
+**Defaults:** 30s timeout (process tree killed via `taskkill /T /F` on Windows,
+SIGKILL on Unix); 50KB output cap with truncation note.
+
+**Safety profile:** No sandbox. The model can do anything you can do — delete
+files, push to git, install packages. The `--allow-bash` flag (separate from
+`--tools`) is the only gate. Don't pair it with prompts that grant the model
+broad autonomy unless you're prepared for the consequences.

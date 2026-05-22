@@ -25,6 +25,7 @@ import {
   formatUsageReport,
   FileStateStore,
   FileTools,
+  BashTool,
   ToolRunner,
   type ControllerMode,
   type CompleteOptions,
@@ -81,13 +82,19 @@ async function cmdAskWithTools(
   prompt: string,
   workdir: string,
   trace: boolean,
+  allowBash: boolean,
   opts: CompleteOptions,
 ): Promise<void> {
   const router = buildRouter();
   const fileTools = new FileTools(resolvePath(workdir));
-  const runner = new ToolRunner({ router, tools: fileTools.toolset() });
+  const tools = fileTools.toolset();
+  if (allowBash) {
+    tools.push(new BashTool({ workdir: fileTools.workdir }).asTool());
+  }
+  const runner = new ToolRunner({ router, tools });
 
-  console.error(`tools enabled. workdir: ${fileTools.workdir}\n`);
+  const toolNames = tools.map((t) => t.name).join(", ");
+  console.error(`tools enabled (${toolNames}). workdir: ${fileTools.workdir}\n`);
   const result = await runner.run(prompt, opts);
 
   if (trace) {
@@ -150,6 +157,8 @@ Flags (both ask and agents):
 
 Flags for 'ask' (tools):
   --tools                         enable local file tools (read_file, write_file, list_dir)
+  --allow-bash                    additionally enable the bash tool (cmd.exe on Windows, /bin/sh elsewhere)
+                                  no sandbox — runs anything you can run. Implies --tools.
   --workdir=<path>                scope tools to this directory (default: cwd)
   --trace                         print each tool call and its result before the final answer
 
@@ -189,6 +198,7 @@ async function main(): Promise<void> {
       thinking: { type: "string" },
       search: { type: "boolean", default: false },
       tools: { type: "boolean", default: false },
+      "allow-bash": { type: "boolean", default: false },
       workdir: { type: "string" },
     },
     allowPositionals: true,
@@ -220,9 +230,15 @@ async function main(): Promise<void> {
   };
 
   if (command === "ask") {
-    if (values.tools) {
+    if (values.tools || values["allow-bash"]) {
       const workdir = (values.workdir as string | undefined) ?? process.cwd();
-      await cmdAskWithTools(prompt, workdir, Boolean(values.trace), completeOpts);
+      await cmdAskWithTools(
+        prompt,
+        workdir,
+        Boolean(values.trace),
+        Boolean(values["allow-bash"]),
+        completeOpts,
+      );
     } else {
       await cmdAsk(prompt, completeOpts);
     }

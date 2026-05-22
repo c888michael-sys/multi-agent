@@ -37,6 +37,7 @@ export {
 
 // Tools
 export { FileTools } from "./tools/file-tools.js";
+export { BashTool, type BashToolOptions } from "./tools/bash-tool.js";
 export { ToolRunner, type ToolRunnerOptions, type ToolRunResult } from "./tools/runner.js";
 export type {
   Tool,
