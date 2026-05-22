@@ -2,13 +2,13 @@
 
 A multi-agent AI orchestration system built on free-tier LLM APIs, designed for $0 personal use with token-efficient inter-agent communication and graceful failover across multiple accounts/providers.
 
-**Status:** Planning. No code yet. This README is the live plan.
+**Status:** Working CLI on top of Gemini 3.5 Flash (3-project pool) with conservation mode, agent orchestration (parallel + specialist), web search, local file tools, and bash exec. Next phase: multi-provider role-based architecture (Stage 6).
 
 ---
 
 ## What this is
 
-A small Python library + (eventually) a thin local UI that lets you run agent workflows against Google's Gemini 3.5 Flash free tier, rotating across multiple accounts so a single account's daily quota doesn't kill a run. Built so that adding more providers (Groq, OpenRouter) and an orchestrator layer on top is cheap.
+A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, with token-efficient inter-agent communication, persistent usage tracking, and graceful failover across multiple accounts and providers. Designed so that the orchestrator picks the right *role* for each task (perception, reasoning, action, etc.) and the right *model* for each role is just configuration.
 
 ## Build order
 
@@ -64,6 +64,34 @@ Decision deferred to Stage 4. Likely terminal CLI for simplicity; revisit Tauri/
 
 Explicitly out of scope until 1–4 are working.
 
+### Stage 6 — multi-provider role-based architecture ← next
+
+Functional roles replace fixed sub-agent rosters. Each role declares a *capability requirement*; each model is configured to fill one or more roles. Same orchestrator code regardless of model assignments.
+
+**Roles:**
+
+| Role | Description | Primary model | Why |
+|---|---|---|---|
+| Perception | Data collection (web browsing, document reading) | Gemini 3.5 Flash + `--search` | Only free model with native Google Search grounding |
+| Reasoning | Plan-of-attack, hard decisions, deliberation | DeepSeek R1 (full 671B) via OpenRouter | Top reasoning model accessible for free; called rarely (50/day cap suits the use case) |
+| Orchestration | Decide which role(s) to invoke; synthesize outputs | Gemini 3.5 Flash (default mode) | 1M context fits roster + intermediate state; low hallucination matters for routing |
+| Action A (code) | Code-specialized execution | Codestral via Mistral | Code-specialized; generous Experiment-plan quota |
+| Action B (structural) | General execution; formatting; structured outputs | Llama 3.3 70B via Groq | 300 tok/sec; 1000 RPD on its own pool |
+| Action C (repetitive) | Bulk, high-volume tasks | Llama 4 Scout via Cerebras | 1M tokens/day; extreme speed (2100 tok/sec) |
+
+**Quota isolation:** every role draws from a *different* provider's quota pool, so heavy use in one role doesn't starve the others. No two of our roles share an account-wide rate limit.
+
+**Build order within Stage 6:**
+
+1. Role abstraction layer (`RoleConfig`, `RoleResolver`) over the current Router. No behavior change initially; existing Gemini calls just routed through the new layer.
+2. Add Groq provider; register Llama 3.3 70B as `action-structural`.
+3. Add OpenRouter provider; register DeepSeek R1 as `reasoning`.
+4. Add Cerebras provider; register Llama 4 Scout as `action-repetitive`.
+5. Add Mistral provider; register Codestral as `action-code`.
+6. Roster-aware orchestrator: Gemini picks which role(s) to invoke per task.
+
+Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior except where the orchestrator gains awareness of the new roles.
+
 ---
 
 ## Key design decisions (and why)
@@ -107,6 +135,12 @@ Explicitly out of scope until 1–4 are working.
 - [x] Stage 4: local file tools (`--tools`: read_file, write_file, list_dir, path-confined to `--workdir`)
 - [x] Stage 4: bash exec tool (`--allow-bash`: cross-platform, timeout + output-cap, kills process tree on Windows)
 - [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
+- [ ] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) over the current Router
+- [ ] Stage 6: Groq provider + Llama 3.3 70B as `action-structural`
+- [ ] Stage 6: OpenRouter provider + DeepSeek R1 as `reasoning`
+- [ ] Stage 6: Cerebras provider + Llama 4 Scout as `action-repetitive`
+- [ ] Stage 6: Mistral provider + Codestral as `action-code`
+- [ ] Stage 6: roster-aware orchestrator routing
 - [ ] Stage 5: web + bot integrations
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -137,12 +171,25 @@ multi-agent/
 
 ## Setup
 
-1. Provision N independent quota buckets — either one Google Cloud project per slot under a single Google account (recommended; up to 25 per account, lower ToS risk) or one separate Google account per slot. Generate one Gemini API key at https://aistudio.google.com/apikey for each.
-2. `cp .env.example .env` and fill in `GEMINI_KEY_1`, `GEMINI_KEY_2`, `GEMINI_KEY_3`, ... — add as many as you have.
+### Minimal (Gemini only)
+
+1. Provision N independent Gemini quota buckets — separate Google Cloud projects under one account (up to 25 per account; lower ToS risk than multi-account). Generate one API key per project at https://aistudio.google.com/apikey.
+2. `cp .env.example .env` and fill in `GEMINI_KEY_1`, `GEMINI_KEY_2`, `GEMINI_KEY_3`, ...
 3. `npm install`
 4. `npm test` — mocked test suite, no real quota
-5. `npm run verify-keys` — calls each configured key once, prints ✓/✗ per slot (1 request per key)
+5. `npm run verify-keys` — calls each configured key once (1 request per key)
 6. `npm run smoke` — single round-trip through the router (1 request)
+
+### Multi-provider (Stage 6)
+
+For the full role-based architecture, add keys for any of these providers (each role degrades gracefully if its provider's key is missing):
+
+| Env var | Provider | Sign-up URL | Free tier |
+|---|---|---|---|
+| `OPENROUTER_KEY` | OpenRouter | https://openrouter.ai → Keys | ~50 req/day across all free models combined |
+| `GROQ_KEY` | Groq | https://console.groq.com → API Keys | 30 RPM / 1000 RPD account-wide |
+| `MISTRAL_KEY` | Mistral | https://console.mistral.ai → API Keys (phone verification required) | 1B tokens/month on Experiment plan |
+| `CEREBRAS_KEY` | Cerebras | https://cloud.cerebras.ai → API Keys | 1M tokens/day, 30 RPM |
 
 ## CLI
 
