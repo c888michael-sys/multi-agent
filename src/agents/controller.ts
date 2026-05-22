@@ -11,6 +11,16 @@ export interface ControllerOptions {
   mode: ControllerMode;
   /** Override the routing-decision prompt's system text. Mostly for tests. */
   controllerSystemPrompt?: string;
+  /**
+   * Stagger parallel-mode sub-agent dispatches by N ms (with jitter) instead
+   * of firing all at the same wall-clock millisecond. Spreads load across
+   * the per-minute RPM/TPM window. Default 300. 0 disables (fully parallel).
+   */
+  dispatchStaggerMs?: number;
+  /** Override for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Override for tests. */
+  jitterMs?: () => number;
 }
 
 export interface RunTrace {
@@ -28,12 +38,18 @@ export interface RunTrace {
  *
  * Same call signature either way, so callers don't need to care.
  */
+const DEFAULT_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const DEFAULT_JITTER = () => Math.floor(Math.random() * 200); // 0–199 ms
+
 export class Controller {
   private readonly router: Router;
   private readonly subAgents: Agent[];
   private readonly subAgentsById: Map<string, Agent>;
   private readonly mode: ControllerMode;
   private readonly controllerSystem: string;
+  private readonly dispatchStaggerMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly jitter: () => number;
 
   constructor(opts: ControllerOptions) {
     if (opts.subAgents.length === 0) throw new Error("Controller requires at least one sub-agent");
@@ -42,6 +58,9 @@ export class Controller {
     this.subAgentsById = new Map(opts.subAgents.map((a) => [a.id, a]));
     this.mode = opts.mode;
     this.controllerSystem = opts.controllerSystemPrompt ?? CONTROLLER_PRIMING;
+    this.dispatchStaggerMs = opts.dispatchStaggerMs ?? 300;
+    this.sleep = opts.sleep ?? DEFAULT_SLEEP;
+    this.jitter = opts.jitterMs ?? DEFAULT_JITTER;
   }
 
   async run(task: string, opts?: CompleteOptions): Promise<string> {
@@ -74,7 +93,16 @@ export class Controller {
   }
 
   private async runParallel(task: string, opts?: CompleteOptions): Promise<RunTrace> {
-    const settled = await Promise.allSettled(this.subAgents.map((a) => a.run(task, opts)));
+    // Stagger dispatches so 3 agents don't all hit the per-minute RPM/TPM
+    // window in the same wall-clock millisecond. They still run concurrently —
+    // just not perfectly synchronously.
+    const dispatched = this.subAgents.map(async (agent, i) => {
+      if (i > 0 && this.dispatchStaggerMs > 0) {
+        await this.sleep(i * this.dispatchStaggerMs + this.jitter());
+      }
+      return agent.run(task, opts);
+    });
+    const settled = await Promise.allSettled(dispatched);
     const perAgent: { id: string; output: string }[] = [];
 
     settled.forEach((res, i) => {

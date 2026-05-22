@@ -78,7 +78,11 @@ Explicitly out of scope until 1–4 are working.
 
 **Why caller-agnostic.** Today: a script calls `complete()` in a loop. Later: N agents call `complete()` concurrently. The router doesn't need to know it's serving an orchestrator vs a script — that means Stage 3 doesn't require any Stage 1 changes.
 
-**Acknowledged risk.** Multi-accounting is a Google ToS gray area. This is a personal project; the risk has been weighed and accepted.
+**Why backoff lives in the router, not the caller.** When all providers in the pool are simultaneously cooling (e.g., per-minute limit hit during a burst), `complete()` blocks until at least one is ready instead of throwing immediately. It uses each provider's actual `cooldownUntil` time, so the wait is precise rather than blind exponential — plus small random jitter to avoid thundering-herd retries. Configurable via `RouterOptions.maxRetryWaitMs` (default 60s; set to 0 to restore fail-fast behavior).
+
+**Why parallel mode staggers dispatches.** Firing 3 sub-agents at the exact same wall-clock millisecond concentrates their token consumption in one per-minute window. The Controller staggers them by `dispatchStaggerMs` (default 300ms) + small jitter — still concurrent, but spread across the RPM window. Set to 0 to disable.
+
+**Acknowledged risk.** Free-tier scaling beyond a single project is a Google ToS gray area. Multi-accounting (Sybil) is the more clearly forbidden pattern; multi-project under one account is architecturally supported and the lower-risk path for scaling. This is a personal project; the risk has been weighed and accepted.
 
 ---
 
@@ -93,6 +97,8 @@ Explicitly out of scope until 1–4 are working.
 - [ ] Stage 3: prompt tuning pass (currently functional but verbose)
 - [x] Stage 4: local CLI (`ask`, `agents`, `usage`)
 - [x] Stage 4: serious mode (`--serious` / `--thinking=<level>`) — Gemini 3.x extended reasoning
+- [x] Stage 4: backoff-and-retry when all providers cooled (default cap: 60s wait per call)
+- [x] Stage 4: parallel dispatch stagger (300ms default) so 3 agents don't hit the per-minute window in the same wall-clock ms
 - [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
 - [ ] Stage 4: persist usage state across CLI invocations (current snapshot resets every run)
 - [ ] Stage 5: web + bot integrations

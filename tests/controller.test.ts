@@ -69,7 +69,7 @@ describe("Controller — parallel mode", () => {
     const subs = ["a1", "a2", "a3"].map(
       (id) => new Agent({ id, role: "thinker", systemPrompt: `you are ${id}`, router }),
     );
-    const c = new Controller({ router, subAgents: subs, mode: "parallel" });
+    const c = new Controller({ router, subAgents: subs, mode: "parallel", dispatchStaggerMs: 0 });
 
     const trace = await c.runWithTrace("which: X or Y?");
     expect(trace.mode).toBe("parallel");
@@ -99,7 +99,7 @@ describe("Controller — parallel mode", () => {
     const subs = ["a1", "a2"].map(
       (id) => new Agent({ id, role: "thinker", systemPrompt: id, router }),
     );
-    const c = new Controller({ router, subAgents: subs, mode: "parallel" });
+    const c = new Controller({ router, subAgents: subs, mode: "parallel", dispatchStaggerMs: 0 });
 
     const trace = await c.runWithTrace("task");
     expect(trace.perAgent![1]!.output).toContain("[error:");
@@ -124,6 +124,60 @@ describe("Controller — construction", () => {
   });
 });
 
+describe("Controller — parallel-mode dispatch stagger", () => {
+  it("staggers sub-agent dispatches by dispatchStaggerMs * i (+jitter)", async () => {
+    const { router } = routerWithScript([
+      { kind: "ok", text: "a1" },
+      { kind: "ok", text: "a2" },
+      { kind: "ok", text: "a3" },
+      { kind: "ok", text: "synth" },
+    ]);
+    const subs = ["a1", "a2", "a3"].map(
+      (id) => new Agent({ id, role: "r", systemPrompt: id, router }),
+    );
+
+    const sleepCalls: number[] = [];
+    const c = new Controller({
+      router,
+      subAgents: subs,
+      mode: "parallel",
+      dispatchStaggerMs: 100,
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      jitterMs: () => 0, // deterministic
+    });
+
+    await c.run("task");
+    // Agent 0 doesn't wait; agents 1 and 2 wait 100ms and 200ms respectively.
+    expect(sleepCalls).toEqual([100, 200]);
+  });
+
+  it("dispatchStaggerMs=0 disables staggering (all fire concurrently)", async () => {
+    const { router } = routerWithScript([
+      { kind: "ok", text: "a1" },
+      { kind: "ok", text: "a2" },
+      { kind: "ok", text: "synth" },
+    ]);
+    const subs = ["a1", "a2"].map(
+      (id) => new Agent({ id, role: "r", systemPrompt: id, router }),
+    );
+    const sleepCalls: number[] = [];
+    const c = new Controller({
+      router,
+      subAgents: subs,
+      mode: "parallel",
+      dispatchStaggerMs: 0,
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+    });
+
+    await c.run("task");
+    expect(sleepCalls).toHaveLength(0);
+  });
+});
+
 describe("Controller — CompleteOptions propagation", () => {
   it("threads opts (e.g., thinking) into every underlying call in parallel mode", async () => {
     const { router, provider } = routerWithScript([
@@ -134,7 +188,7 @@ describe("Controller — CompleteOptions propagation", () => {
     const subs = ["a1", "a2"].map(
       (id) => new Agent({ id, role: "r", systemPrompt: id, router }),
     );
-    const c = new Controller({ router, subAgents: subs, mode: "parallel" });
+    const c = new Controller({ router, subAgents: subs, mode: "parallel", dispatchStaggerMs: 0 });
 
     await c.run("task", { thinking: "high" });
 

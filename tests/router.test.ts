@@ -89,7 +89,7 @@ describe("Router", () => {
   it("AllProvidersExhaustedError lists every attempted provider id", async () => {
     const a = new FakeProvider("a", [{ kind: "rate" }]);
     const b = new FakeProvider("b", [{ kind: "rate" }]);
-    const r = new Router([a, b]);
+    const r = new Router([a, b], { maxRetryWaitMs: 0 });
 
     try {
       await r.complete("hi");
@@ -99,5 +99,87 @@ describe("Router", () => {
       const ids = (err as AllProvidersExhaustedError).attempts.map((x) => x.providerId);
       expect(ids).toEqual(["a", "b"]);
     }
+  });
+});
+
+describe("Router — backoff retry when all providers cooled", () => {
+  it("waits for earliestAvailable, then retries successfully", async () => {
+    let now = 1_000_000;
+    const sleepCalls: number[] = [];
+    const sleep = async (ms: number) => {
+      sleepCalls.push(ms);
+      now += ms;
+    };
+
+    // Provider rate-limits with a 500ms retry-after, then succeeds on second attempt.
+    const a = new FakeProvider("a", [
+      { kind: "rate", retryAfterMs: 500 },
+      { kind: "ok", text: "succeeded after wait" },
+    ]);
+
+    const r = new Router([a], {
+      now: () => now,
+      sleep,
+      jitterMs: () => 0,
+      maxRetryWaitMs: 60_000,
+    });
+
+    const result = await r.complete("hi");
+    expect(result).toBe("succeeded after wait");
+    expect(sleepCalls).toHaveLength(1);
+    expect(sleepCalls[0]).toBe(500); // exact recovery window, no jitter (mocked to 0)
+    expect(a.calls).toHaveLength(2); // initial + retry
+  });
+
+  it("gives up and throws when total wait would exceed maxRetryWaitMs", async () => {
+    let now = 1_000_000;
+    const sleep = async (ms: number) => {
+      now += ms;
+    };
+
+    // Provider stays rate-limited with a 90s recovery (longer than our cap).
+    const a = new FakeProvider("a", [{ kind: "rate", retryAfterMs: 90_000 }]);
+    const r = new Router([a], {
+      now: () => now,
+      sleep,
+      jitterMs: () => 0,
+      maxRetryWaitMs: 60_000,
+    });
+
+    await expect(r.complete("hi")).rejects.toBeInstanceOf(AllProvidersExhaustedError);
+    expect(a.calls).toHaveLength(1); // didn't retry — knew wait would exceed cap
+  });
+
+  it("retries across all providers in the pool, eventually succeeding", async () => {
+    let now = 1_000_000;
+    const sleep = async (ms: number) => {
+      now += ms;
+    };
+
+    // Both 429 with different recovery windows; b recovers first.
+    const a = new FakeProvider("a", [
+      { kind: "rate", retryAfterMs: 1000 },
+      { kind: "ok", text: "a-recovered" },
+    ]);
+    const b = new FakeProvider("b", [
+      { kind: "rate", retryAfterMs: 800 },
+      { kind: "ok", text: "b-recovered" },
+    ]);
+
+    const r = new Router([a, b], {
+      now: () => now,
+      sleep,
+      jitterMs: () => 0,
+      maxRetryWaitMs: 60_000,
+    });
+
+    // After sleep(800), b is ready first and gets picked.
+    expect(await r.complete("hi")).toBe("b-recovered");
+  });
+
+  it("respects maxRetryWaitMs=0 (legacy fail-fast behavior)", async () => {
+    const a = new FakeProvider("a", [{ kind: "rate", retryAfterMs: 100 }]);
+    const r = new Router([a], { maxRetryWaitMs: 0 });
+    await expect(r.complete("hi")).rejects.toBeInstanceOf(AllProvidersExhaustedError);
   });
 });
