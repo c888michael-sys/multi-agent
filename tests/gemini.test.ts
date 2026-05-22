@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { GeminiProvider, appendSources } from "../src/providers/gemini.js";
+import {
+  GeminiProvider,
+  appendSources,
+  historyToGeminiContents,
+  parseToolResponse,
+} from "../src/providers/gemini.js";
 
 describe("GeminiProvider.isRateLimitError", () => {
   const p = new GeminiProvider({ id: "x", apiKey: "dummy" });
@@ -83,6 +88,104 @@ describe("appendSources", () => {
       candidates: [{ groundingMetadata: { groundingChunks: [{ web: { uri: "https://x.com" } }] } }],
     };
     expect(appendSources("a", response)).toContain("[https://x.com](https://x.com)");
+  });
+});
+
+describe("historyToGeminiContents", () => {
+  it("maps each conversation part to the right Gemini Content shape", () => {
+    const contents = historyToGeminiContents([
+      { kind: "user_text", text: "hi" },
+      { kind: "model_calls", calls: [{ name: "read", args: { path: "a.txt" } }] },
+      { kind: "tool_result", name: "read", result: "file content" },
+      { kind: "model_text", text: "done" },
+    ]);
+    expect(contents).toEqual([
+      { role: "user", parts: [{ text: "hi" }] },
+      { role: "model", parts: [{ functionCall: { name: "read", args: { path: "a.txt" } } }] },
+      {
+        role: "user",
+        parts: [{ functionResponse: { name: "read", response: { result: "file content" } } }],
+      },
+      { role: "model", parts: [{ text: "done" }] },
+    ]);
+  });
+
+  it("re-attaches thoughtSignature on model_calls when present", () => {
+    const contents = historyToGeminiContents([
+      {
+        kind: "model_calls",
+        calls: [{ name: "read", args: { path: "a.txt" }, signature: "sig-xyz" }],
+      },
+    ]);
+    expect(contents).toEqual([
+      {
+        role: "model",
+        parts: [
+          {
+            functionCall: { name: "read", args: { path: "a.txt" } },
+            thoughtSignature: "sig-xyz",
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("parseToolResponse", () => {
+  it("returns text when response has only text parts", () => {
+    const res = parseToolResponse({
+      candidates: [{ content: { parts: [{ text: "hello" }] } }],
+    });
+    expect(res).toEqual({ kind: "text", text: "hello" });
+  });
+
+  it("returns calls when response has function calls", () => {
+    const res = parseToolResponse({
+      candidates: [
+        {
+          content: {
+            parts: [{ functionCall: { name: "read_file", args: { path: "x.txt" } } }],
+          },
+        },
+      ],
+    });
+    expect(res).toEqual({
+      kind: "calls",
+      calls: [{ name: "read_file", args: { path: "x.txt" } }],
+    });
+  });
+
+  it("captures thoughtSignature from each functionCall part", () => {
+    const res = parseToolResponse({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: { name: "list_dir", args: { path: "." } },
+                thoughtSignature: "sig-abc",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(res).toEqual({
+      kind: "calls",
+      calls: [{ name: "list_dir", args: { path: "." }, signature: "sig-abc" }],
+    });
+  });
+
+  it("falls back to response.text() when parts are empty/missing", () => {
+    const res = parseToolResponse({ text: () => "fallback" });
+    expect(res).toEqual({ kind: "text", text: "fallback" });
+  });
+
+  it("concatenates multiple text parts", () => {
+    const res = parseToolResponse({
+      candidates: [{ content: { parts: [{ text: "ab" }, { text: "cd" }] } }],
+    });
+    expect(res).toEqual({ kind: "text", text: "abcd" });
   });
 });
 

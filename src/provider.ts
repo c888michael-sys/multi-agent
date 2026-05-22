@@ -27,4 +27,13 @@ export interface Provider {
   complete(prompt: string, opts?: CompleteOptions): Promise<string>;
   isRateLimitError(err: unknown): boolean;
   retryAfterMs(err: unknown): number | null;
+  /**
+   * Optional multi-turn tool-call entry point. Providers that don't support
+   * function calling can leave this undefined; the ToolRunner will reject.
+   */
+  completeWithTools?(
+    history: import("./tools/types.js").ConversationPart[],
+    tools: import("./tools/types.js").ToolDeclaration[],
+    opts?: CompleteOptions,
+  ): Promise<import("./tools/types.js").CompleteWithToolsResult>;
 }

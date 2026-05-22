@@ -104,7 +104,7 @@ Explicitly out of scope until 1–4 are working.
 - [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
 - [x] Stage 4: persistent usage state across CLI invocations (`~/.multi-agent/state.json`, daily UTC rollover)
 - [x] Stage 4: web browsing via Google Search grounding (`--search`, free up to 5000 grounded prompts/mo)
-- [ ] Stage 4: local file tools (read/write/list via function calling)
+- [x] Stage 4: local file tools (`--tools`: read_file, write_file, list_dir, path-confined to `--workdir`)
 - [ ] Stage 4: bash exec tool
 - [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
 - [ ] Stage 5: web + bot integrations
@@ -188,3 +188,26 @@ key, same as a normal call.
 
 Combine with other flags: `--search --serious` makes the model think *and*
 verify against the web for hard questions.
+
+### Local file tools
+
+`--tools` gives the model three local file tools — `read_file`, `write_file`,
+`list_dir` — via Gemini's function calling. The model decides which to call
+and gets the results back as input to its next turn. Multi-turn loop is
+capped at 10 iterations.
+
+```
+npm run cli -- ask --tools "List the files in src/ and summarize what each does."
+npm run cli -- ask --tools --workdir=./scratch "Create a hello.txt with the word hello."
+npm run cli -- ask --tools --trace "Read package.json and tell me the npm scripts."
+```
+
+**Sandboxing.** All file ops are scoped to `--workdir` (default: current working
+directory). Paths that try to escape via `..` or absolute-paths-outside-root
+return `ERROR: path escapes workdir` to the model. There is no filtering on
+dotfiles — if you ask the model to read `.env`, it will read `.env`. Use
+`--workdir` to scope away from anything sensitive.
+
+**Cost.** Each tool-using request makes 2+ real model calls (one to decide on
+the tool, one for the final answer, plus one per additional tool round).
+Trace mode (`--trace`) shows the exact call sequence.

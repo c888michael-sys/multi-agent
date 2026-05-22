@@ -1,5 +1,11 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { Provider, CompleteOptions } from "../provider.js";
+import type {
+  ConversationPart,
+  ToolDeclaration,
+  CompleteWithToolsResult,
+  ToolCallRequest,
+} from "../tools/types.js";
 
 export interface GeminiProviderOptions {
   id: string;
@@ -67,6 +73,104 @@ export class GeminiProvider implements Provider {
     if (typeof e?.retryAfter === "number") return e.retryAfter * 1000;
     return null;
   }
+
+  async completeWithTools(
+    history: ConversationPart[],
+    tools: ToolDeclaration[],
+    opts?: CompleteOptions,
+  ): Promise<CompleteWithToolsResult> {
+    const generationConfig: Record<string, unknown> = {
+      ...(opts?.maxTokens !== undefined && { maxOutputTokens: opts.maxTokens }),
+      ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+      ...(opts?.thinking !== undefined && {
+        thinkingConfig: { thinkingLevel: opts.thinking },
+      }),
+    };
+    const modelArgs: Record<string, unknown> = {
+      model: this.model,
+      generationConfig,
+      tools: [{ functionDeclarations: tools }],
+    };
+    const model = this.client.getGenerativeModel(modelArgs as never);
+    const contents = historyToGeminiContents(history);
+    const result = await model.generateContent({ contents } as never);
+    return parseToolResponse(result.response);
+  }
+}
+
+/** Convert our provider-agnostic history into Gemini's Content[] shape. */
+export function historyToGeminiContents(history: ConversationPart[]): unknown[] {
+  const contents: unknown[] = [];
+  for (const part of history) {
+    switch (part.kind) {
+      case "user_text":
+        contents.push({ role: "user", parts: [{ text: part.text }] });
+        break;
+      case "model_text":
+        contents.push({ role: "model", parts: [{ text: part.text }] });
+        break;
+      case "model_calls":
+        contents.push({
+          role: "model",
+          parts: part.calls.map((c) => {
+            const fcPart: Record<string, unknown> = {
+              functionCall: { name: c.name, args: c.args },
+            };
+            // Gemini 3.x requires thoughtSignature on functionCall parts in
+            // multi-turn history. Re-attach exactly as received.
+            if (c.signature) fcPart.thoughtSignature = c.signature;
+            return fcPart;
+          }),
+        });
+        break;
+      case "tool_result":
+        contents.push({
+          role: "user",
+          parts: [
+            { functionResponse: { name: part.name, response: { result: part.result } } },
+          ],
+        });
+        break;
+    }
+  }
+  return contents;
+}
+
+/** Read the model's response: if any functionCall parts, return calls; else return text. */
+export function parseToolResponse(response: unknown): CompleteWithToolsResult {
+  const r = response as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{
+          text?: string;
+          thoughtSignature?: string;
+          functionCall?: { name?: string; args?: Record<string, unknown> };
+        }>;
+      };
+    }>;
+    text?: () => string;
+  };
+  const parts = r.candidates?.[0]?.content?.parts ?? [];
+  const calls: ToolCallRequest[] = [];
+  let text = "";
+  for (const p of parts) {
+    if (p.functionCall?.name) {
+      const call: ToolCallRequest = {
+        name: p.functionCall.name,
+        args: p.functionCall.args ?? {},
+      };
+      // Gemini 3.x sends thoughtSignature as a sibling of functionCall on the
+      // same part. We must echo it back on the next turn or the API 400s.
+      if (p.thoughtSignature) call.signature = p.thoughtSignature;
+      calls.push(call);
+    } else if (typeof p.text === "string") {
+      text += p.text;
+    }
+  }
+  if (calls.length > 0) return { kind: "calls", calls };
+  // Fall back to response.text() if parts didn't give us anything (older SDK paths).
+  if (!text && typeof r.text === "function") text = r.text();
+  return { kind: "text", text };
 }
 
 function extractStatus(err: unknown): number | null {

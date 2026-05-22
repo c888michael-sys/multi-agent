@@ -1,6 +1,11 @@
 import type { Provider, CompleteOptions } from "./provider.js";
 import { ProviderPool, type ProviderConfig, type PoolMode } from "./pool.js";
 import type { StateStore } from "./state.js";
+import type {
+  ConversationPart,
+  ToolDeclaration,
+  CompleteWithToolsResult,
+} from "./tools/types.js";
 import { AllProvidersExhaustedError, NoProvidersConfiguredError } from "./errors.js";
 
 export interface RouterOptions {
@@ -101,6 +106,55 @@ export class Router {
       }
     }
     return { kind: "all_cooled" };
+  }
+
+  /**
+   * Like complete(), but supports tool-use (function calling). Returns either
+   * model text (done) or a list of tool calls to execute. Same rate-limit
+   * rotation and backoff semantics as complete(). Skips providers that don't
+   * implement completeWithTools.
+   */
+  async completeWithTools(
+    history: ConversationPart[],
+    tools: ToolDeclaration[],
+    opts?: CompleteOptions,
+  ): Promise<CompleteWithToolsResult> {
+    const attempts: { providerId: string; error: unknown }[] = [];
+    const startedAt = this.now();
+
+    while (true) {
+      for (let i = 0; i < this.pool.size(); i++) {
+        const pick = this.pool.pickAvailable();
+        if (!pick) break;
+        if (!pick.provider.completeWithTools) {
+          // Skip silently; in a heterogeneous pool, some providers may not support tools.
+          continue;
+        }
+        try {
+          const result = await pick.provider.completeWithTools(history, tools, opts);
+          this.pool.markSuccess(pick.index);
+          return result;
+        } catch (err) {
+          if (pick.provider.isRateLimitError(err)) {
+            this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+            attempts.push({ providerId: pick.provider.id, error: err });
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      // All providers cooled or none supports tools.
+      if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
+      const earliest = this.pool.earliestAvailable();
+      const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
+      if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
+      await this.sleep(waitMs);
+    }
   }
 
   /** Caller-visible state — call counts, cooldowns, remaining quota %. */

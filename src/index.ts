@@ -35,6 +35,18 @@ export {
   type ConservationStatus,
 } from "./conservation.js";
 
+// Tools
+export { FileTools } from "./tools/file-tools.js";
+export { ToolRunner, type ToolRunnerOptions, type ToolRunResult } from "./tools/runner.js";
+export type {
+  Tool,
+  ToolDeclaration,
+  ToolCallRequest,
+  ToolCallRecord,
+  ConversationPart,
+  CompleteWithToolsResult,
+} from "./tools/types.js";
+
 // Agents
 export { Agent, type AgentOptions } from "./agents/agent.js";
 export {

@@ -16,6 +16,7 @@
  *   npm run cli -- agents --mode=parallel --trace "Is X a good idea?"
  */
 import { parseArgs } from "node:util";
+import { resolve as resolvePath } from "node:path";
 import {
   Router,
   Agent,
@@ -23,6 +24,8 @@ import {
   loadGeminiProvidersFromEnv,
   formatUsageReport,
   FileStateStore,
+  FileTools,
+  ToolRunner,
   type ControllerMode,
   type CompleteOptions,
   type ThinkingLevel,
@@ -74,6 +77,32 @@ async function cmdAsk(prompt: string, opts: CompleteOptions): Promise<void> {
   console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
 }
 
+async function cmdAskWithTools(
+  prompt: string,
+  workdir: string,
+  trace: boolean,
+  opts: CompleteOptions,
+): Promise<void> {
+  const router = buildRouter();
+  const fileTools = new FileTools(resolvePath(workdir));
+  const runner = new ToolRunner({ router, tools: fileTools.toolset() });
+
+  console.error(`tools enabled. workdir: ${fileTools.workdir}\n`);
+  const result = await runner.run(prompt, opts);
+
+  if (trace) {
+    for (const c of result.toolCalls) {
+      const status = c.ok ? "✓" : "✗";
+      console.error(`${status} ${c.name}(${JSON.stringify(c.args)})`);
+      console.error(`   ${c.result.split("\n").slice(0, 3).join("\n   ")}\n`);
+    }
+    if (result.truncated) console.error("(truncated — hit maxIterations)");
+    console.error("--- final ---");
+  }
+  console.log(result.finalText);
+  console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
+}
+
 async function cmdAgents(
   prompt: string,
   mode: ControllerMode,
@@ -119,6 +148,11 @@ Flags (both ask and agents):
   --search                        enable Google Search grounding (free tier: 5000/mo)
                                   appends a Sources block with cited URLs
 
+Flags for 'ask' (tools):
+  --tools                         enable local file tools (read_file, write_file, list_dir)
+  --workdir=<path>                scope tools to this directory (default: cwd)
+  --trace                         print each tool call and its result before the final answer
+
 Flags for 'agents':
   --mode=parallel|specialist      default: parallel
   --trace                         print per-agent outputs before synthesis
@@ -154,6 +188,8 @@ async function main(): Promise<void> {
       serious: { type: "boolean", default: false },
       thinking: { type: "string" },
       search: { type: "boolean", default: false },
+      tools: { type: "boolean", default: false },
+      workdir: { type: "string" },
     },
     allowPositionals: true,
     strict: true,
@@ -184,7 +220,12 @@ async function main(): Promise<void> {
   };
 
   if (command === "ask") {
-    await cmdAsk(prompt, completeOpts);
+    if (values.tools) {
+      const workdir = (values.workdir as string | undefined) ?? process.cwd();
+      await cmdAskWithTools(prompt, workdir, Boolean(values.trace), completeOpts);
+    } else {
+      await cmdAsk(prompt, completeOpts);
+    }
     return;
   }
 

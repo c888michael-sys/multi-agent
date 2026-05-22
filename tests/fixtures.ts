@@ -1,4 +1,9 @@
 import type { Provider, CompleteOptions } from "../src/provider.js";
+import type {
+  ConversationPart,
+  ToolDeclaration,
+  CompleteWithToolsResult,
+} from "../src/tools/types.js";
 
 export type Reply =
   | { kind: "ok"; text: string }
@@ -35,6 +40,40 @@ export class FakeProvider implements Provider {
 
   retryAfterMs(err: unknown): number | null {
     return err instanceof RateLimitedError ? err.retryAfterMs : null;
+  }
+}
+
+/** Provider scripted for tool-use tests. */
+export class ToolFakeProvider implements Provider {
+  readonly id: string;
+  readonly model = "fake-tool-model";
+  toolCalls: { history: ConversationPart[]; tools: ToolDeclaration[] }[] = [];
+  private scripted: CompleteWithToolsResult[];
+
+  constructor(id: string, scripted: CompleteWithToolsResult[]) {
+    this.id = id;
+    this.scripted = [...scripted];
+  }
+
+  async complete(): Promise<string> {
+    throw new Error("ToolFakeProvider does not support plain complete()");
+  }
+
+  async completeWithTools(
+    history: ConversationPart[],
+    tools: ToolDeclaration[],
+  ): Promise<CompleteWithToolsResult> {
+    this.toolCalls.push({ history: [...history], tools: [...tools] });
+    const next = this.scripted.shift();
+    if (!next) throw new Error(`ToolFakeProvider(${this.id}): out of scripted responses`);
+    return next;
+  }
+
+  isRateLimitError() {
+    return false;
+  }
+  retryAfterMs() {
+    return null;
   }
 }
 
