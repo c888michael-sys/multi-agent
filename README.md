@@ -131,11 +131,12 @@ multi-agent/
 
 ## Setup
 
-1. Create 2 (eventually 3) Google accounts; generate one Gemini API key each at https://aistudio.google.com/apikey
-2. `cp .env.example .env` and fill in `GEMINI_KEY_1`, `GEMINI_KEY_2`
+1. Provision N independent quota buckets — either one Google Cloud project per slot under a single Google account (recommended; up to 25 per account, lower ToS risk) or one separate Google account per slot. Generate one Gemini API key at https://aistudio.google.com/apikey for each.
+2. `cp .env.example .env` and fill in `GEMINI_KEY_1`, `GEMINI_KEY_2`, `GEMINI_KEY_3`, ... — add as many as you have.
 3. `npm install`
-4. `npm test` to run the mocked test suite
-5. `npm run smoke` to make a real round-trip call against your keys (uses ~1 request from one account)
+4. `npm test` — mocked test suite, no real quota
+5. `npm run verify-keys` — calls each configured key once, prints ✓/✗ per slot (1 request per key)
+6. `npm run smoke` — single round-trip through the router (1 request)
 
 ## CLI
 

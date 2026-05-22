@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsx scripts/smoke.ts",
+    "verify-keys": "tsx scripts/verify-keys.ts",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {

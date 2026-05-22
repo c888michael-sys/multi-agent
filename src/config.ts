@@ -19,7 +19,10 @@ export function loadGeminiProvidersFromEnv(opts?: { model?: string }): Provider[
     seen.add(value);
     providers.push(
       new GeminiProvider({
-        id: `gemini:account${m[1]}`,
+        // Neutral label: the N matches GEMINI_KEY_N. Whether each slot is a
+        // separate Google account, a separate Cloud project under one account,
+        // or a mix is a deployment choice — the router treats them identically.
+        id: `gemini:${m[1]}`,
         apiKey: value,
         ...(opts?.model && { model: opts.model }),
       }),
