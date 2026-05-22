@@ -82,6 +82,8 @@ Explicitly out of scope until 1–4 are working.
 
 **Why parallel mode staggers dispatches.** Firing 3 sub-agents at the exact same wall-clock millisecond concentrates their token consumption in one per-minute window. The Controller staggers them by `dispatchStaggerMs` (default 300ms) + small jitter — still concurrent, but spread across the RPM window. Set to 0 to disable.
 
+**Why usage state persists to disk.** Each CLI invocation is a fresh Node process — without persistence, the snapshot would always show zeros and the ConservationPolicy would never have history to act on. State lives at `~/.multi-agent/state.json` (cross-platform via `os.homedir()`), tracks success/rate-limit counts and active cooldowns per provider id, and resets daily counters at UTC midnight. The file is advisory: corrupt or unreadable contents fall back to empty state with a warning rather than crashing. To clear state manually, delete the file.
+
 **Acknowledged risk.** Free-tier scaling beyond a single project is a Google ToS gray area. Multi-accounting (Sybil) is the more clearly forbidden pattern; multi-project under one account is architecturally supported and the lower-risk path for scaling. This is a personal project; the risk has been weighed and accepted.
 
 ---
@@ -100,7 +102,7 @@ Explicitly out of scope until 1–4 are working.
 - [x] Stage 4: backoff-and-retry when all providers cooled (default cap: 60s wait per call)
 - [x] Stage 4: parallel dispatch stagger (300ms default) so 3 agents don't hit the per-minute window in the same wall-clock ms
 - [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
-- [ ] Stage 4: persist usage state across CLI invocations (current snapshot resets every run)
+- [x] Stage 4: persistent usage state across CLI invocations (`~/.multi-agent/state.json`, daily UTC rollover)
 - [ ] Stage 5: web + bot integrations
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -145,7 +147,7 @@ npm run cli -- ask "your prompt here"
 npm run cli -- agents "your prompt here"                    # parallel, 3 default agents
 npm run cli -- agents --mode=specialist "your prompt"       # specialist routing
 npm run cli -- agents --trace "your prompt"                 # print per-agent outputs
-npm run cli -- usage                                        # router snapshot
+npm run cli -- usage                                        # cumulative usage (persisted across runs, daily UTC reset)
 npm run cli -- --help
 ```
 

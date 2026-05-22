@@ -1,4 +1,5 @@
 import type { Provider } from "./provider.js";
+import { type StateStore, emptyUsage, rollover, utcDay } from "./state.js";
 
 export type PoolMode = "round-robin" | "serial";
 
@@ -34,6 +35,13 @@ export interface ProviderConfig {
 export interface PoolOptions {
   now?: () => number;
   mode?: PoolMode;
+  /**
+   * Optional persistent store for per-provider counters and cooldowns.
+   * When set, the pool hydrates on construction and writes back after each
+   * markSuccess/markRateLimited call. Daily counters reset automatically on
+   * UTC-day rollover.
+   */
+  stateStore?: StateStore;
 }
 
 const DEFAULT_COOLDOWN_MS = 60_000;
@@ -43,22 +51,34 @@ export class ProviderPool {
   private cursor = 0;
   private mode: PoolMode;
   private readonly now: () => number;
+  private readonly stateStore: StateStore | undefined;
 
   constructor(providers: Array<Provider | ProviderConfig>, options?: PoolOptions) {
+    this.now = options?.now ?? Date.now;
+    this.mode = options?.mode ?? "round-robin";
+    this.stateStore = options?.stateStore;
+
+    const persisted = this.stateStore?.load() ?? {};
+    const today = utcDay(this.now());
+
     this.entries = providers.map((p) => {
       const cfg = "provider" in p ? p : { provider: p };
+      const existing = persisted[cfg.provider.id];
+      const usage = existing ? rollover(existing, today) : emptyUsage(today);
       return {
         provider: cfg.provider,
-        cooldownUntil: 0,
-        successCount: 0,
-        rateLimitCount: 0,
+        cooldownUntil: usage.cooldownUntil,
+        successCount: usage.successCount,
+        rateLimitCount: usage.rateLimitCount,
         ...(cfg.estimatedDailyBudget !== undefined && {
           estimatedDailyBudget: cfg.estimatedDailyBudget,
         }),
       };
     });
-    this.now = options?.now ?? Date.now;
-    this.mode = options?.mode ?? "round-robin";
+
+    // Write back immediately so any rollover state is persisted even if no
+    // calls happen this invocation.
+    this.persist();
   }
 
   size(): number {
@@ -100,7 +120,9 @@ export class ProviderPool {
 
   markSuccess(index: number): void {
     const entry = this.entries[index];
-    if (entry) entry.successCount++;
+    if (!entry) return;
+    entry.successCount++;
+    this.persist();
   }
 
   markRateLimited(index: number, retryAfterMs: number | null): void {
@@ -109,6 +131,7 @@ export class ProviderPool {
     entry.rateLimitCount++;
     const cooldown = retryAfterMs ?? DEFAULT_COOLDOWN_MS;
     entry.cooldownUntil = this.now() + cooldown;
+    this.persist();
   }
 
   /** Earliest moment any provider becomes available again. */
@@ -131,5 +154,20 @@ export class ProviderPool {
       }
       return snap;
     });
+  }
+
+  private persist(): void {
+    if (!this.stateStore) return;
+    const today = utcDay(this.now());
+    const out: Record<string, ReturnType<typeof emptyUsage>> = {};
+    for (const e of this.entries) {
+      out[e.provider.id] = {
+        successCount: e.successCount,
+        rateLimitCount: e.rateLimitCount,
+        cooldownUntil: e.cooldownUntil,
+        lastResetUtcDay: today,
+      };
+    }
+    this.stateStore.save(out);
   }
 }

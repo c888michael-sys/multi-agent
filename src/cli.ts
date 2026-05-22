@@ -22,6 +22,7 @@ import {
   Controller,
   loadGeminiProvidersFromEnv,
   formatUsageReport,
+  FileStateStore,
   type ControllerMode,
   type CompleteOptions,
   type ThinkingLevel,
@@ -35,7 +36,7 @@ function buildRouter(): Router {
     console.error("No GEMINI_KEY_N env vars set. Copy .env.example to .env and fill in keys.");
     process.exit(1);
   }
-  return new Router(providers);
+  return new Router(providers, { stateStore: new FileStateStore() });
 }
 
 function buildDefaultAgents(router: Router): Agent[] {

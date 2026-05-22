@@ -84,7 +84,8 @@ export class ConservationPolicy {
 /** Pretty-print snapshot for console display. */
 export function formatUsageReport(router: Router): string {
   const snap = router.snapshot();
-  const lines = [`mode: ${router.getMode()}`];
+  const utc = new Date().toISOString().slice(0, 10);
+  const lines = [`mode: ${router.getMode()}   daily counts (UTC ${utc}, resets at next midnight UTC)`];
   for (const p of snap) {
     const cooling = p.cooldownUntil > Date.now() ? " [COOLING]" : "";
     const pct = p.remainingPct !== undefined ? ` ${p.remainingPct.toFixed(0)}% remaining` : "";

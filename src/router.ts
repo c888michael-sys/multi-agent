@@ -1,5 +1,6 @@
 import type { Provider, CompleteOptions } from "./provider.js";
 import { ProviderPool, type ProviderConfig, type PoolMode } from "./pool.js";
+import type { StateStore } from "./state.js";
 import { AllProvidersExhaustedError, NoProvidersConfiguredError } from "./errors.js";
 
 export interface RouterOptions {
@@ -16,6 +17,12 @@ export interface RouterOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Override for tests. Adds random ms to each backoff sleep to avoid thundering herd. */
   jitterMs?: () => number;
+  /**
+   * Persistent usage store. When set, per-provider counters and cooldowns
+   * survive across process restarts and reset daily (UTC). When unset, all
+   * state lives only for this Router instance.
+   */
+  stateStore?: StateStore;
 }
 
 const DEFAULT_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -34,6 +41,7 @@ export class Router {
     this.pool = new ProviderPool(providers, {
       now: this.now,
       ...(options?.mode && { mode: options.mode }),
+      ...(options?.stateStore && { stateStore: options.stateStore }),
     });
     this.maxRetryWaitMs = options?.maxRetryWaitMs ?? 60_000;
     this.sleep = options?.sleep ?? DEFAULT_SLEEP;

@@ -1,5 +1,6 @@
 import { Router } from "./router.js";
 import { loadGeminiProvidersFromEnv } from "./config.js";
+import { FileStateStore } from "./state.js";
 import type { CompleteOptions } from "./provider.js";
 
 // Core
@@ -18,6 +19,13 @@ export {
   NoProvidersConfiguredError,
 } from "./errors.js";
 export { loadGeminiProvidersFromEnv } from "./config.js";
+export {
+  FileStateStore,
+  InMemoryStateStore,
+  type StateStore,
+  type ProviderUsage,
+  utcDay,
+} from "./state.js";
 
 // Conservation
 export {
@@ -45,7 +53,9 @@ let defaultRouter: Router | null = null;
 
 function getDefaultRouter(): Router {
   if (!defaultRouter) {
-    defaultRouter = new Router(loadGeminiProvidersFromEnv());
+    defaultRouter = new Router(loadGeminiProvidersFromEnv(), {
+      stateStore: new FileStateStore(),
+    });
   }
   return defaultRouter;
 }
