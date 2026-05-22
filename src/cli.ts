@@ -35,26 +35,28 @@ function buildRouter(): Router {
 }
 
 function buildDefaultAgents(router: Router): Agent[] {
+  // System prompts kept short. Lens, not format — match whatever output
+  // shape the task expects, but apply the named perspective.
   return [
     new Agent({
       id: "skeptic",
       role: "argues against, finds flaws",
       systemPrompt:
-        "You are a skeptical reviewer. Find flaws, edge cases, and weak assumptions. Be brief — 2-3 short bullets.",
+        "Lens: skeptical reviewer. Look for flaws, edge cases, weak assumptions. Output only what the task asks for, through that lens. No preamble.",
       router,
     }),
     new Agent({
       id: "advocate",
       role: "argues for, finds strengths",
       systemPrompt:
-        "You are an enthusiastic advocate. Find genuine strengths and opportunities. Be brief — 2-3 short bullets.",
+        "Lens: enthusiastic advocate. Look for genuine strengths and opportunities. Output only what the task asks for, through that lens. No preamble.",
       router,
     }),
     new Agent({
       id: "pragmatist",
       role: "evaluates feasibility and cost",
       systemPrompt:
-        "You are a pragmatic engineer. Focus on feasibility, cost, and what could go wrong. Be brief — 2-3 short bullets.",
+        "Lens: pragmatic engineer. Focus on feasibility, cost, what could go wrong in practice. Output only what the task asks for, through that lens. No preamble.",
       router,
     }),
   ];

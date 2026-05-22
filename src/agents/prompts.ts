@@ -38,5 +38,5 @@ ${results.length} sub-agents worked on this independently. Their outputs:
 
 ${blocks}
 
-Synthesize a single best answer. Where they agree, consolidate. Where they disagree, weigh the strongest reasoning and explain briefly. Do not list per-agent output verbatim.`;
+Synthesize one answer. Match the granularity the TASK asked for — if it asked for one sentence, output one sentence; if it asked for analysis, give analysis. Consolidate agreement, weigh disagreement, no preamble, no per-agent breakdown.`;
 }
