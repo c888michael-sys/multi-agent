@@ -470,10 +470,12 @@ The Router does NOT need changes — it's provider-agnostic. As long as your Pro
 
 ## Project conventions
 
-A `CLAUDE.md` file at the repo root documents standing rules for any Claude-Code session working on this project. The most important one:
+A `CLAUDE.md` file at the repo root documents standing rules for any Claude-Code session working on this project. The two most important:
 
-> **Any meaningful or permanent change to the system MUST be reflected in `README.md` as part of the same commit.**
+> **1. Any meaningful or permanent change MUST update `README.md` in the same commit.**
 
-Don't ship a feature commit without the README update. Bug fixes that preserve behavior, internal refactors, dependency bumps — those don't need README changes.
+> **2. After every completed task, commit + push to GitHub before moving on.** Push is part of "done."
+
+Bug fixes that preserve behavior, internal refactors, dependency bumps don't need README changes — but they still need to be pushed when complete.
 
 Other standing rules in CLAUDE.md: never commit `.env`, never weaken `.gitignore`, never migrate language/stack without explicit user approval, flag credential leaks if the user pastes keys in chat.

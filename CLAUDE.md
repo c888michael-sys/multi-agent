@@ -15,6 +15,20 @@ Don't ship a feature commit without the README update. Don't push a commit that 
 
 What *doesn't* require a README update: bug fixes that preserve behavior, internal refactors, test additions, dependency bumps, formatting.
 
+## Commit and push after every completed task
+
+**After finishing any complete task or sub-task, commit + push to GitHub before moving on to the next.** Don't accumulate multiple unrelated changes in one commit and don't leave finished work uncommitted between sessions.
+
+Definition of "complete task":
+- A bug is fixed and tests pass.
+- A feature is implemented, tested, and the README reflects it.
+- A refactor is done and the codebase typechecks + tests pass.
+- A documentation pass is finished.
+
+Push is part of "done." `git commit` without `git push` leaves the work invisible to anyone else picking up the repo. The standing convention is `git add -A && git commit -F .git/COMMIT_MSG.tmp && git push` as the closing move on every task.
+
+If a task is large enough to warrant multiple intermediate commits (e.g., refactor → tests → docs), push after each one — fast-forward pushes are cheap, lost work is not.
+
 ## Other standing rules
 
 - Never commit `.env` or any file containing real API keys. The `.gitignore` covers `.env` already; do not weaken it.
