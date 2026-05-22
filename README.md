@@ -89,8 +89,10 @@ Explicitly out of scope until 1–4 are working.
 - [ ] Stage 1: smoke test against 2 real Gemini accounts (waiting on keys)
 - [x] Stage 2: conservation mode (round-robin ↔ serial with hysteresis; per-provider usage tracking)
 - [x] Stage 3: orchestrator + specialist/parallel modes + token-efficient synthesis
-- [ ] Stage 3: tune prompts and thresholds against real model output (waiting on keys)
-- [ ] Stage 4: local UI
+- [x] Stage 3: end-to-end demo verified live against Gemini 3.5 Flash
+- [ ] Stage 3: prompt tuning pass (currently functional but verbose)
+- [x] Stage 4: local CLI (`ask`, `agents`, `usage`)
+- [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
 - [ ] Stage 5: web + bot integrations
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -126,3 +128,14 @@ multi-agent/
 3. `npm install`
 4. `npm test` to run the mocked test suite
 5. `npm run smoke` to make a real round-trip call against your keys (uses ~1 request from one account)
+
+## CLI
+
+```
+npm run cli -- ask "your prompt here"
+npm run cli -- agents "your prompt here"                    # parallel, 3 default agents
+npm run cli -- agents --mode=specialist "your prompt"       # specialist routing
+npm run cli -- agents --trace "your prompt"                 # print per-agent outputs
+npm run cli -- usage                                        # router snapshot
+npm run cli -- --help
+```
