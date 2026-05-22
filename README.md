@@ -156,7 +156,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 4: local file tools (`--tools`: read_file, write_file, list_dir, path-confined to `--workdir`)
 - [x] Stage 4: bash exec tool (`--allow-bash`: cross-platform, timeout + output-cap, kills process tree on Windows)
 - [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
-- [ ] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) over the current Router
+- [x] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) — routes role calls to constrained provider subsets, falls back through candidates, validates registration
 - [ ] Stage 6: Groq provider + Llama 3.3 70B as `action-structural`
 - [ ] Stage 6: OpenRouter provider + DeepSeek R1 as `reasoning`
 - [ ] Stage 6: Cerebras provider + Llama 4 Scout as `action-repetitive`
@@ -254,7 +254,7 @@ multi-agent/
 - **`Controller`** (`src/agents/controller.ts`) — multi-agent orchestrator with two runtime modes: `parallel` (all sub-agents independently → synthesize) and `specialist` (controller picks one sub-agent for the task). Threads `CompleteOptions` through to every underlying call.
 - **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
 - **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual — no internal timer.
-- **`RoleConfig`** (`src/roles/types.ts`) — Stage 6: functional role → preferred provider mapping. Resolver picks the right model for the role at call time.
+- **`RoleConfig` / `RoleResolver`** (`src/roles/`) — Stage 6: functional role → ordered list of candidate providers. Resolver picks the first registered + non-cooling candidate and calls the Router constrained to that provider subset. Defaults in `default-registry.ts`. Currently all roles fall back to Gemini until other providers are wired (steps 2-5 of Stage 6).
 
 ## Setup
 

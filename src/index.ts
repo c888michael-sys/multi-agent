@@ -48,6 +48,15 @@ export type {
   CompleteWithToolsResult,
 } from "./tools/types.js";
 
+// Roles (Stage 6)
+export {
+  RoleResolver,
+  UnknownRoleError,
+  NoCandidatesAvailableError,
+} from "./roles/resolver.js";
+export type { RoleName, RoleConfig, ProviderRef } from "./roles/types.js";
+export { DEFAULT_ROLES } from "./roles/default-registry.js";
+
 // Agents
 export { Agent, type AgentOptions } from "./agents/agent.js";
 export {

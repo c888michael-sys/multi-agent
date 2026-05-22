@@ -54,42 +54,49 @@ export class Router {
     this.jitter = options?.jitterMs ?? DEFAULT_JITTER;
   }
 
-  async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
+  /**
+   * Run a text completion. If `providerIds` is provided, the call is constrained
+   * to providers whose id is in that set — used by role-based routing to pin a
+   * call to (e.g.) "only Gemini" or "only the reasoning model".
+   */
+  async complete(
+    prompt: string,
+    opts?: CompleteOptions,
+    providerIds?: ReadonlySet<string>,
+  ): Promise<string> {
     const attempts: { providerId: string; error: unknown }[] = [];
     const startedAt = this.now();
 
     while (true) {
-      const tryResult = await this.tryEachAvailable(prompt, opts, attempts);
+      const tryResult = await this.tryEachAvailable(prompt, opts, attempts, providerIds);
       if (tryResult.kind === "ok") return tryResult.text;
 
-      // All providers cooled. Either back off and retry, or give up.
       if (this.maxRetryWaitMs <= 0) {
         throw new AllProvidersExhaustedError(attempts);
       }
 
-      const earliest = this.pool.earliestAvailable();
+      const earliest = this.pool.earliestAvailableIn(providerIds);
+      if (!isFinite(earliest)) {
+        // No providers in the (filtered) set at all. Definitively exhausted.
+        throw new AllProvidersExhaustedError(attempts);
+      }
       const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
       const totalElapsedIfWeWait = this.now() - startedAt + waitMs;
       if (totalElapsedIfWeWait > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
       }
       await this.sleep(waitMs);
-      // loop: re-try with the same prompt
     }
   }
 
-  /**
-   * One pass: try every available provider in pool order. Returns ok on first
-   * success, or "all_cooled" if every available one rate-limited (or none were
-   * available to begin with). Non-rate-limit errors propagate immediately.
-   */
   private async tryEachAvailable(
     prompt: string,
     opts: CompleteOptions | undefined,
     attempts: { providerId: string; error: unknown }[],
+    providerIds: ReadonlySet<string> | undefined,
   ): Promise<{ kind: "ok"; text: string } | { kind: "all_cooled" }> {
     for (let i = 0; i < this.pool.size(); i++) {
-      const pick = this.pool.pickAvailable();
+      const pick = this.pool.pickAvailable(providerIds);
       if (!pick) break;
 
       try {
@@ -112,22 +119,24 @@ export class Router {
    * Like complete(), but supports tool-use (function calling). Returns either
    * model text (done) or a list of tool calls to execute. Same rate-limit
    * rotation and backoff semantics as complete(). Skips providers that don't
-   * implement completeWithTools.
+   * implement completeWithTools. Supports `providerIds` constraint just like
+   * complete().
    */
   async completeWithTools(
     history: ConversationPart[],
     tools: ToolDeclaration[],
     opts?: CompleteOptions,
+    providerIds?: ReadonlySet<string>,
   ): Promise<CompleteWithToolsResult> {
     const attempts: { providerId: string; error: unknown }[] = [];
     const startedAt = this.now();
 
     while (true) {
       for (let i = 0; i < this.pool.size(); i++) {
-        const pick = this.pool.pickAvailable();
+        const pick = this.pool.pickAvailable(providerIds);
         if (!pick) break;
         if (!pick.provider.completeWithTools) {
-          // Skip silently; in a heterogeneous pool, some providers may not support tools.
+          // Provider doesn't support tools. Don't mark as rate-limited; just skip.
           continue;
         }
         try {
@@ -144,11 +153,13 @@ export class Router {
         }
       }
 
-      // All providers cooled or none supports tools.
       if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      const earliest = this.pool.earliestAvailable();
+      const earliest = this.pool.earliestAvailableIn(providerIds);
+      if (!isFinite(earliest)) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
       const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
       if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
@@ -168,5 +179,10 @@ export class Router {
 
   setMode(mode: PoolMode): void {
     this.pool.setMode(mode);
+  }
+
+  /** Which provider IDs are registered. Used by RoleResolver for filtering. */
+  registeredProviderIds(): string[] {
+    return this.pool.snapshot().map((p) => p.id);
   }
 }

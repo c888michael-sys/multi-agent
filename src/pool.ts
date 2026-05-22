@@ -100,14 +100,19 @@ export class ProviderPool {
    *  - serial:      always start from index 0; only advance when the current one cools.
    *                 Concentrates usage on one provider until it's depleted, so the
    *                 others stay fully reserved for emergencies.
+   *
+   * If `idAllowList` is provided, only providers whose id is in the list are
+   * considered. Used by role-based routing to constrain calls to specific
+   * providers (e.g., reasoning role only wants the DeepSeek R1 provider).
    */
-  pickAvailable(): PickResult | null {
+  pickAvailable(idAllowList?: ReadonlySet<string>): PickResult | null {
     const t = this.now();
     const start = this.mode === "round-robin" ? this.cursor : 0;
 
     for (let i = 0; i < this.entries.length; i++) {
       const idx = (start + i) % this.entries.length;
       const entry = this.entries[idx]!;
+      if (idAllowList && !idAllowList.has(entry.provider.id)) continue;
       if (entry.cooldownUntil <= t) {
         if (this.mode === "round-robin") {
           this.cursor = (idx + 1) % this.entries.length;
@@ -116,6 +121,20 @@ export class ProviderPool {
       }
     }
     return null;
+  }
+
+  /** Earliest moment any provider in the (optionally-filtered) set becomes available. */
+  earliestAvailableIn(idAllowList?: ReadonlySet<string>): number {
+    const eligible = idAllowList
+      ? this.entries.filter((e) => idAllowList.has(e.provider.id))
+      : this.entries;
+    if (eligible.length === 0) return Number.POSITIVE_INFINITY;
+    return Math.min(...eligible.map((e) => e.cooldownUntil));
+  }
+
+  /** Are any providers in the (optionally-filtered) set currently registered? */
+  hasAnyOf(idAllowList: ReadonlySet<string>): boolean {
+    return this.entries.some((e) => idAllowList.has(e.provider.id));
   }
 
   markSuccess(index: number): void {
