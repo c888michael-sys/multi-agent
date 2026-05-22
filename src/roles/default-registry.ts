@@ -91,8 +91,11 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     name: "action-repetitive",
     description: "High-volume bulk work where speed matters more than depth.",
     candidates: [
-      // Placeholder: Cerebras Llama 4 Scout will go here.
-      // { providerId: "cerebras:llama-4-scout" },
+      // Primary: Cerebras Llama 3.1 8B — wafer-scale inference at ~2000 tok/sec,
+      // 1M tokens/day free. Llama 4 Scout (mentioned in earlier docs) was
+      // moved off the standard model list; 8B is the right shape for bulk
+      // repetitive work anyway: speed and quota over depth.
+      { providerId: "cerebras:llama3-8b" },
       ...GEMINI_FALLBACK,
     ],
     systemPromptTemplate: "You are the bulk-action agent. Process the task quickly and concisely.",

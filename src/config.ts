@@ -2,6 +2,7 @@ import "dotenv/config";
 import { GeminiProvider } from "./providers/gemini.js";
 import { GroqProvider } from "./providers/groq.js";
 import { OpenRouterProvider } from "./providers/openrouter.js";
+import { CerebrasProvider } from "./providers/cerebras.js";
 import type { Provider } from "./provider.js";
 
 /**
@@ -70,11 +71,28 @@ export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provi
   ];
 }
 
+/**
+ * Load Cerebras provider from env. Returns [] if CEREBRAS_KEY is unset.
+ * Defaults to llama3.1-8b — fastest free option, ideal for bulk repetitive work.
+ */
+export function loadCerebrasProvidersFromEnv(opts?: { model?: string }): Provider[] {
+  const key = (process.env.CEREBRAS_KEY ?? "").trim();
+  if (!key) return [];
+  return [
+    new CerebrasProvider({
+      id: "cerebras:llama3-8b",
+      apiKey: key,
+      ...(opts?.model && { model: opts.model }),
+    }),
+  ];
+}
+
 /** Load every provider whose key is present in env. Used by the CLI's router setup. */
 export function loadAllProvidersFromEnv(): Provider[] {
   return [
     ...loadGeminiProvidersFromEnv(),
     ...loadGroqProvidersFromEnv(),
     ...loadOpenRouterProvidersFromEnv(),
+    ...loadCerebrasProvidersFromEnv(),
   ];
 }

@@ -98,7 +98,7 @@ Functional roles replace fixed sub-agent rosters. Each role declares a *capabili
 | Orchestration | Decide which role(s) to invoke; synthesize outputs | Gemini 3.5 Flash (default mode) | 1M context fits roster + intermediate state; low hallucination matters for routing |
 | Action A (code) | Code-specialized execution | Codestral via Mistral | Code-specialized; generous Experiment-plan quota |
 | Action B (structural) | General execution; formatting; structured outputs | Llama 3.3 70B via Groq | 300 tok/sec; 1000 RPD on its own pool |
-| Action C (repetitive) | Bulk, high-volume tasks | Llama 4 Scout via Cerebras | 1M tokens/day; extreme speed (2100 tok/sec) |
+| Action C (repetitive) | Bulk, high-volume tasks | Llama 3.1 8B via Cerebras | 1M tokens/day; wafer-scale inference at ~2000 tok/sec. Llama 4 Scout (mentioned in some 2026 marketing) was moved off the standard model list — 3.1 8B is the right shape for bulk repetitive work anyway |
 
 **Quota isolation:** every role draws from a *different* provider's quota pool, so heavy use in one role doesn't starve the others. No two of our roles share an account-wide rate limit.
 
@@ -159,7 +159,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) — routes role calls to constrained provider subsets, falls back through candidates, validates registration
 - [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
 - [x] Stage 6: OpenRouter provider + DeepSeek V4 Flash as `reasoning` (live-verified; R1 free retired by OpenRouter, V4-Flash is the current free reasoning option)
-- [ ] Stage 6: Cerebras provider + Llama 4 Scout as `action-repetitive`
+- [x] Stage 6: Cerebras provider + Llama 3.1 8B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, 3.1 8B is the right shape for bulk/speed)
 - [ ] Stage 6: Mistral provider + Codestral as `action-code`
 - [ ] Stage 6: roster-aware orchestrator routing
 - [ ] Stage 5: web + bot integrations
