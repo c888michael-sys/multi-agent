@@ -75,9 +75,8 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     description:
       "General execution: structured outputs, formatting, transformations, summaries.",
     candidates: [
-      // Placeholder: Groq Llama 3.3 70B will go here.
-      // { providerId: "groq:llama-70b" },
-      ...GEMINI_FALLBACK,
+      { providerId: "groq:llama-70b" }, // Llama 3.3 70B, very fast, 1000 RPD on its own pool
+      ...GEMINI_FALLBACK, // graceful fallback if GROQ_KEY missing or Groq is cooling
     ],
     systemPromptTemplate:
       "You are the structural-action agent. Follow the requested format exactly. Be terse.",

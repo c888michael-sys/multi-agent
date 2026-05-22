@@ -157,7 +157,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 4: bash exec tool (`--allow-bash`: cross-platform, timeout + output-cap, kills process tree on Windows)
 - [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
 - [x] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) — routes role calls to constrained provider subsets, falls back through candidates, validates registration
-- [ ] Stage 6: Groq provider + Llama 3.3 70B as `action-structural`
+- [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
 - [ ] Stage 6: OpenRouter provider + DeepSeek R1 as `reasoning`
 - [ ] Stage 6: Cerebras provider + Llama 4 Scout as `action-repetitive`
 - [ ] Stage 6: Mistral provider + Codestral as `action-code`
@@ -289,6 +289,18 @@ npm run cli -- usage                                        # cumulative usage (
 npm run cli -- --help
 ```
 
+### Explicit role routing
+
+`--role=<name>` on `ask` forces the call through the named role's primary candidate provider (with fallback to its other candidates only if the primary is exhausted). Useful for testing and for forcing a specific model when you know which one fits the task.
+
+```
+npm run cli -- ask --role=action-structural "Format X as Y."   # → Groq Llama 3.3 70B
+npm run cli -- ask --role=reasoning "What's the right approach for X?"
+npm run cli -- ask --role=perception "What's the latest CVE for log4j?"
+```
+
+Valid roles: `perception`, `reasoning`, `orchestration`, `action-code`, `action-structural`, `action-repetitive`. Each role's candidate list is in `src/roles/default-registry.ts`.
+
 ### Serious mode (Gemini 3.x extended reasoning)
 
 `--serious` enables Gemini 3.5 Flash's "thinking" variant for the call (and, in
@@ -416,6 +428,7 @@ The Router does NOT need changes — it's provider-agnostic. As long as your Pro
 - **PowerShell wraps native exe stderr as red error text.** A successful `git push` will look like a failure in PowerShell output. Look at the final lines and exit codes for the real outcome, not the red wrapper.
 - **Backoff `maxRetryWaitMs` must exceed the typical cooldown duration.** Default cooldown is 60s; default `maxRetryWaitMs` is 90s. With matching values, the retry math gives up at the boundary before sleeping. Found this the hard way in live testing.
 - **State file at `~/.multi-agent/state.json` persists across runs and across tests if you ever point a `FileStateStore` at the default path.** Tests should use `InMemoryStateStore` or temporary paths.
+- **Role routing iterates candidates in priority order, not via the Router's round-robin.** Earlier versions built a multi-provider allow-list per role and let the Router pick — that defeated role priority because the round-robin cursor decided which one got the call, not the role's primary. `RoleResolver.runRole` now iterates candidates one-at-a-time with a single-element allow-list each, falling through to the next only when the current is fully exhausted.
 
 ## Project conventions
 

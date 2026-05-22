@@ -4,12 +4,12 @@
  *
  * Run: npx tsx scripts/verify-keys.ts
  */
-import { loadGeminiProvidersFromEnv } from "../src/index.js";
+import { loadAllProvidersFromEnv } from "../src/index.js";
 
 async function main() {
-  const providers = loadGeminiProvidersFromEnv();
+  const providers = loadAllProvidersFromEnv();
   if (providers.length === 0) {
-    console.error("No GEMINI_KEY_N env vars set.");
+    console.error("No provider keys configured. Set at least GEMINI_KEY_1 in .env.");
     process.exit(1);
   }
 

@@ -58,7 +58,7 @@ describe("RoleResolver", () => {
     expect(a.calls).toHaveLength(0);
   });
 
-  it("falls back to secondary candidate when primary rate-limits", async () => {
+  it("falls back to secondary candidate when primary is exhausted", async () => {
     const a = new FakeProvider("a", [{ kind: "rate" }]);
     const b = new FakeProvider("b", [{ kind: "ok", text: "fallback-worked" }]);
     const router = new Router([a, b], { maxRetryWaitMs: 0 });
@@ -67,6 +67,19 @@ describe("RoleResolver", () => {
     expect(await resolver.runRole("orchestration", "do it")).toBe("fallback-worked");
     expect(a.calls).toHaveLength(1);
     expect(b.calls).toHaveLength(1);
+  });
+
+  it("calls primary candidate first even when secondary is also available", async () => {
+    // Regression: previous implementation built a multi-provider allowList,
+    // letting the router's round-robin cursor pick the secondary first.
+    const a = new FakeProvider("a", [{ kind: "ok", text: "from-a" }]);
+    const b = new FakeProvider("b", [{ kind: "ok", text: "from-b" }]);
+    const router = new Router([a, b], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [role("orchestration", ["a", "b"])]);
+
+    expect(await resolver.runRole("orchestration", "x")).toBe("from-a");
+    expect(a.calls).toHaveLength(1);
+    expect(b.calls).toHaveLength(0); // primary preferred, secondary not used
   });
 
   it("throws NoCandidatesAvailableError if none of role's candidates are registered", async () => {

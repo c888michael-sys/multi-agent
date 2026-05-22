@@ -78,7 +78,12 @@ export class ToolRunner {
           }
         }
         toolCalls.push({ name: call.name, args: call.args, result: resultText, ok });
-        history.push({ kind: "tool_result", name: call.name, result: resultText });
+        history.push({
+          kind: "tool_result",
+          name: call.name,
+          result: resultText,
+          ...(call.toolCallId !== undefined && { toolCallId: call.toolCallId }),
+        });
       }
     }
 

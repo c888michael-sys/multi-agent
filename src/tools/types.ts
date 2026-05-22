@@ -37,6 +37,12 @@ export interface ToolCallRequest {
    * included in conversation history. Treat as opaque — don't inspect or modify.
    */
   signature?: string;
+  /**
+   * Provider-supplied call ID (OpenAI/Groq/etc.) used to pair a tool result
+   * with its originating call in the next turn. Gemini-shaped providers don't
+   * use this; they pair by position.
+   */
+  toolCallId?: string;
 }
 
 export interface ToolCallRecord {
@@ -54,7 +60,13 @@ export type ConversationPart =
   | { kind: "user_text"; text: string }
   | { kind: "model_text"; text: string }
   | { kind: "model_calls"; calls: ToolCallRequest[] }
-  | { kind: "tool_result"; name: string; result: string };
+  | {
+      kind: "tool_result";
+      name: string;
+      result: string;
+      /** Echoes ToolCallRequest.toolCallId when present — for OpenAI-style providers. */
+      toolCallId?: string;
+    };
 
 /** What completeWithTools returns: either we're done, or the model wants tools called. */
 export type CompleteWithToolsResult =

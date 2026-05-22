@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { GeminiProvider } from "./providers/gemini.js";
+import { GroqProvider } from "./providers/groq.js";
 import type { Provider } from "./provider.js";
 
 /**
@@ -31,4 +32,26 @@ export function loadGeminiProvidersFromEnv(opts?: { model?: string }): Provider[
 
   providers.sort((a, b) => a.id.localeCompare(b.id));
   return providers;
+}
+
+/**
+ * Load Groq provider from env. Returns [] if GROQ_KEY is unset, so the rest
+ * of the system gracefully degrades to Gemini-only fallback for any role
+ * that listed groq:* as primary.
+ */
+export function loadGroqProvidersFromEnv(opts?: { model?: string }): Provider[] {
+  const key = (process.env.GROQ_KEY ?? "").trim();
+  if (!key) return [];
+  return [
+    new GroqProvider({
+      id: "groq:llama-70b",
+      apiKey: key,
+      ...(opts?.model && { model: opts.model }),
+    }),
+  ];
+}
+
+/** Load every provider whose key is present in env. Used by the CLI's router setup. */
+export function loadAllProvidersFromEnv(): Provider[] {
+  return [...loadGeminiProvidersFromEnv(), ...loadGroqProvidersFromEnv()];
 }

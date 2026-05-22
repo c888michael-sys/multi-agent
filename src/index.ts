@@ -1,11 +1,12 @@
 import { Router } from "./router.js";
-import { loadGeminiProvidersFromEnv } from "./config.js";
+import { loadAllProvidersFromEnv } from "./config.js";
 import { FileStateStore } from "./state.js";
 import type { CompleteOptions } from "./provider.js";
 
 // Core
 export { Router } from "./router.js";
 export { GeminiProvider } from "./providers/gemini.js";
+export { GroqProvider, GroqError } from "./providers/groq.js";
 export {
   ProviderPool,
   type PoolMode,
@@ -18,7 +19,11 @@ export {
   AllProvidersExhaustedError,
   NoProvidersConfiguredError,
 } from "./errors.js";
-export { loadGeminiProvidersFromEnv } from "./config.js";
+export {
+  loadGeminiProvidersFromEnv,
+  loadGroqProvidersFromEnv,
+  loadAllProvidersFromEnv,
+} from "./config.js";
 export {
   FileStateStore,
   InMemoryStateStore,
@@ -75,7 +80,7 @@ let defaultRouter: Router | null = null;
 
 function getDefaultRouter(): Router {
   if (!defaultRouter) {
-    defaultRouter = new Router(loadGeminiProvidersFromEnv(), {
+    defaultRouter = new Router(loadAllProvidersFromEnv(), {
       stateStore: new FileStateStore(),
     });
   }

@@ -5,6 +5,7 @@ import type {
   ToolDeclaration,
   CompleteWithToolsResult,
 } from "../tools/types.js";
+import { AllProvidersExhaustedError } from "../errors.js";
 import type { RoleName, RoleConfig, ProviderRef } from "./types.js";
 
 export class UnknownRoleError extends Error {
@@ -73,31 +74,47 @@ export class RoleResolver {
     return null;
   }
 
-  /** Run a text completion through whichever candidate provider fills this role. */
+  /**
+   * Run a text completion through this role.
+   *
+   * Tries candidate providers in *priority order* (primary first). For each,
+   * the router is called with a single-element allowList so the router's
+   * round-robin cursor doesn't override the role's intent. If the primary is
+   * fully exhausted (rate-limited and won't recover within the router's
+   * backoff window), the resolver falls through to the next candidate.
+   *
+   * Each candidate's mode is applied to its own attempt; caller opts override.
+   */
   async runRole(name: RoleName, prompt: string, callerOpts?: CompleteOptions): Promise<string> {
     const cfg = this.requireRole(name);
-    const eligible = cfg.candidates.filter((c) => this.registeredIds.has(c.providerId));
-    if (eligible.length === 0) {
-      throw new NoCandidatesAvailableError(
-        name,
-        cfg.candidates.map((c) => c.providerId),
-        [...this.registeredIds],
-      );
-    }
-
-    const allowList = new Set(eligible.map((c) => c.providerId));
-    // The primary candidate's mode is applied; caller opts override. If failover
-    // happens to a different candidate, its mode would only matter if it
-    // differed materially — by convention all candidates for one role share
-    // the relevant modes, so primary's mode is "the" role mode.
-    const mergedOpts: CompleteOptions = { ...eligible[0]!.mode, ...callerOpts };
+    const eligible = this.eligibleCandidates(name, cfg);
     const composed = cfg.systemPromptTemplate
       ? `${cfg.systemPromptTemplate}\n\n---\n\n${prompt}`
       : prompt;
-    return this.router.complete(composed, mergedOpts, allowList);
+
+    let lastErr: unknown;
+    for (const candidate of eligible) {
+      const allowList = new Set([candidate.providerId]);
+      const mergedOpts: CompleteOptions = { ...candidate.mode, ...callerOpts };
+      try {
+        return await this.router.complete(composed, mergedOpts, allowList);
+      } catch (err) {
+        if (err instanceof AllProvidersExhaustedError) {
+          lastErr = err;
+          continue; // primary truly exhausted — try next candidate
+        }
+        throw err;
+      }
+    }
+    throw (
+      lastErr ??
+      new AllProvidersExhaustedError(
+        eligible.map((c) => ({ providerId: c.providerId, error: new Error("unreached") })),
+      )
+    );
   }
 
-  /** Tool-use variant. Same role-to-provider resolution. */
+  /** Tool-use variant. Same priority-ordered candidate iteration. */
   async runRoleWithTools(
     name: RoleName,
     history: ConversationPart[],
@@ -105,6 +122,31 @@ export class RoleResolver {
     callerOpts?: CompleteOptions,
   ): Promise<CompleteWithToolsResult> {
     const cfg = this.requireRole(name);
+    const eligible = this.eligibleCandidates(name, cfg);
+
+    let lastErr: unknown;
+    for (const candidate of eligible) {
+      const allowList = new Set([candidate.providerId]);
+      const mergedOpts: CompleteOptions = { ...candidate.mode, ...callerOpts };
+      try {
+        return await this.router.completeWithTools(history, tools, mergedOpts, allowList);
+      } catch (err) {
+        if (err instanceof AllProvidersExhaustedError) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw (
+      lastErr ??
+      new AllProvidersExhaustedError(
+        eligible.map((c) => ({ providerId: c.providerId, error: new Error("unreached") })),
+      )
+    );
+  }
+
+  private eligibleCandidates(name: RoleName, cfg: RoleConfig): ProviderRef[] {
     const eligible = cfg.candidates.filter((c) => this.registeredIds.has(c.providerId));
     if (eligible.length === 0) {
       throw new NoCandidatesAvailableError(
@@ -113,9 +155,7 @@ export class RoleResolver {
         [...this.registeredIds],
       );
     }
-    const allowList = new Set(eligible.map((c) => c.providerId));
-    const mergedOpts: CompleteOptions = { ...eligible[0]!.mode, ...callerOpts };
-    return this.router.completeWithTools(history, tools, mergedOpts, allowList);
+    return eligible;
   }
 
   /** Human-readable summary used by the orchestrator when deciding routing. */

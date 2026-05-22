@@ -21,23 +21,37 @@ import {
   Router,
   Agent,
   Controller,
-  loadGeminiProvidersFromEnv,
+  loadAllProvidersFromEnv,
   formatUsageReport,
   FileStateStore,
   FileTools,
   BashTool,
   ToolRunner,
+  RoleResolver,
+  DEFAULT_ROLES,
   type ControllerMode,
   type CompleteOptions,
   type ThinkingLevel,
+  type RoleName,
 } from "./index.js";
+
+const VALID_ROLES: RoleName[] = [
+  "perception",
+  "reasoning",
+  "orchestration",
+  "action-code",
+  "action-structural",
+  "action-repetitive",
+];
 
 const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
 
 function buildRouter(): Router {
-  const providers = loadGeminiProvidersFromEnv();
+  const providers = loadAllProvidersFromEnv();
   if (providers.length === 0) {
-    console.error("No GEMINI_KEY_N env vars set. Copy .env.example to .env and fill in keys.");
+    console.error(
+      "No provider keys configured. Set at least GEMINI_KEY_1 in .env (see .env.example).",
+    );
     process.exit(1);
   }
   return new Router(providers, { stateStore: new FileStateStore() });
@@ -74,6 +88,28 @@ function buildDefaultAgents(router: Router): Agent[] {
 async function cmdAsk(prompt: string, opts: CompleteOptions): Promise<void> {
   const router = buildRouter();
   const out = await router.complete(prompt, opts);
+  console.log(out);
+  console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
+}
+
+async function cmdAskRole(
+  prompt: string,
+  role: RoleName,
+  opts: CompleteOptions,
+): Promise<void> {
+  const router = buildRouter();
+  const resolver = new RoleResolver(router, DEFAULT_ROLES);
+  const candidate = resolver.resolveCandidate(role);
+  if (!candidate) {
+    console.error(
+      `Error: role '${role}' has no registered candidate providers.\n` +
+        `Unsatisfied roles: ${resolver.unsatisfiedRoles().join(", ") || "(none)"}\n` +
+        `\nRoster:\n${resolver.rosterDescription()}`,
+    );
+    process.exit(1);
+  }
+  console.error(`role '${role}' → ${candidate.providerId}`);
+  const out = await resolver.runRole(role, prompt, opts);
   console.log(out);
   console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
 }
@@ -162,6 +198,11 @@ Flags for 'ask' (tools):
   --workdir=<path>                scope tools to this directory (default: cwd)
   --trace                         print each tool call and its result before the final answer
 
+Flags for 'ask' (role routing):
+  --role=<name>                   route through RoleResolver to the named role's primary provider.
+                                  Valid: perception, reasoning, orchestration,
+                                         action-code, action-structural, action-repetitive
+
 Flags for 'agents':
   --mode=parallel|specialist      default: parallel
   --trace                         print per-agent outputs before synthesis
@@ -200,6 +241,7 @@ async function main(): Promise<void> {
       tools: { type: "boolean", default: false },
       "allow-bash": { type: "boolean", default: false },
       workdir: { type: "string" },
+      role: { type: "string" },
     },
     allowPositionals: true,
     strict: true,
@@ -230,7 +272,14 @@ async function main(): Promise<void> {
   };
 
   if (command === "ask") {
-    if (values.tools || values["allow-bash"]) {
+    const roleArg = values.role as string | undefined;
+    if (roleArg) {
+      if (!(VALID_ROLES as string[]).includes(roleArg)) {
+        console.error(`Error: --role must be one of ${VALID_ROLES.join("|")} (got: ${roleArg})`);
+        process.exit(2);
+      }
+      await cmdAskRole(prompt, roleArg as RoleName, completeOpts);
+    } else if (values.tools || values["allow-bash"]) {
       const workdir = (values.workdir as string | undefined) ?? process.cwd();
       await cmdAskWithTools(
         prompt,
