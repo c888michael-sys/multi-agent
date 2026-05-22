@@ -161,7 +161,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 6: OpenRouter provider + DeepSeek V4 Flash as `reasoning` (live-verified; R1 free retired by OpenRouter, V4-Flash is the current free reasoning option)
 - [x] Stage 6: Cerebras provider + Llama 3.1 8B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, 3.1 8B is the right shape for bulk/speed)
 - [x] Stage 6: Mistral provider + Codestral as `action-code` (live-verified via `--role=action-code`)
-- [ ] Stage 6: roster-aware orchestrator routing
+- [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
 - [ ] Stage 5: web + bot integrations
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -251,7 +251,8 @@ multi-agent/
 - **`Router`** (`src/router.ts`) — the workhorse. `complete()` picks a provider from the pool, calls it, rotates on 429, backs off when all are cooling, retries until success or `maxRetryWaitMs` is hit. `completeWithTools()` is the same machinery for function-calling providers.
 - **`StateStore`** (`src/state.ts`) — JSON-on-disk persistence behind an interface. Per-provider counters + cooldowns survive process restarts; daily counters auto-reset at UTC midnight. Corrupt files fall back to empty state with a warning (never crash on read).
 - **`Agent`** (`src/agents/agent.ts`) — stateless. Applies a system prompt to a user input, calls the router. Used as a sub-agent in multi-agent flows.
-- **`Controller`** (`src/agents/controller.ts`) — multi-agent orchestrator with two runtime modes: `parallel` (all sub-agents independently → synthesize) and `specialist` (controller picks one sub-agent for the task). Threads `CompleteOptions` through to every underlying call.
+- **`Controller`** (`src/agents/controller.ts`) — multi-agent orchestrator with two runtime modes: `parallel` (all sub-agents independently → synthesize) and `specialist` (controller picks one sub-agent for the task). Threads `CompleteOptions` through to every underlying call. Used by the `agents` CLI command.
+- **`RoleOrchestrator`** (`src/agents/role-orchestrator.ts`) — the Stage 6 capstone. Takes a free-form task, asks the orchestration role for a JSON plan (`direct` / `single` / `parallel`), executes the plan via `RoleResolver`, synthesizes per-role outputs when needed. Used by the `task` CLI command. Defensive plan parsing falls back to a single `action-structural` call on malformed JSON.
 - **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
 - **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual — no internal timer.
 - **`RoleConfig` / `RoleResolver`** (`src/roles/`) — Stage 6: functional role → ordered list of candidate providers. Resolver picks the first registered + non-cooling candidate and calls the Router constrained to that provider subset. Defaults in `default-registry.ts`. Currently all roles fall back to Gemini until other providers are wired (steps 2-5 of Stage 6).
@@ -300,6 +301,25 @@ npm run cli -- ask --role=perception "What's the latest CVE for log4j?"
 ```
 
 Valid roles: `perception`, `reasoning`, `orchestration`, `action-code`, `action-structural`, `action-repetitive`. Each role's candidate list is in `src/roles/default-registry.ts`.
+
+### Auto-routing (the orchestrator picks roles for you)
+
+`task <prompt>` lets the orchestrator (Gemini) decide how to handle the task:
+
+- **Trivial query** → orchestrator answers directly (no other role invoked).
+- **One role fits** → routes to that role's primary provider.
+- **Multiple angles** → fans out to several roles in parallel, synthesizes outputs.
+
+```
+npm run cli -- task "What's 2+2?"
+npm run cli -- task "Write a Python function for binary search."
+npm run cli -- task "Compare DuckDB and SQLite for analytics workloads."
+npm run cli -- task --trace "Find recent SQLite benchmarks and analyze them."
+```
+
+`--trace` shows the plan (`direct` / `single` / `parallel`) and per-role outputs before the synthesized answer. `--serious` and `--thinking=<level>` propagate to every underlying call.
+
+The orchestrator's plan-generation output is parsed as JSON with defensive fallback: malformed plans degrade to a single `action-structural` call instead of throwing.
 
 ### Serious mode (Gemini 3.x extended reasoning)
 

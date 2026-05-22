@@ -78,6 +78,13 @@ export {
   type RunTrace,
 } from "./agents/controller.js";
 export {
+  RoleOrchestrator,
+  parsePlan,
+  type RoleOrchestratorOptions,
+  type Plan,
+  type RoleRunTrace,
+} from "./agents/role-orchestrator.js";
+export {
   CONTROLLER_PRIMING,
   buildRoutingPrompt,
   buildSynthesisPrompt,

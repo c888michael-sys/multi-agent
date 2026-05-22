@@ -28,6 +28,7 @@ import {
   BashTool,
   ToolRunner,
   RoleResolver,
+  RoleOrchestrator,
   DEFAULT_ROLES,
   type ControllerMode,
   type CompleteOptions,
@@ -176,13 +177,48 @@ function cmdUsage(): void {
   console.log(formatUsageReport(router));
 }
 
+async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions): Promise<void> {
+  const router = buildRouter();
+  const resolver = new RoleResolver(router, DEFAULT_ROLES);
+  const unsat = resolver.unsatisfiedRoles();
+  if (unsat.length > 0) {
+    console.error(
+      `Note: ${unsat.length} role(s) have no registered primary candidate; falling back to Gemini:\n  ${unsat.join(", ")}`,
+    );
+  }
+  const orchestrator = new RoleOrchestrator({ resolver });
+  const result = await orchestrator.runWithTrace(prompt, opts);
+
+  if (trace) {
+    console.error(`--- plan: ${result.plan.kind} ---`);
+    if (result.plan.kind === "single") console.error(`role: ${result.plan.role}`);
+    if (result.plan.kind === "parallel") {
+      for (const t of result.plan.tasks) console.error(`  ${t.role}: ${t.prompt}`);
+    }
+    if (result.perRole) {
+      for (const r of result.perRole) {
+        console.error(`\n--- ${r.role} ---\n${r.output}`);
+      }
+      console.error(`\n--- synthesis ---`);
+    }
+  }
+  console.log(result.finalOutput);
+  console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
+}
+
 function printHelp(): void {
   console.log(`multi-agent CLI
 
 Commands:
   ask <prompt>             single completion through the router
-  agents <prompt>          orchestrate sub-agents (default: parallel, 3 agents)
+  agents <prompt>          orchestrate fixed sub-agents (parallel/specialist modes)
+  task <prompt>            roster-aware orchestrator picks roles automatically
   usage                    print router state (counts, cooldowns, % remaining)
+
+Flags for 'task':
+  --serious                       extended reasoning across all calls in the run
+  --thinking=minimal|low|medium|high
+  --trace                         print the plan + per-role outputs before synthesis
 
 Flags (both ask and agents):
   --serious                       enable extended reasoning (thinkingLevel=high)
@@ -226,6 +262,39 @@ async function main(): Promise<void> {
 
   if (command === "usage") {
     cmdUsage();
+    return;
+  }
+
+  if (command === "task") {
+    const { values: tv, positionals: tp } = parseArgs({
+      args: argv.slice(1),
+      options: {
+        trace: { type: "boolean", default: false },
+        serious: { type: "boolean", default: false },
+        thinking: { type: "string" },
+      },
+      allowPositionals: true,
+      strict: true,
+    });
+    const taskPrompt = tp.join(" ").trim();
+    if (!taskPrompt) {
+      console.error("Error: task requires a prompt argument.\n");
+      printHelp();
+      process.exit(2);
+    }
+    let thinking2: ThinkingLevel | undefined;
+    if (tv.thinking !== undefined) {
+      const t = tv.thinking as string;
+      if (!(VALID_THINKING as string[]).includes(t)) {
+        console.error(`Error: --thinking must be one of ${VALID_THINKING.join("|")} (got: ${t})`);
+        process.exit(2);
+      }
+      thinking2 = t as ThinkingLevel;
+    } else if (tv.serious) {
+      thinking2 = "high";
+    }
+    const taskOpts: CompleteOptions = thinking2 !== undefined ? { thinking: thinking2 } : {};
+    await cmdTask(taskPrompt, Boolean(tv.trace), taskOpts);
     return;
   }
 
