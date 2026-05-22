@@ -11,6 +11,13 @@ export interface CompleteOptions {
    * limits faster but is still 1 request per call.
    */
   thinking?: ThinkingLevel;
+  /**
+   * Enable Google Search grounding. The model decides whether to search and
+   * may issue multiple internal queries per call. Source URLs are appended
+   * to the returned text under a "Sources:" footer. Use deliberately on
+   * questions that need current/factual info — not by default.
+   */
+  useSearch?: boolean;
   signal?: AbortSignal;
 }
 

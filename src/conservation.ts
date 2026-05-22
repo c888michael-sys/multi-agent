@@ -84,14 +84,26 @@ export class ConservationPolicy {
 /** Pretty-print snapshot for console display. */
 export function formatUsageReport(router: Router): string {
   const snap = router.snapshot();
-  const utc = new Date().toISOString().slice(0, 10);
-  const lines = [`mode: ${router.getMode()}   daily counts (UTC ${utc}, resets at next midnight UTC)`];
+  const now = Date.now();
+  const utc = new Date(now).toISOString().slice(0, 10);
+  const lines = [
+    `Usage today (UTC ${utc}, resets at next UTC midnight). Pool mode: ${router.getMode()}.`,
+  ];
   for (const p of snap) {
-    const cooling = p.cooldownUntil > Date.now() ? " [COOLING]" : "";
-    const pct = p.remainingPct !== undefined ? ` ${p.remainingPct.toFixed(0)}% remaining` : "";
-    lines.push(
-      `  ${p.id}: ${p.successCount} ok / ${p.rateLimitCount} 429${pct}${cooling}`,
-    );
+    const parts = [`${p.successCount} successful`, `${p.rateLimitCount} rate-limited`];
+    if (p.remainingPct !== undefined) parts.push(`~${p.remainingPct.toFixed(0)}% budget left`);
+    let suffix = "";
+    if (p.cooldownUntil > now) {
+      const secs = Math.ceil((p.cooldownUntil - now) / 1000);
+      suffix = `  [cooling — back in ${formatDuration(secs)}]`;
+    }
+    lines.push(`  ${p.id}: ${parts.join(", ")}${suffix}`);
   }
   return lines.join("\n");
+}
+
+function formatDuration(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.ceil(secs / 60)}m`;
+  return `${Math.floor(secs / 3600)}h ${Math.ceil((secs % 3600) / 60)}m`;
 }
