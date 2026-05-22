@@ -84,14 +84,16 @@ Explicitly out of scope until 1–4 are working.
 
 ## Roadmap checklist
 
-- [ ] Stage 1: `llm_router` design doc
-- [ ] Stage 1: implementation
-- [ ] Stage 1: tests against mocked HTTP
-- [ ] Stage 1: integration smoke test against 2 real Gemini accounts
-- [ ] Stage 2: conservation mode
-- [ ] Stage 3: orchestrator + 2 agent modes
+- [x] Stage 1: implementation
+- [x] Stage 1: tests against mocked HTTP
+- [ ] Stage 1: smoke test against 2 real Gemini accounts (waiting on keys)
+- [x] Stage 2: conservation mode (round-robin ↔ serial with hysteresis; per-provider usage tracking)
+- [x] Stage 3: orchestrator + specialist/parallel modes + token-efficient synthesis
+- [ ] Stage 3: tune prompts and thresholds against real model output (waiting on keys)
 - [ ] Stage 4: local UI
 - [ ] Stage 5: web + bot integrations
+
+See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
 ---
 
