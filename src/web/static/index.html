@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>multi-agent — orchestrator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0a0c; height: 100%; }
+  body { font-family: 'Geist', system-ui, sans-serif; overflow: hidden; }
+  /* Fluid full-viewport — no fixed 1280x760 letterbox (we adapt to real screens
+     since this is a real product, not a design canvas). */
+  #root { position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+  <script type="text/babel" src="/templates.jsx"></script>
+  <script type="text/babel" src="/app.jsx"></script>
+  <script type="text/babel">
+    // Mount once dependencies are parsed. Babel compiles asynchronously so we
+    // defer the actual render until both component files have registered their
+    // globals.
+    function tryMount() {
+      if (typeof HeroMindmap === 'function') {
+        ReactDOM.createRoot(document.getElementById('root')).render(<HeroMindmap />);
+      } else {
+        setTimeout(tryMount, 30);
+      }
+    }
+    tryMount();
+  </script>
+</body>
+</html>

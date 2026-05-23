@@ -1,0 +1,820 @@
+/* hero-mindmap.css — all styles for the dynamic mindmap flow. */
+
+:root {
+  --mm-bg: #0a0a0c;
+  --mm-fg: #f5f3ef;
+  --mm-fg-dim: rgba(245,243,239,0.6);
+  --mm-fg-faint: rgba(245,243,239,0.4);
+  --mm-line: rgba(245,243,239,0.08);
+  --mm-line-strong: rgba(245,243,239,0.16);
+  --mm-card-bg: rgba(15,14,18,0.85);
+  --accent: #f5a25b;
+  --mm-sidebar-w: 300px;
+}
+
+.mm-root, .mm-root * { box-sizing: border-box; }
+.mm-root {
+  width: 100%; height: 100%;
+  background: var(--mm-bg);
+  color: var(--mm-fg);
+  position: relative;
+  overflow: hidden;
+  font-family: 'Geist', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono { font-family: 'Geist Mono', ui-monospace, monospace; }
+
+/* ── Background layers ───────────────────────────────── */
+.mm-aurora { position: absolute; inset: -15%; filter: blur(80px) saturate(140%);
+  opacity: 0.45; pointer-events: none; transition: filter 0.6s ease; }
+.mm-aurora::before, .mm-aurora::after {
+  content: ''; position: absolute; border-radius: 50%; mix-blend-mode: screen;
+}
+.mm-aurora::before {
+  width: 45%; height: 65%; left: 20%; top: 5%;
+  background: radial-gradient(circle, color-mix(in oklch, var(--accent) 90%, transparent) 0%, transparent 60%);
+  animation: mmdrift 28s ease-in-out infinite;
+}
+.mm-aurora::after {
+  width: 40%; height: 55%; right: -5%; top: 35%;
+  background: radial-gradient(circle, oklch(0.74 0.17 320) 0%, transparent 60%);
+  animation: mmdrift 34s ease-in-out infinite reverse;
+}
+@keyframes mmdrift {
+  0%,100% { transform: translate(0,0) scale(1); }
+  50% { transform: translate(6%,-4%) scale(1.12); }
+}
+
+.mm-scan { position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(255,255,255,0.02), rgba(255,255,255,0.02) 1px, transparent 1px, transparent 3px);
+  mix-blend-mode: overlay; opacity: 0.4; }
+.mm-vignette { position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at 60% 50%, transparent 20%, rgba(10,10,12,0.85) 92%); }
+
+.mm-canvas { position: absolute; inset: 0; z-index: 1; }
+
+/* ── Nav ─────────────────────────────────────────────── */
+.mm-nav {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 32px; z-index: 5;
+  font-family: 'Geist Mono', monospace; font-size: 12px;
+  color: var(--mm-fg-dim);
+}
+.mm-brand {
+  display: flex; align-items: center; gap: 10px;
+  font-family: 'Geist', sans-serif; font-size: 15px; font-weight: 500;
+  color: var(--mm-fg); letter-spacing: -0.01em;
+}
+.mm-brand svg { width: 22px; height: 22px; }
+.mm-status {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11px; padding: 5px 10px;
+  border: 0.5px solid var(--mm-line); border-radius: 999px;
+  background: rgba(255,255,255,0.015);
+  letter-spacing: 0.05em;
+}
+.mm-status i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: oklch(0.72 0.18 145);
+  box-shadow: 0 0 8px oklch(0.72 0.18 145 / 0.7);
+  animation: mmpulse 2s ease-in-out infinite;
+}
+@keyframes mmpulse { 50% { opacity: 0.4; } }
+
+/* ── Sidebar ─────────────────────────────────────────── */
+.mm-sidebar {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: var(--mm-sidebar-w); z-index: 4;
+  padding: 90px 22px 22px;
+  border-right: 0.5px solid var(--mm-line);
+  background: linear-gradient(180deg, rgba(15,14,18,0.7), rgba(10,10,12,0.6));
+  backdrop-filter: blur(16px);
+  display: flex; flex-direction: column; gap: 22px;
+  font-family: 'Geist Mono', monospace;
+  overflow: hidden;
+}
+.mm-section { display: flex; flex-direction: column; gap: 10px; }
+.mm-lbl {
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.mm-lbl::before { content: '// '; opacity: 0.5; }
+.mm-lbl > i { font-style: normal; color: var(--mm-fg-dim); font-size: 10px; letter-spacing: 0.05em; }
+
+.mm-agent-row {
+  display: grid; grid-template-columns: 12px 1fr auto;
+  gap: 10px; align-items: center;
+  font-size: 12px; color: rgba(245,243,239,0.78); padding: 4px 0;
+}
+.mm-agent-row .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--c); box-shadow: 0 0 8px var(--c);
+}
+.mm-agent-row .ext { color: rgba(245,243,239,0.35); }
+.mm-agent-row .stat { font-size: 11px; color: oklch(0.72 0.18 145); }
+.mm-agent-row.active .stat {
+  color: oklch(0.78 0.16 52);
+  animation: mmblink 1.4s steps(2) infinite;
+}
+@keyframes mmblink { 50% { opacity: 0.45; } }
+
+.mm-gauge {
+  padding: 12px 14px 14px;
+  border: 0.5px solid var(--mm-line-strong);
+  border-radius: 12px; background: rgba(255,255,255,0.018);
+}
+.mm-gauge-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.mm-gauge-num { font-size: 20px; font-weight: 500; color: var(--mm-fg);
+  letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.mm-gauge-of { font-size: 11px; color: var(--mm-fg-faint); letter-spacing: 0.04em; margin-left: 4px; }
+.mm-gauge-pct { font-size: 11px; color: oklch(0.78 0.16 52); letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.mm-gauge-bar { height: 6px; border-radius: 999px; background: rgba(245,243,239,0.06);
+  overflow: hidden; position: relative; }
+.mm-gauge-fill { height: 100%;
+  background: linear-gradient(90deg, oklch(0.78 0.16 52), oklch(0.78 0.16 22));
+  border-radius: inherit;
+  box-shadow: 0 0 12px oklch(0.78 0.16 52 / 0.6);
+  transition: width 0.7s cubic-bezier(0.2,0.7,0.2,1);
+  position: relative;
+}
+.mm-gauge-fill::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.4) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: mmshine 2.4s linear infinite;
+  mix-blend-mode: overlay;
+}
+@keyframes mmshine { to { background-position: -200% 0; } }
+
+.mm-bar-row {
+  display: grid; grid-template-columns: 76px 1fr 56px;
+  gap: 8px; align-items: center;
+  font-size: 11px; color: rgba(245,243,239,0.55); padding: 4px 0;
+}
+.mm-bar-row .label { color: rgba(245,243,239,0.75); }
+.mm-bar-row .bar { height: 4px; border-radius: 999px; background: rgba(245,243,239,0.06); overflow: hidden; }
+.mm-bar-row .fill { height: 100%; background: var(--c); box-shadow: 0 0 6px var(--c);
+  border-radius: inherit; transition: width 0.7s cubic-bezier(0.2,0.7,0.2,1); }
+.mm-bar-row .num { text-align: right; font-variant-numeric: tabular-nums;
+  color: rgba(245,243,239,0.7); }
+
+.mm-log { font-size: 10.5px; line-height: 1.7; color: rgba(245,243,239,0.42); }
+.mm-log .dim { color: rgba(245,243,239,0.32); }
+
+/* ── Stage ───────────────────────────────────────────── */
+.mm-stage {
+  position: absolute; left: var(--mm-sidebar-w); top: 64px; right: 0; bottom: 0;
+  z-index: 2;
+  padding: 24px 40px 32px;
+  overflow: hidden;
+}
+.mm-phase {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  position: relative;
+}
+
+/* ── Idle (hero) ─────────────────────────────────────── */
+.mm-phase-idle { justify-content: center; gap: 28px; padding-bottom: 60px; }
+.mm-hero { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
+.mm-eyebrow {
+  font-family: 'Geist Mono', monospace; font-size: 12px;
+  display: inline-flex; gap: 8px; align-items: center;
+  padding: 6px 12px; border-radius: 999px;
+  border: 0.5px solid var(--mm-line-strong);
+  background: rgba(255,255,255,0.015);
+  color: var(--mm-fg-dim);
+}
+.mm-eyebrow .mm-prefix { color: var(--accent); font-weight: 500; }
+.mm-eyebrow .dim { color: var(--mm-fg-faint); }
+.mm-eyebrow .sep { width: 1px; height: 10px; background: var(--mm-line-strong); margin: 0 2px; }
+.mm-eyebrow .ok-dot { width: 6px; height: 6px; border-radius: 50%;
+  background: oklch(0.72 0.18 145); box-shadow: 0 0 8px oklch(0.72 0.18 145 / 0.7);
+  animation: mmpulse 2s ease-in-out infinite; }
+.mm-eyebrow .caret { width: 6px; height: 12px; background: var(--accent);
+  animation: mmcaret 1.05s steps(2) infinite; }
+@keyframes mmcaret { 50% { opacity: 0; } }
+
+.mm-h1 {
+  font-size: 56px; font-weight: 500; line-height: 1; letter-spacing: -0.04em;
+  margin: 4px 0 0; max-width: 18ch; color: var(--mm-fg);
+}
+.mm-h1 em {
+  font-family: 'Instrument Serif', serif; font-style: italic; font-weight: 400;
+  background: linear-gradient(120deg, var(--mm-fg) 0%, var(--accent) 45%, oklch(0.74 0.17 320) 70%, var(--mm-fg) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: mmshimmer 9s ease-in-out infinite;
+}
+@keyframes mmshimmer { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+
+.mm-sub { font-size: 15px; line-height: 1.55; color: var(--mm-fg-dim);
+  max-width: 52ch; margin: 0; }
+
+.mm-composer-wrap { width: 100%; max-width: 560px; }
+.mm-template-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.mm-template-hint {
+  display: inline-flex; gap: 6px; align-items: center;
+  padding: 5px 10px; border-radius: 999px;
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  border: 0.5px solid var(--mm-line);
+  background: rgba(255,255,255,0.015);
+  color: var(--mm-fg-faint);
+}
+.mm-template-hint i {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--c);
+  box-shadow: 0 0 6px var(--c);
+}
+
+/* ── Composer (shared) ───────────────────────────────── */
+.mm-composer {
+  padding: 1px; border-radius: 18px;
+  background: linear-gradient(135deg, rgba(245,162,91,0.55), rgba(245,243,239,0.06) 50%, rgba(192,139,255,0.5));
+  box-shadow: 0 24px 80px -10px rgba(245,162,91,0.3), 0 8px 24px rgba(0,0,0,0.5);
+  transition: transform 0.5s cubic-bezier(0.2,0.7,0.2,1), box-shadow 0.5s ease;
+}
+.mm-composer.compact {
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  transform: scale(0.92);
+}
+.mm-composer-in {
+  background: rgba(12,11,14,0.92);
+  border-radius: 17px;
+  padding: 14px 14px 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.mm-composer-prefix {
+  font-family: 'Geist Mono', monospace; font-size: 10px;
+  color: var(--mm-fg-faint);
+  letter-spacing: 0.06em;
+  display: flex; justify-content: space-between;
+}
+.mm-composer-prefix .live {
+  color: oklch(0.72 0.18 145);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.mm-composer-prefix .live::before {
+  content: ''; width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor; box-shadow: 0 0 5px currentColor;
+}
+.mm-composer textarea {
+  width: 100%;
+  background: transparent; border: 0; outline: 0; resize: none;
+  color: var(--mm-fg);
+  font-family: 'Geist', sans-serif;
+  font-size: 15px; line-height: 1.5;
+  padding: 4px 2px;
+  min-height: 30px;
+}
+.mm-composer textarea::placeholder { color: var(--mm-fg-faint); }
+.mm-composer-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--mm-line);
+}
+.mm-model {
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  color: var(--mm-fg-dim);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.mm-model i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in oklch, var(--accent) 70%, transparent);
+}
+.mm-send {
+  width: 32px; height: 32px; border-radius: 10px; border: 0;
+  background: var(--accent); color: #0a0a0c;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.mm-send:hover:not(:disabled) { transform: scale(1.06); }
+.mm-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.mm-send svg { width: 15px; height: 15px; }
+
+/* ── Prompt + Response cards ─────────────────────────── */
+.mm-prompt-card, .mm-response-card {
+  width: 100%; max-width: 620px;
+  border-radius: 16px;
+  background: var(--mm-card-bg);
+  border: 0.5px solid var(--mm-line-strong);
+  padding: 14px 16px;
+  backdrop-filter: blur(16px);
+  position: relative;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.2,0.7,0.2,1);
+}
+.mm-prompt-card.entering, .mm-response-card.entering {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+}
+@keyframes mmCardIn {
+  0% { opacity: 0; transform: translateY(8px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes mmCardIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.mm-response-card {
+  border: 0.5px solid color-mix(in oklch, var(--accent) 30%, var(--mm-line-strong));
+  box-shadow: 0 24px 60px -20px color-mix(in oklch, var(--accent) 30%, transparent),
+              0 8px 24px rgba(0,0,0,0.4);
+}
+.mm-response-head, .mm-prompt-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+}
+.mm-template-pill {
+  display: inline-flex; gap: 6px; align-items: center;
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--mm-fg-dim);
+  padding: 4px 8px; border-radius: 999px;
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  border: 0.5px solid color-mix(in oklch, var(--accent) 25%, var(--mm-line));
+}
+.mm-template-pill .mm-template-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 6px var(--accent);
+}
+.mm-response-body {
+  font-size: 14.5px; line-height: 1.55;
+  color: var(--mm-fg);
+  text-wrap: pretty;
+}
+.mm-response-preview {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px;
+}
+.mm-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px; border-radius: 999px;
+  font-size: 11px; font-family: 'Geist Mono', monospace;
+  background: rgba(255,255,255,0.04);
+  border: 0.5px solid var(--mm-line);
+  color: var(--mm-fg-dim);
+}
+.mm-chip i { width: 5px; height: 5px; border-radius: 50%; }
+
+.mm-prompt-card {
+  background: rgba(255,255,255,0.025);
+  font-family: 'Geist', sans-serif;
+}
+.mm-prompt-tag {
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  color: var(--mm-fg-faint); letter-spacing: 0.08em; text-transform: uppercase;
+}
+.mm-prompt-body {
+  font-size: 14px; line-height: 1.5; color: var(--mm-fg-dim);
+  text-wrap: pretty;
+}
+.mm-reset, .mm-thread-reset {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 0.5px solid var(--mm-line);
+  border-radius: 8px; padding: 4px 8px;
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  color: var(--mm-fg-faint);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mm-reset:hover, .mm-thread-reset:hover {
+  border-color: var(--mm-line-strong);
+  color: var(--mm-fg);
+  background: rgba(255,255,255,0.04);
+}
+.mm-reset svg, .mm-thread-reset svg { width: 11px; height: 11px; }
+
+/* ── Copy button ─────────────────────────────────────── */
+.mm-copy {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent;
+  border: 0.5px solid var(--mm-line-strong);
+  border-radius: 8px; padding: 4px 8px;
+  color: var(--mm-fg-dim);
+  font-family: 'Geist Mono', monospace;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mm-copy:hover { color: var(--mm-fg); border-color: var(--mm-line-strong);
+  background: rgba(255,255,255,0.04); }
+.mm-copy svg { width: 11px; height: 11px; }
+.mm-copy.tiny {
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+}
+.mm-copy.tiny svg { width: 10px; height: 10px; }
+
+/* ── Loading dispatch ────────────────────────────────── */
+.mm-phase-loading { justify-content: center; gap: 18px; }
+.mm-routing-pill {
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  color: oklch(0.78 0.16 52);
+  padding: 3px 8px; border-radius: 999px;
+  background: oklch(0.78 0.16 52 / 0.1);
+  border: 0.5px solid oklch(0.78 0.16 52 / 0.3);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  animation: mmblink 1.2s steps(2) infinite;
+}
+.mm-dispatch { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 360px; }
+.mm-dispatch-row {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: 10px;
+  align-items: center; padding: 6px 12px; border-radius: 999px;
+  font-size: 12.5px;
+  background: rgba(255,255,255,0.025);
+  border: 0.5px solid var(--mm-line);
+  opacity: 0.45;
+  transition: opacity 0.3s ease, background 0.3s ease, border-color 0.3s ease;
+}
+.mm-dispatch-row.on {
+  opacity: 1;
+  background: color-mix(in oklch, var(--c) 12%, rgba(255,255,255,0.025));
+  border-color: color-mix(in oklch, var(--c) 30%, transparent);
+}
+.mm-dispatch-row .orb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+}
+.mm-dispatch-row.on .orb {
+  background: var(--c); box-shadow: 0 0 10px var(--c);
+  animation: mmstepPulse 1.6s ease-out infinite;
+}
+@keyframes mmstepPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--c) 60%, transparent); }
+  100% { box-shadow: 0 0 0 12px color-mix(in oklch, var(--c) 0%, transparent); }
+}
+.mm-dispatch-row .nm { font-weight: 500; }
+.mm-dispatch-row .st {
+  font-family: 'Geist Mono', monospace; font-size: 11px;
+  color: var(--mm-fg-faint);
+}
+.mm-dispatch-row.on .st { color: var(--mm-fg-dim); }
+
+/* ── Response phase layout ───────────────────────────── */
+.mm-phase-response {
+  justify-content: flex-start;
+  padding-top: 24px;
+  gap: 16px;
+  align-items: center;
+}
+.mm-phase-response .mm-spacer { flex: 1; }
+
+/* ── Pull handle ─────────────────────────────────────── */
+.mm-pull {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  background: transparent; border: 0;
+  padding: 10px 18px;
+  color: var(--mm-fg-faint);
+  font-family: 'Geist Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: grab;
+  transition: color 0.2s ease;
+  touch-action: none;
+}
+.mm-pull:hover { color: var(--mm-fg-dim); }
+.mm-pull:active { cursor: grabbing; }
+.mm-pull-grip {
+  display: flex; gap: 2px;
+  animation: mmpullHint 2.2s ease-in-out infinite;
+}
+.mm-pull-grip i {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+.mm-pull-arrow {
+  display: inline-flex;
+  animation: mmpullHint 2.2s ease-in-out infinite;
+  animation-delay: 0.3s;
+}
+.mm-pull-arrow svg { width: 14px; height: 9px; }
+@keyframes mmpullHint {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.7; }
+  40% { transform: translateY(4px); opacity: 1; }
+}
+.mm-pull-label { letter-spacing: 0.12em; }
+.mm-pull-progress {
+  width: 80px; height: 2px; border-radius: 999px;
+  background: rgba(245,243,239,0.06);
+  overflow: hidden;
+  margin-top: 4px;
+}
+.mm-pull-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  transition: width 0.1s linear;
+}
+
+/* ── Mindmap thread strip ────────────────────────────── */
+.mm-phase-mindmap {
+  padding: 0; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: stretch;
+}
+.mm-thread-strip {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--mm-card-bg);
+  border: 0.5px solid var(--mm-line-strong);
+  backdrop-filter: blur(16px);
+  margin-bottom: 14px;
+}
+@keyframes mmThreadIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.mm-collapse {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 0.5px solid var(--mm-line);
+  border-radius: 8px; padding: 5px 9px;
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  color: var(--mm-fg-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mm-collapse:hover { color: var(--mm-fg); border-color: var(--mm-line-strong); }
+.mm-collapse svg { width: 11px; height: 7px; }
+.mm-thread-content {
+  flex: 1; display: flex; align-items: center; gap: 10px;
+  min-width: 0;
+  font-size: 13px;
+}
+.mm-thread-prompt {
+  color: var(--mm-fg-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 50%;
+}
+.mm-thread-arrow { color: var(--mm-fg-faint); }
+.mm-thread-template {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px;
+  background: color-mix(in oklch, var(--c) 14%, transparent);
+  border: 0.5px solid color-mix(in oklch, var(--c) 30%, var(--mm-line));
+  color: var(--mm-fg-dim);
+}
+.mm-thread-template i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--c); box-shadow: 0 0 5px var(--c);
+}
+.mm-thread-actions { display: flex; gap: 6px; }
+
+/* ── Burst stage (mindmap) ───────────────────────────── */
+.mm-burst-wrap {
+  position: relative; flex: 1;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.mm-burst {
+  position: absolute; inset: 0;
+}
+.mm-burst-lines {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.mm-burst-center {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none;
+}
+.mm-burst-tag {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(15,14,18,0.85);
+  border: 0.5px solid color-mix(in oklch, var(--accent) 40%, var(--mm-line));
+  color: var(--mm-fg);
+  font-family: 'Geist Mono', monospace; font-size: 11px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  box-shadow: 0 0 24px color-mix(in oklch, var(--accent) 30%, transparent);
+}
+
+/* Center halo for burst */
+.mm-burst::before {
+  content: '';
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%,-50%);
+  width: 320px; height: 320px;
+  background: radial-gradient(circle, color-mix(in oklch, var(--accent) 50%, transparent) 0%, transparent 70%);
+  filter: blur(16px);
+  animation: mmbreath 5s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+@keyframes mmbreath {
+  0%,100% { transform: translate(-50%,-50%) scale(1); opacity: 0.7; }
+  50% { transform: translate(-50%,-50%) scale(1.12); opacity: 1; }
+}
+
+/* ── Burst cards ─────────────────────────────────────── */
+.mm-card {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 248px;
+  max-height: 280px;
+  overflow-y: auto;
+  border-radius: 14px;
+  background: rgba(15,14,18,0.92);
+  border: 0.5px solid var(--mm-line-strong);
+  backdrop-filter: blur(12px);
+  padding: 12px 14px;
+  font-size: 12px;
+  z-index: 2;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4),
+              0 0 24px color-mix(in oklch, var(--accent) 12%, transparent);
+  opacity: 1;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245,243,239,0.15) transparent;
+}
+.mm-card::-webkit-scrollbar { width: 4px; }
+.mm-card::-webkit-scrollbar-thumb { background: rgba(245,243,239,0.15); border-radius: 4px; }
+@keyframes mmCardBurst {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.mm-card:hover {
+  border-color: color-mix(in oklch, var(--accent) 35%, var(--mm-line-strong));
+}
+.mm-card header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--mm-line);
+}
+.mm-card-num, .mm-phase-num {
+  font-family: 'Geist Mono', monospace; font-size: 10px;
+  color: var(--accent);
+  padding: 2px 6px; border-radius: 4px;
+  background: color-mix(in oklch, var(--accent) 16%, transparent);
+  letter-spacing: 0.06em;
+}
+.mm-card-title {
+  flex: 1;
+  font-size: 13px; font-weight: 500;
+  color: var(--mm-fg);
+  letter-spacing: -0.005em;
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mm-card-title.mono { font-family: 'Geist Mono', monospace; font-size: 12px; }
+.mm-card ul, .mm-card ol {
+  margin: 0; padding-left: 18px;
+  display: flex; flex-direction: column; gap: 4px;
+  color: var(--mm-fg-dim);
+  line-height: 1.45;
+}
+.mm-card li::marker { color: var(--mm-fg-faint); }
+.mm-card ol li::marker { font-family: 'Geist Mono', monospace; font-size: 11px; }
+
+/* Research-specific */
+.mm-sources {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 0.5px dashed var(--mm-line);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.mm-sources-label {
+  font-family: 'Geist Mono', monospace; font-size: 9.5px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  margin-bottom: 2px;
+}
+.mm-sources a {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--mm-fg-dim);
+  text-decoration: none;
+  font-size: 11.5px;
+  padding: 2px 0;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+.mm-sources a:hover { color: var(--mm-fg); }
+.mm-src-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+/* Code-specific */
+.mm-file-icon {
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent);
+}
+.mm-file-icon svg { width: 12px; height: 12px; }
+.mm-lang {
+  font-family: 'Geist Mono', monospace; font-size: 9.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  padding: 2px 6px; border-radius: 4px;
+  background: rgba(255,255,255,0.04);
+}
+.mm-snippet {
+  margin: 0; padding: 8px 10px;
+  background: rgba(0,0,0,0.4);
+  border: 0.5px solid var(--mm-line);
+  border-radius: 8px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(245,243,239,0.85);
+  overflow-x: auto;
+  max-height: 110px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mm-notes {
+  margin-top: 8px;
+  font-size: 11.5px;
+}
+
+/* Compare-specific */
+.mm-compare-center {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  pointer-events: none;
+}
+.mm-rank-card {
+  width: 220px;
+  background: rgba(15,14,18,0.95);
+  border: 0.5px solid color-mix(in oklch, var(--accent) 45%, var(--mm-line));
+  border-radius: 14px;
+  padding: 12px 14px;
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+  box-shadow: 0 0 32px color-mix(in oklch, var(--accent) 30%, transparent);
+}
+.mm-rank-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--mm-line);
+}
+.mm-rank-tag {
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--mm-fg-faint);
+}
+.mm-rank-row {
+  display: grid; grid-template-columns: 24px 1fr auto;
+  gap: 8px; align-items: center;
+  padding: 4px 0; font-size: 12.5px;
+}
+.mm-rank-row.top { color: var(--accent); font-weight: 500; }
+.mm-rank-pos { font-family: 'Geist Mono', monospace; font-size: 11px;
+  color: var(--mm-fg-faint); }
+.mm-rank-row.top .mm-rank-pos { color: var(--accent); }
+.mm-rank-name { color: var(--mm-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-rank-score {
+  font-family: 'Geist Mono', monospace; font-variant-numeric: tabular-nums;
+  color: var(--mm-fg-dim); font-size: 11.5px;
+}
+.mm-rank-row.top .mm-rank-score { color: var(--accent); }
+
+.mm-rank-badge {
+  font-family: 'Geist Mono', monospace; font-size: 10px;
+  color: var(--accent);
+  padding: 2px 6px; border-radius: 4px;
+  background: color-mix(in oklch, var(--accent) 16%, transparent);
+}
+.mm-rank-score-inline {
+  font-family: 'Geist Mono', monospace; font-size: 11.5px;
+  color: var(--mm-fg-dim); font-variant-numeric: tabular-nums;
+}
+.mm-pc-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin-bottom: 8px;
+}
+.mm-col-h {
+  font-family: 'Geist Mono', monospace; font-size: 9.5px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  margin-bottom: 4px;
+}
+.mm-col ul { padding-left: 14px; }
+.mm-col ul.con li::marker { color: oklch(0.65 0.15 22); }
+.mm-reason {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 0.5px dashed var(--mm-line);
+  font-size: 11.5px;
+  color: var(--mm-fg-dim);
+  font-style: italic;
+}
+.mm-reason span {
+  font-family: 'Geist Mono', monospace; font-size: 9.5px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  font-style: normal;
+}

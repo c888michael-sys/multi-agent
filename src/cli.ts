@@ -33,6 +33,7 @@ import {
   ChatSession,
   ChatRepl,
   listSessions,
+  startWebServer,
   DEFAULT_ROLES,
   type ControllerMode,
   type CompleteOptions,
@@ -213,6 +214,16 @@ async function cmdChat(sessionId: string, powerful: boolean): Promise<void> {
   await repl.run();
 }
 
+async function cmdServe(port: number): Promise<void> {
+  const router = buildRouter();
+  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
+  const { url } = startWebServer({ router, resolver, port });
+  console.log(`multi-agent web UI live at ${url}`);
+  console.log(`open it in a browser. Ctrl+C to stop.`);
+  // Keep the process alive — server holds the event loop. Wait forever.
+  await new Promise<void>(() => {});
+}
+
 function cmdSessions(): void {
   const ids = listSessions();
   if (ids.length === 0) {
@@ -262,6 +273,8 @@ Commands:
                            (smart-routing on by default; orchestrator picks
                             direct/single specialist/parallel per turn)
   sessions                 list saved chat session names
+  serve                    start the local web UI on http://localhost:<port>
+                           (default 7421). Also exposed as: npm run web
   usage                    print router state (counts, cooldowns, % remaining)
 
 Flags for 'task':
@@ -273,6 +286,9 @@ Flags for 'chat':
   --powerful                      start in powerful mode (Gemini thinking=high
                                   on every call this session). Also toggleable
                                   mid-session via /power.
+
+Flags for 'serve':
+  --port=<n>                      port to bind (default 7421)
 
 Flags (both ask and agents):
   --serious                       enable extended reasoning (thinkingLevel=high)
@@ -338,6 +354,22 @@ async function main(): Promise<void> {
 
   if (command === "sessions") {
     cmdSessions();
+    return;
+  }
+
+  if (command === "serve") {
+    const { values: sv } = parseArgs({
+      args: argv.slice(1),
+      options: { port: { type: "string", default: "7421" } },
+      allowPositionals: false,
+      strict: true,
+    });
+    const port = Number(sv.port);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      console.error(`Error: --port must be a valid port number (got: ${sv.port})`);
+      process.exit(2);
+    }
+    await cmdServe(port);
     return;
   }
 

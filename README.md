@@ -162,7 +162,8 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 6: Cerebras provider + Llama 3.1 8B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, 3.1 8B is the right shape for bulk/speed)
 - [x] Stage 6: Mistral provider + Codestral as `action-code` (live-verified via `--role=action-code`)
 - [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
-- [ ] Stage 5: web + bot integrations
+- [~] Stage 5a: browser UI (code shipped, **NOT live-verified end-to-end** — handed to next session for testing)
+- [ ] Stage 5b: bot integrations (Telegram / Discord / Instagram)
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
@@ -202,6 +203,14 @@ multi-agent/
     chat/
       session.ts        — ChatSession (persistent multi-turn history)
       repl.ts           — ChatRepl (interactive readline loop with slash commands)
+      spinner.ts        — TTY spinner (no-op when non-tty)
+    web/                — Stage 5a (browser UI; not live-verified — see handover notes)
+      server.ts         — built-in http server, static + /api/* routes
+      static/
+        index.html      — SPA shell
+        style.css       — visual styles (from claude.ai/design handoff bundle)
+        app.jsx         — HeroMindmap React component (adapted from handoff)
+        templates.jsx   — template defs + burst renderers (from handoff)
   tests/                — vitest, mocked SDK throughout
     fixtures.ts         — FakeProvider, ToolFakeProvider, RateLimitedError
   scripts/
@@ -387,6 +396,132 @@ loaded 'backup-before-rewrite' (5 turn(s)) into current session.
 **Auto-summarization (default on):** when projected token usage hits 85% of the budget, the orchestrator silently summarizes older turns into a single "[Earlier conversation summary]" pair, keeping the most recent 3 pairs verbatim. You'll see `[auto-summarized N older turn(s) to free context budget]` above the reply on turns that trigger it. Disable by constructing `ChatSession` with `autoSummarize: false`. Tunables: `autoSummarizeAtPct` (default 85), `keepRecentTurns` (default 3).
 
 **Generating indicator:** a tiny TTY spinner (`⠋ thinking...` / `⠋ thinking (powerful mode)...`) appears while waiting for the model. No-op in piped/non-interactive output so logs stay clean.
+
+---
+
+## Web UI (Stage 5a — ⚠ not live-verified)
+
+A browser interface for the system, served from `localhost` by a built-in HTTP server. The frontend is a single-page React app rendered via in-browser Babel (no build step required). Designed from a handoff bundle exported from claude.ai/design — see "Source attribution" below.
+
+**Start it:**
+
+```
+npm run web              # boots on http://localhost:7421 by default
+npm run cli -- serve --port=9000   # custom port
+```
+
+Open the printed URL in a browser. Ctrl+C to stop.
+
+**What it does**
+
+Four phases, animated transitions between each:
+
+1. **Idle** — centered composer with a hero headline, "5 agents online" status, template-type hints.
+2. **Loading** — your prompt locks into a card; the 5 specialist rows in the sidebar light up sequentially as "thinking".
+3. **Response** — orchestrator's reply appears in an accent-bordered card above your prompt; copy-whole-response button; a subtle pull-down handle hints at the mindmap.
+4. **Mindmap** — click or drag down the handle; prompt+response collapse into a thread strip and the response bursts out into a template-specific card grid (research → headings + sources, code → file snippets, compare → ranking + per-target, plan → phases + steps). Each card has its own copy button.
+
+The prompt's *type* is detected via keyword heuristics (`research|find|sources|...` → research, `code|implement|function|...` → code, `compare|vs|tradeoffs|...` → compare, anything else → plan). The model is then asked for a JSON schema matching that template; the JSON drives the burst-stage renderer.
+
+**Backend endpoints**
+
+| Route | Method | Body / params | Returns |
+|---|---|---|---|
+| `/` | GET | — | `index.html` (the SPA shell) |
+| `/style.css`, `/app.jsx`, `/templates.jsx` | GET | — | static files from `src/web/static/` (`.jsx` served as `text/babel`) |
+| `/api/complete` | POST | `{ prompt: string }` | `{ reply: string }` — one-shot completion through the orchestration role |
+| `/api/chat` | POST | `{ sessionId, message }` | `{ reply, servedBy, plan, summarizedTurns, ... }` — multi-turn `ChatSession` shape (not used by the current frontend but available) |
+| `/api/sessions` | GET | — | `{ sessions: string[] }` |
+| `/api/sessions/:id` | GET | — | full session snapshot |
+| `/api/sessions/:id/clear` | POST | — | wipe a session |
+| `/api/usage` | GET | — | `formatUsageReport` text |
+
+**Architecture decisions**
+
+- **No build step.** Frontend uses `<script type="text/babel">` + `@babel/standalone` from a CDN, exactly like the prototype bundle. Trades runtime parse cost (acceptable for a personal-use local tool) for zero toolchain overhead. Production deployment would swap in a real bundler.
+- **Vanilla `node:http`**, not Express. No new npm dependencies.
+- **Frontend talks to backend via `/api/complete` only** for now. The `/api/chat` (multi-turn `ChatSession`) endpoint is built and exposed but not yet wired into the UI — the UI does single-shot completions per turn, which is enough for the template-driven mindmap flow.
+- **5 agents in sidebar, 6 roles in system.** The sidebar's `MM_AGENTS` array surfaces the 5 specialists the orchestrator actively dispatches to (orchestration, perception, reasoning, action-code, action-structural). The 6th role (`action-repetitive`) is omitted from the sidebar but still available in the role registry. Adjust `src/web/static/app.jsx` `MM_AGENTS` to surface a different mix.
+- **All agent stats in the sidebar are fake.** The token-usage gauges and "thinking…" pulses are illustrative — not wired to real `formatUsageReport` data. Hooking them to `/api/usage` is a follow-up.
+
+---
+
+## Web UI handover notes (read this if you're picking it up cold)
+
+**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (174/174 — none cover the new web module). The web UI itself has **not been opened in a browser yet**. Everything past "starts the server and serves bytes" is unverified.
+
+**To verify it works:**
+
+1. `npm install` (no new deps but make sure node_modules is current).
+2. `npm run web` — expect: `multi-agent web UI live at http://localhost:7421/`.
+3. Open the URL in a browser. **Expected:** see the "Many minds, one conversation." hero with a composer.
+4. Type a research-ish prompt: "What is Rust's borrow checker?" — submit.
+5. **Expected:** prompt card animates down, sidebar agents pulse, then after ~1.6s minimum + the real API time, a response card appears above with a copy button and a pull-down handle below.
+6. Click the pull handle. **Expected:** prompt+response collapse to a thin strip at top; a "research" burst appears with 3-5 cards radiating around a central halo.
+7. Try a code prompt, a comparison prompt, a planning prompt. Each should pick a different template.
+
+**Things to specifically watch for / known-likely-issues:**
+
+- **`window.HeroMindmap` race.** The `index.html` polls every 30ms for `HeroMindmap` to be defined before mounting. Babel compiles asynchronously; if you see a blank page, open devtools console — likely a SyntaxError in one of the JSX files that prevented it from registering. The fix is in the JSX, not the polling loop.
+- **CDN unpkg failures.** The page loads React, ReactDOM, and Babel from unpkg.com. If the user is offline or unpkg is down, the page won't render. Mitigation later: vendor those scripts locally.
+- **`.jsx` MIME.** Server serves `.jsx` as `text/babel`. If a browser refuses to execute (some browsers are stricter than others), the script tag in `index.html` may need explicit `type="text/babel" data-presets="env,react"` or similar. Worth checking devtools network tab.
+- **Polar layout in burst views.** `templates.jsx` defines a `polar(cx, cy, r, deg)` helper but the CSS uses `position: absolute` + per-card `--i` index — actual layout math may need tweaking to look right at non-1280×760 viewport sizes. The original prototype's container is 1280×760 fixed; ours stretches to viewport.
+- **Background canvas (`ConstellationOverlay`) particle count is 64.** Heavy on weak machines. Drop to 32 if perf is bad.
+- **Fonts (`Geist`, `Geist Mono`, `Instrument Serif`)** load from Google Fonts. First paint will have a flash of unstyled text. Acceptable for personal use.
+- **Detection regexes for prompt templates are crude.** "How does the borrow checker work" gets `research`; "implement a borrow checker" gets `code`. False positives/negatives are expected. Improve `TEMPLATE_DEFS.*.detect` in `src/web/static/templates.jsx`.
+
+**File map for the web module:**
+
+```
+src/
+  web/
+    server.ts                  - HTTP server (node:http, no deps)
+    static/
+      index.html               - SPA shell, mounts React app
+      style.css                - all visual styles (29 KB, dense)
+      app.jsx                  - HeroMindmap component + phases + sidebar
+      templates.jsx            - template defs (research/code/compare/plan),
+                                 detection, system prompts, burst renderers
+```
+
+`src/cli.ts` has the `serve` command. `src/index.ts` exports `startWebServer`. `package.json` has `"web": "tsx src/cli.ts serve"`.
+
+**Source attribution.**
+
+The web frontend was adapted from a handoff bundle exported from **claude.ai/design**, located on the original developer's machine at:
+
+```
+C:\Users\Michael\Downloads\ai chat-handoff.zip
+```
+
+Extracted into `C:\Users\Michael\Downloads\ai-chat-handoff-extracted\ai-chat\project\`. The source files are:
+
+- `hero-mindmap.html` (design canvas bootstrap — REPLACED by my `src/web/static/index.html`)
+- `hero-mindmap.css` (visual styles — COPIED unchanged to `style.css`)
+- `hero-mindmap.jsx` (main component — COPIED to `app.jsx` then ADAPTED)
+- `hero-mindmap-templates.jsx` (template defs + renderers — COPIED unchanged to `templates.jsx`)
+
+**Adaptations made to the prototype:**
+
+1. `MM_AGENTS` rewritten to map to the system's real roster (5 of 6 roles).
+2. Weight tables in `Sidebar` (lines ~167-170) updated to use real role IDs.
+3. `window.claude.complete(...)` (the design studio's mock API) replaced with `fetch('/api/complete', ...)` against my backend.
+4. Agent display labels use `a.name.toLowerCase()` instead of `a.id` (because IDs now have hyphens like "action-code" which read badly with the `.agent` suffix).
+5. `index.html` rewritten to drop the 1280×760 letterbox in favor of viewport-filling layout.
+6. CSS file otherwise unchanged.
+
+**What's NOT yet done that you should do next:**
+
+1. Live-verify end-to-end (above).
+2. Whatever bugs the live-verify surfaces.
+3. Wire the sidebar's token gauges to real `/api/usage` data instead of the prototype's fake numbers.
+4. Add a session-persistence path: front-end currently starts fresh on every reload. Either:
+   - Use `/api/chat` (which uses `ChatSession`) instead of `/api/complete`, OR
+   - Keep `/api/complete` but persist a session id in `localStorage`.
+5. Tests for `src/web/server.ts` (none yet — server module has zero coverage).
+6. Vendor React / ReactDOM / Babel locally instead of unpkg CDN if the user wants offline use.
+
+**If you want to test the design source files directly** (not the integrated version): open `C:\Users\Michael\Downloads\ai-chat-handoff-extracted\ai-chat\project\hero-mindmap.html` in a browser. It mocks the model call (`window.claude.complete`) and returns fixture data, so you can verify the visual design without any backend.
 
 ```
 npm run cli -- chat my-session

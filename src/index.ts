@@ -96,6 +96,9 @@ export {
   type SendResult,
 } from "./chat/session.js";
 export { ChatRepl, type ReplOptions } from "./chat/repl.js";
+
+// Web (Stage 5)
+export { startWebServer, type ServerOptions } from "./web/server.js";
 export {
   CONTROLLER_PRIMING,
   buildRoutingPrompt,
