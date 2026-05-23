@@ -162,7 +162,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 6: Cerebras provider + Llama 3.1 8B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, 3.1 8B is the right shape for bulk/speed)
 - [x] Stage 6: Mistral provider + Codestral as `action-code` (live-verified via `--role=action-code`)
 - [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
-- [~] Stage 5a: browser UI (code shipped, **NOT live-verified end-to-end** — handed to next session for testing)
+- [x] Stage 5a: browser UI (live-verified end-to-end against real Gemini — idle / loading / response / mindmap phases all work for research / code / compare / plan templates; burst-card layout fixed + responsive breakpoints added)
 - [ ] Stage 5b: bot integrations (Telegram / Discord / Instagram)
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
@@ -399,7 +399,7 @@ loaded 'backup-before-rewrite' (5 turn(s)) into current session.
 
 ---
 
-## Web UI (Stage 5a — ⚠ not live-verified)
+## Web UI (Stage 5a — live-verified)
 
 A browser interface for the system, served from `localhost` by a built-in HTTP server. The frontend is a single-page React app rendered via in-browser Babel (no build step required). Designed from a handoff bundle exported from claude.ai/design — see "Source attribution" below.
 
@@ -448,7 +448,7 @@ The prompt's *type* is detected via keyword heuristics (`research|find|sources|.
 
 ## Web UI handover notes (read this if you're picking it up cold)
 
-**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (174/174 — none cover the new web module). The web UI itself has **not been opened in a browser yet**. Everything past "starts the server and serves bytes" is unverified.
+**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (174/174 — none cover the new web module). The web UI has been **live-verified end-to-end** against a real Gemini key: all four phases render, the orchestrator returns parseable JSON for each template, the pull-down handle expands into a working burst-card mindmap, and per-card copy buttons work.
 
 **To verify it works:**
 
@@ -465,7 +465,8 @@ The prompt's *type* is detected via keyword heuristics (`research|find|sources|.
 - **`window.HeroMindmap` race.** The `index.html` polls every 30ms for `HeroMindmap` to be defined before mounting. Babel compiles asynchronously; if you see a blank page, open devtools console — likely a SyntaxError in one of the JSX files that prevented it from registering. The fix is in the JSX, not the polling loop.
 - **CDN unpkg failures.** The page loads React, ReactDOM, and Babel from unpkg.com. If the user is offline or unpkg is down, the page won't render. Mitigation later: vendor those scripts locally.
 - **`.jsx` MIME.** Server serves `.jsx` as `text/babel`. If a browser refuses to execute (some browsers are stricter than others), the script tag in `index.html` may need explicit `type="text/babel" data-presets="env,react"` or similar. Worth checking devtools network tab.
-- **Polar layout in burst views.** `templates.jsx` defines a `polar(cx, cy, r, deg)` helper but the CSS uses `position: absolute` + per-card `--i` index — actual layout math may need tweaking to look right at non-1280×760 viewport sizes. The original prototype's container is 1280×760 fixed; ours stretches to viewport.
+- **Burst-card layout (FIXED).** The prototype's CSS positioned `.mm-card` absolutely but never set its coordinates, so all cards stacked at origin in the mindmap phase. The append-only fix at the bottom of `style.css` (`/* Burst layout — overrides for cards that actually flow. */`) turns `.mm-burst-cards` into a responsive auto-fit grid and overrides the per-card position. Cards animate in with a staggered entrance via `--i`.
+- **Responsive sidebar (NEW).** On viewports under 880px wide the sidebar collapses off-screen via CSS media query — the agent gauges are still in the DOM but hidden. A toggle to slide it back in is a future task. Under 600px the burst grid drops to a single column.
 - **Background canvas (`ConstellationOverlay`) particle count is 64.** Heavy on weak machines. Drop to 32 if perf is bad.
 - **Fonts (`Geist`, `Geist Mono`, `Instrument Serif`)** load from Google Fonts. First paint will have a flash of unstyled text. Acceptable for personal use.
 - **Detection regexes for prompt templates are crude.** "How does the borrow checker work" gets `research`; "implement a borrow checker" gets `code`. False positives/negatives are expected. Improve `TEMPLATE_DEFS.*.detect` in `src/web/static/templates.jsx`.
@@ -512,14 +513,15 @@ Extracted into `C:\Users\Michael\Downloads\ai-chat-handoff-extracted\ai-chat\pro
 
 **What's NOT yet done that you should do next:**
 
-1. Live-verify end-to-end (above).
-2. Whatever bugs the live-verify surfaces.
+1. ~~Live-verify end-to-end~~ — done; verified via `npm run web` against a real Gemini key for research/code/compare/plan prompts.
+2. ~~Burst-card layout bugs~~ — fixed (see "Burst-card layout (FIXED)" above).
 3. Wire the sidebar's token gauges to real `/api/usage` data instead of the prototype's fake numbers.
 4. Add a session-persistence path: front-end currently starts fresh on every reload. Either:
    - Use `/api/chat` (which uses `ChatSession`) instead of `/api/complete`, OR
    - Keep `/api/complete` but persist a session id in `localStorage`.
 5. Tests for `src/web/server.ts` (none yet — server module has zero coverage).
 6. Vendor React / ReactDOM / Babel locally instead of unpkg CDN if the user wants offline use.
+7. Sidebar toggle button for narrow viewports (currently off-screen under 880px with no visible way to show it).
 
 **If you want to test the design source files directly** (not the integrated version): open `C:\Users\Michael\Downloads\ai-chat-handoff-extracted\ai-chat\project\hero-mindmap.html` in a browser. It mocks the model call (`window.claude.complete`) and returns fixture data, so you can verify the visual design without any backend.
 

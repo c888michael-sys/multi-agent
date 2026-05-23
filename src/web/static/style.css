@@ -818,3 +818,101 @@
   color: var(--mm-fg-faint);
   font-style: normal;
 }
+
+/* ──────────────────────────────────────────────────────
+   Burst layout — overrides for cards that actually flow.
+
+   The prototype CSS positioned cards absolutely but never
+   set their coordinates, so they stacked at origin. Below
+   we lay them out as a centered responsive grid that wraps
+   to the viewport, while the central halo remains behind.
+   ────────────────────────────────────────────────────── */
+.mm-burst {
+  display: flex; flex-direction: column;
+  padding: 24px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245,243,239,0.15) transparent;
+}
+.mm-burst::-webkit-scrollbar { width: 6px; }
+.mm-burst::-webkit-scrollbar-thumb { background: rgba(245,243,239,0.15); border-radius: 6px; }
+
+.mm-burst-rays {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at 50% 50%,
+      color-mix(in oklch, var(--accent) 22%, transparent) 0%,
+      transparent 55%);
+  filter: blur(40px);
+  opacity: 0.55;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.mm-burst-header {
+  position: relative; z-index: 2;
+  display: flex; justify-content: center;
+  margin-bottom: 18px;
+}
+.mm-burst-hero {
+  position: relative; z-index: 3;
+  display: flex; justify-content: center;
+  margin: 6px 0 22px;
+}
+
+.mm-burst-cards {
+  position: relative; z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  align-items: start;
+  justify-items: stretch;
+  width: 100%;
+}
+
+/* Override prototype's absolute positioning when inside a grid */
+.mm-burst-cards .mm-card {
+  position: relative;
+  top: auto; left: auto;
+  transform: none;
+  width: auto;
+  max-height: none;
+  opacity: 0;
+  animation: mmCardIn 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+  animation-delay: calc(0.06s * var(--i, 0));
+}
+@keyframes mmCardIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.mm-burst-cards .mm-card:hover {
+  transform: translateY(-2px);
+}
+
+/* Thread strip gracefully wraps when content overflows */
+.mm-thread-strip { flex-wrap: wrap; }
+.mm-thread-content { flex: 1 1 220px; min-width: 0; }
+.mm-thread-prompt { max-width: 100%; }
+
+/* ─── Responsive hero + sidebar ──────────────────────── */
+.mm-h1 { font-size: clamp(32px, 6vw, 56px); }
+.mm-sub { font-size: clamp(13px, 1.4vw, 15px); }
+
+@media (max-width: 880px) {
+  :root, .mm-root { --mm-sidebar-w: 0px; }
+  .mm-sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    pointer-events: none;
+  }
+  .mm-sidebar.open { transform: translateX(0); pointer-events: auto; }
+  .mm-stage { left: 0 !important; padding: 18px 16px 24px; }
+  .mm-nav { padding: 0 16px; }
+}
+@media (max-width: 600px) {
+  .mm-stage { padding: 14px 12px 20px; }
+  .mm-burst { padding: 14px 6px; }
+  .mm-burst-cards { grid-template-columns: 1fr; }
+  .mm-composer-wrap { max-width: 100%; }
+}
