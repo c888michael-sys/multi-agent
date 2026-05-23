@@ -601,11 +601,36 @@ function MindmapView({ prompt, response, accent, collapse, reset }) {
 }
 
 // ─── App ───────────────────────────────────────────────────
+const THREAD_LS_KEY = 'lattice.lastThread.v1';
+
+// Restore the most recently completed thread (prompt + response) on load.
+// Lightweight alternative to wiring the whole /api/chat session model —
+// the template flow is single-shot per prompt, so persisting one thread
+// is enough to feel "your last result is still here" after a reload.
+function loadPersistedThread() {
+  try {
+    const raw = localStorage.getItem(THREAD_LS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.prompt !== 'string' || !parsed.response) return null;
+    if (!TEMPLATE_DEFS[parsed.response.template]) return null;
+    return parsed;
+  } catch { return null; }
+}
+function savePersistedThread(prompt, response) {
+  try { localStorage.setItem(THREAD_LS_KEY, JSON.stringify({ prompt, response })); }
+  catch {/* quota or disabled — silently ignore */}
+}
+function clearPersistedThread() {
+  try { localStorage.removeItem(THREAD_LS_KEY); } catch {}
+}
+
 function HeroMindmap() {
-  const [phase, setPhase] = React.useState('idle');
+  const persisted = React.useMemo(loadPersistedThread, []);
+  const [phase, setPhase] = React.useState(persisted ? 'response' : 'idle');
   const [draft, setDraft] = React.useState('');
-  const [prompt, setPrompt] = React.useState('');
-  const [response, setResponse] = React.useState(null); // {template, text, data}
+  const [prompt, setPrompt] = React.useState(persisted?.prompt || '');
+  const [response, setResponse] = React.useState(persisted?.response || null); // {template, text, data}
 
   const accent = response ? TEMPLATE_DEFS[response.template]?.accent : '#f5a25b';
 
@@ -647,11 +672,15 @@ function HeroMindmap() {
       const text = typeof parsed.summary === 'string'
         ? parsed.summary
         : 'Synthesized response. Pull down to expand into a detailed mindmap.';
-      setResponse({ template, text, data: parsed });
+      const finalResponse = { template, text, data: parsed };
+      setResponse(finalResponse);
       setPhase('response');
+      savePersistedThread(q, finalResponse);
     } catch (e) {
-      setResponse({ template, text: 'Synthesized response.', data: FALLBACK_DATA[template] });
+      const fallback = { template, text: 'Synthesized response.', data: FALLBACK_DATA[template] };
+      setResponse(fallback);
       setPhase('response');
+      savePersistedThread(q, fallback);
     }
   };
 
@@ -662,6 +691,7 @@ function HeroMindmap() {
     setPrompt('');
     setDraft('');
     setResponse(null);
+    clearPersistedThread();
   };
 
   return (
