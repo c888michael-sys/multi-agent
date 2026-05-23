@@ -200,10 +200,10 @@ function cmdUsage(): void {
   console.log(formatUsageReport(router));
 }
 
-async function cmdChat(sessionId: string): Promise<void> {
+async function cmdChat(sessionId: string, powerful: boolean): Promise<void> {
   const router = buildRouter();
   const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
-  const session = new ChatSession({ resolver, id: sessionId });
+  const session = new ChatSession({ resolver, id: sessionId, powerful });
   const repl = new ChatRepl({ session, router });
   await repl.run();
 }
@@ -254,6 +254,8 @@ Commands:
   agents <prompt>          orchestrate fixed sub-agents (parallel/specialist modes)
   task <prompt>            roster-aware orchestrator picks roles automatically
   chat <session-name>      interactive multi-turn REPL with persistent history
+                           (smart-routing on by default; orchestrator picks
+                            direct/single specialist/parallel per turn)
   sessions                 list saved chat session names
   usage                    print router state (counts, cooldowns, % remaining)
 
@@ -261,6 +263,11 @@ Flags for 'task':
   --serious                       extended reasoning across all calls in the run
   --thinking=minimal|low|medium|high
   --trace                         print the plan + per-role outputs before synthesis
+
+Flags for 'chat':
+  --powerful                      start in powerful mode (Gemini thinking=high
+                                  on every call this session). Also toggleable
+                                  mid-session via /power.
 
 Flags (both ask and agents):
   --serious                       enable extended reasoning (thinkingLevel=high)
@@ -308,13 +315,19 @@ async function main(): Promise<void> {
   }
 
   if (command === "chat") {
-    const sessionId = argv[1];
+    const { values: cv, positionals: cp } = parseArgs({
+      args: argv.slice(1),
+      options: { powerful: { type: "boolean", default: false } },
+      allowPositionals: true,
+      strict: true,
+    });
+    const sessionId = cp[0];
     if (!sessionId) {
       console.error("Error: chat requires a session name. Example: npm run cli -- chat my-session");
       printHelp();
       process.exit(2);
     }
-    await cmdChat(sessionId);
+    await cmdChat(sessionId, Boolean(cv.powerful));
     return;
   }
 
