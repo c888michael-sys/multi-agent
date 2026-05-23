@@ -431,6 +431,7 @@ The prompt's *type* is detected via keyword heuristics (`research|find|sources|.
 | `/style.css`, `/app.jsx`, `/templates.jsx` | GET | — | static files from `src/web/static/` (`.jsx` served as `text/babel`) |
 | `/api/complete` | POST | `{ prompt: string }` | `{ reply: string }` — one-shot completion through the orchestration role |
 | `/api/chat` | POST | `{ sessionId, message }` | `{ reply, servedBy, plan, summarizedTurns, ... }` — multi-turn `ChatSession` shape (not used by the current frontend but available) |
+| `/api/usage.json` | GET | — | `{ mode, providers: [{id, successCount, rateLimitCount, remainingPct, cooling}], roles: { <role>: {providerId, successCount, rateLimitCount, remainingPct, cooling} | {providerId, registered: false} } }` — machine-readable counterpart to `/api/usage`, polled by the sidebar |
 | `/api/sessions` | GET | — | `{ sessions: string[] }` |
 | `/api/sessions/:id` | GET | — | full session snapshot |
 | `/api/sessions/:id/clear` | POST | — | wipe a session |
@@ -448,7 +449,7 @@ The prompt's *type* is detected via keyword heuristics (`research|find|sources|.
 
 ## Web UI handover notes (read this if you're picking it up cold)
 
-**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (174/174 — none cover the new web module). The web UI has been **live-verified end-to-end** against a real Gemini key: all four phases render, the orchestrator returns parseable JSON for each template, the pull-down handle expands into a working burst-card mindmap, and per-card copy buttons work.
+**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (186/186 — 12 cover `src/web/server.ts`: route shapes, error paths, CORS, traversal protection). The web UI has been **live-verified end-to-end** against a real Gemini key: all four phases render, the orchestrator returns parseable JSON for each template, the pull-down handle expands into a working burst-card mindmap, per-card copy buttons work, the sidebar gauges show real provider call counts, and the last thread persists across reloads.
 
 **To verify it works:**
 
@@ -515,13 +516,12 @@ Extracted into `C:\Users\Michael\Downloads\ai-chat-handoff-extracted\ai-chat\pro
 
 1. ~~Live-verify end-to-end~~ — done; verified via `npm run web` against a real Gemini key for research/code/compare/plan prompts.
 2. ~~Burst-card layout bugs~~ — fixed (see "Burst-card layout (FIXED)" above).
-3. Wire the sidebar's token gauges to real `/api/usage` data instead of the prototype's fake numbers.
-4. Add a session-persistence path: front-end currently starts fresh on every reload. Either:
-   - Use `/api/chat` (which uses `ChatSession`) instead of `/api/complete`, OR
-   - Keep `/api/complete` but persist a session id in `localStorage`.
-5. Tests for `src/web/server.ts` (none yet — server module has zero coverage).
+3. ~~Wire the sidebar's token gauges to real `/api/usage` data~~ — done via `/api/usage.json`; sidebar polls every 3s + on phase=response. Caveat: orchestration and perception both bind to `gemini:1` so they show identical numbers — fix needs per-role accounting at the snapshot layer.
+4. ~~Session-persistence~~ — done: last `{prompt, response}` saved to `localStorage[lattice.lastThread.v1]`, restored straight into the response phase on reload. (Did NOT wire `/api/chat` — the template flow is single-shot per prompt, not conversational.)
+5. ~~Tests for `src/web/server.ts`~~ — done: `tests/web-server.test.ts` has 12 tests covering static-serve, traversal protection, the four `/api/*` routes, CORS preflight, and resolver error propagation.
 6. Vendor React / ReactDOM / Babel locally instead of unpkg CDN if the user wants offline use.
 7. Sidebar toggle button for narrow viewports (currently off-screen under 880px with no visible way to show it).
+8. Per-role token accounting at the router/pool layer so the sidebar can attribute usage to the *role* that initiated the call, not just the underlying provider.
 
 **If you want to test the design source files directly** (not the integrated version): open `C:\Users\Michael\Downloads\ai-chat-handoff-extracted\ai-chat\project\hero-mindmap.html` in a browser. It mocks the model call (`window.claude.complete`) and returns fixture data, so you can verify the visual design without any backend.
 
