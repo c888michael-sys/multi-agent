@@ -156,27 +156,50 @@ function CompactNumber(n) {
 }
 
 function Sidebar({ phase, response, prompt }) {
-  // Compute live agent usage based on current phase.
+  // Real usage from /api/usage.json. Polled every 3s; refreshed once
+  // immediately after a response phase transition so the gauges catch up
+  // fast after a call completes. The previous prototype generated random
+  // weights — replaced with the actual per-role provider counts.
+  const [usage, setUsage] = React.useState({ roles: {}, mode: 'round-robin' });
+  React.useEffect(() => {
+    let cancelled = false;
+    const fetchUsage = async () => {
+      try {
+        const r = await fetch('/api/usage.json');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!cancelled) setUsage(j);
+      } catch {/* ignore — backend may not be up yet */}
+    };
+    fetchUsage();
+    const id = setInterval(fetchUsage, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  // Trigger a fresh fetch when phase flips to response (a call just landed).
+  React.useEffect(() => {
+    if (phase !== 'response') return;
+    fetch('/api/usage.json').then((r) => r.ok && r.json().then(setUsage)).catch(() => {});
+  }, [phase]);
+
+  // Each agent's "used" value: successful call count from its primary
+  // provider, scaled to look like tokens (×1000) so the gauges have visible
+  // movement. The quota in MM_AGENTS is interpreted as that same scale.
   const used = React.useMemo(() => {
     const map = Object.fromEntries(MM_AGENTS.map((a) => [a.id, 0]));
-    if (phase === 'idle') return map;
+    const roles = usage.roles || {};
+    for (const a of MM_AGENTS) {
+      const r = roles[a.id];
+      if (!r || r.registered === false) continue;
+      // 1 call ≈ 1k tokens for display purposes. Real per-call token usage
+      // isn't tracked in the snapshot today — when it is, swap this.
+      map[a.id] = (r.successCount || 0) * 1000;
+    }
+    // While the request is in flight, bump the active rows so the bars move.
     if (phase === 'loading') {
-      // partial usage during thinking
-      for (const a of MM_AGENTS) map[a.id] = 4000 + Math.random() * 6000;
-    } else if (response) {
-      // attribute usage based on template
-      const tpl = response.template;
-      const weights = {
-        research: { 'perception': 0.45, 'orchestration': 0.15, 'action-structural': 0.2, 'reasoning': 0.1, 'action-code': 0.1 },
-        code:     { 'action-code': 0.5, 'orchestration': 0.15, 'reasoning': 0.15, 'action-structural': 0.1, 'perception': 0.1 },
-        compare:  { 'perception': 0.3, 'reasoning': 0.35, 'orchestration': 0.15, 'action-structural': 0.1, 'action-code': 0.1 },
-        plan:     { 'orchestration': 0.45, 'perception': 0.15, 'reasoning': 0.15, 'action-structural': 0.15, 'action-code': 0.1 },
-      }[tpl] || { 'orchestration': 0.25, 'perception': 0.25, 'action-code': 0.15, 'reasoning': 0.15, 'action-structural': 0.2 };
-      const totalUsed = 32000 + (prompt?.length || 0) * 28;
-      for (const a of MM_AGENTS) map[a.id] = Math.round(totalUsed * (weights[a.id] || 0.1));
+      for (const a of MM_AGENTS) map[a.id] += 800 + Math.random() * 800;
     }
     return map;
-  }, [phase, response, prompt]);
+  }, [usage, phase]);
 
   const total = Object.values(used).reduce((s, v) => s + v, 0);
   const totalQuota = MM_AGENTS.reduce((s, a) => s + a.quota, 0);

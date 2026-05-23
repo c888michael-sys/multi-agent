@@ -72,6 +72,48 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         return;
       }
 
+      if (pathname === "/api/usage.json" && req.method === "GET") {
+        // Machine-readable counterpart for the web sidebar's live gauges.
+        // Maps each sidebar role to its primary provider's snapshot row so
+        // the UI doesn't have to know the role-registry layout.
+        const snap = opts.router.snapshot();
+        const byId = Object.fromEntries(snap.map((p) => [p.id, p]));
+        // The 5 roles the sidebar surfaces (matches MM_AGENTS in app.jsx).
+        // Each role's *primary* candidate id — see roles/default-registry.ts.
+        const roleToPrimaryId: Record<string, string> = {
+          "orchestration": "gemini:1",
+          "perception": "gemini:1",
+          "reasoning": "openrouter:deepseek-v4",
+          "action-code": "mistral:codestral",
+          "action-structural": "groq:llama-70b",
+        };
+        const roles: Record<string, unknown> = {};
+        for (const [role, primaryId] of Object.entries(roleToPrimaryId)) {
+          const p = byId[primaryId];
+          roles[role] = p
+            ? {
+                providerId: p.id,
+                successCount: p.successCount,
+                rateLimitCount: p.rateLimitCount,
+                remainingPct: p.remainingPct ?? null,
+                cooling: p.cooldownUntil > Date.now(),
+              }
+            : { providerId: primaryId, registered: false };
+        }
+        sendJson(res, 200, {
+          mode: opts.router.getMode(),
+          providers: snap.map((p) => ({
+            id: p.id,
+            successCount: p.successCount,
+            rateLimitCount: p.rateLimitCount,
+            remainingPct: p.remainingPct ?? null,
+            cooling: p.cooldownUntil > Date.now(),
+          })),
+          roles,
+        });
+        return;
+      }
+
       if (pathname === "/api/sessions" && req.method === "GET") {
         sendJson(res, 200, { sessions: listSessions() });
         return;
