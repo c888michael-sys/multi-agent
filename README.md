@@ -340,9 +340,11 @@ Every deviation from the happy path prints a warning to stderr:
 
 ```
 ⚠ role 'reasoning': primary openrouter:deepseek-v4 cooling, used backup gemini:1
-⚠ role 'perception' exhausted; substituting from outside the role's candidate list (one of: groq:llama-70b|cerebras:llama3-8b). Capabilities may be degraded.
+⚠ role 'perception' exhausted; substituting from outside the role's candidate list (one of: groq:llama-70b). Capabilities may be degraded.
 ⚠ role 'action-code' fully exhausted — no provider could serve.
 ```
+
+The substitution warning now names the **actual** provider that served the call (via a `CallAttribution` out-param threaded through `Router.complete*`), not just the list of eligible foreigns. When all role candidates AND cross-role substitution all fail, the thrown `AllProvidersExhaustedError.attempts` carries the aggregated attempts across every candidate that was tried — previous behavior dropped earlier candidates' attempts on the floor.
 
 Disable cross-role substitution with `crossRoleFailover: false` when constructing `RoleResolver` programmatically (CLI defaults to enabled).
 

@@ -8,6 +8,17 @@ import type {
 } from "./tools/types.js";
 import { AllProvidersExhaustedError, NoProvidersConfiguredError } from "./errors.js";
 
+/**
+ * Optional out-parameter callers can pass to learn which provider actually
+ * served the call (useful when an allow-list spans multiple providers and
+ * the caller wants to attribute the response). The router writes to
+ * `providerId` immediately before invoking the provider; on success the
+ * field reflects the provider that returned the result.
+ */
+export interface CallAttribution {
+  providerId?: string;
+}
+
 export interface RouterOptions {
   now?: () => number;
   mode?: PoolMode;
@@ -63,12 +74,13 @@ export class Router {
     prompt: string,
     opts?: CompleteOptions,
     providerIds?: ReadonlySet<string>,
+    attribution?: CallAttribution,
   ): Promise<string> {
     const attempts: { providerId: string; error: unknown }[] = [];
     const startedAt = this.now();
 
     while (true) {
-      const tryResult = await this.tryEachAvailable(prompt, opts, attempts, providerIds);
+      const tryResult = await this.tryEachAvailable(prompt, opts, attempts, providerIds, attribution);
       if (tryResult.kind === "ok") return tryResult.text;
 
       if (this.maxRetryWaitMs <= 0) {
@@ -94,12 +106,14 @@ export class Router {
     opts: CompleteOptions | undefined,
     attempts: { providerId: string; error: unknown }[],
     providerIds: ReadonlySet<string> | undefined,
+    attribution: CallAttribution | undefined,
   ): Promise<{ kind: "ok"; text: string } | { kind: "all_cooled" }> {
     for (let i = 0; i < this.pool.size(); i++) {
       const pick = this.pool.pickAvailable(providerIds);
       if (!pick) break;
 
       try {
+        if (attribution) attribution.providerId = pick.provider.id;
         const result = await pick.provider.complete(prompt, opts);
         this.pool.markSuccess(pick.index);
         return { kind: "ok", text: result };
@@ -127,6 +141,7 @@ export class Router {
     tools: ToolDeclaration[],
     opts?: CompleteOptions,
     providerIds?: ReadonlySet<string>,
+    attribution?: CallAttribution,
   ): Promise<CompleteWithToolsResult> {
     const attempts: { providerId: string; error: unknown }[] = [];
     const startedAt = this.now();
@@ -140,6 +155,7 @@ export class Router {
           continue;
         }
         try {
+          if (attribution) attribution.providerId = pick.provider.id;
           const result = await pick.provider.completeWithTools(history, tools, opts);
           this.pool.markSuccess(pick.index);
           return result;
@@ -176,6 +192,7 @@ export class Router {
     history: ConversationPart[],
     opts?: CompleteOptions,
     providerIds?: ReadonlySet<string>,
+    attribution?: CallAttribution,
   ): Promise<string> {
     const attempts: { providerId: string; error: unknown }[] = [];
     const startedAt = this.now();
@@ -186,6 +203,7 @@ export class Router {
         if (!pick) break;
         if (!pick.provider.completeChat) continue; // skip non-chat-capable providers
         try {
+          if (attribution) attribution.providerId = pick.provider.id;
           const result = await pick.provider.completeChat(history, opts);
           this.pool.markSuccess(pick.index);
           return result;

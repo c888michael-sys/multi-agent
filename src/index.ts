@@ -4,7 +4,7 @@ import { FileStateStore } from "./state.js";
 import type { CompleteOptions } from "./provider.js";
 
 // Core
-export { Router } from "./router.js";
+export { Router, type CallAttribution } from "./router.js";
 export { GeminiProvider } from "./providers/gemini.js";
 export { GroqProvider, GroqError } from "./providers/groq.js";
 export { OpenRouterProvider } from "./providers/openrouter.js";

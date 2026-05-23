@@ -222,8 +222,40 @@ describe("RoleResolver — event emission and cross-role failover", () => {
     const out = await resolver.runRole("perception", "x");
     expect(out).toBe("substituted-from-b");
     expect(events).toEqual([
+      // usedProviderId now reflects the actual provider that served the call,
+      // not a piped list of all eligible foreigns.
       { type: "cross-role-substitution", role: "perception", primaryProviderId: "a", usedProviderId: "b" },
     ]);
+  });
+
+  it("aggregates failed attempts from every tried candidate when role fully exhausts", async () => {
+    const a = new FakeProvider("a", [{ kind: "rate" }]);
+    const b = new FakeProvider("b", [{ kind: "rate" }]);
+    const c = new FakeProvider("c", [{ kind: "rate" }]);
+    const router = new Router([a, b, c], { maxRetryWaitMs: 0 });
+    const events: RoleEvent[] = [];
+    const resolver = new RoleResolver(
+      router,
+      [
+        {
+          name: "perception",
+          description: "x",
+          candidates: [{ providerId: "a" }, { providerId: "b" }, { providerId: "c" }],
+        },
+      ],
+      { onEvent: (e) => events.push(e), crossRoleFailover: false },
+    );
+
+    try {
+      await resolver.runRole("perception", "x");
+      throw new Error("expected throw");
+    } catch (err) {
+      const { AllProvidersExhaustedError } = await import("../src/errors.js");
+      expect(err).toBeInstanceOf(AllProvidersExhaustedError);
+      const ids = (err as InstanceType<typeof AllProvidersExhaustedError>).attempts.map((x) => x.providerId);
+      // All three should appear (the previous behavior only showed the last).
+      expect(ids).toEqual(["a", "b", "c"]);
+    }
   });
 
   it("emits role-exhausted and throws when crossRoleFailover is disabled", async () => {

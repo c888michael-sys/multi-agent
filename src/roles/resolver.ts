@@ -1,4 +1,4 @@
-import type { Router } from "../router.js";
+import type { Router, CallAttribution } from "../router.js";
 import type { CompleteOptions } from "../provider.js";
 import type {
   ConversationPart,
@@ -97,8 +97,8 @@ export class RoleResolver {
   }
 
   async runRole(name: RoleName, prompt: string, callerOpts?: CompleteOptions): Promise<string> {
-    return this.runWithStrategy(name, callerOpts, (allowList, opts) =>
-      this.router.complete(this.compose(name, prompt), opts, allowList),
+    return this.runWithStrategy(name, callerOpts, (allowList, opts, attribution) =>
+      this.router.complete(this.compose(name, prompt), opts, allowList, attribution),
     );
   }
 
@@ -108,8 +108,11 @@ export class RoleResolver {
     tools: ToolDeclaration[],
     callerOpts?: CompleteOptions,
   ): Promise<CompleteWithToolsResult> {
-    return this.runWithStrategy<CompleteWithToolsResult>(name, callerOpts, (allowList, opts) =>
-      this.router.completeWithTools(history, tools, opts, allowList),
+    return this.runWithStrategy<CompleteWithToolsResult>(
+      name,
+      callerOpts,
+      (allowList, opts, attribution) =>
+        this.router.completeWithTools(history, tools, opts, allowList, attribution),
     );
   }
 
@@ -119,8 +122,8 @@ export class RoleResolver {
     history: ConversationPart[],
     callerOpts?: CompleteOptions,
   ): Promise<string> {
-    return this.runWithStrategy<string>(name, callerOpts, (allowList, opts) =>
-      this.router.completeChat(history, opts, allowList),
+    return this.runWithStrategy<string>(name, callerOpts, (allowList, opts, attribution) =>
+      this.router.completeChat(history, opts, allowList, attribution),
     );
   }
 
@@ -137,38 +140,47 @@ export class RoleResolver {
 
   /**
    * Shared retry-across-candidates wrapper used by both text and tool-use paths.
-   * The `attempt` callback is parameterized over allowList + merged opts so it
-   * can call whichever Router method the caller needs (complete vs completeWithTools).
+   * The `attempt` callback is parameterized over allowList, merged opts, and an
+   * attribution out-param so the resolver can learn which provider actually
+   * served the call (used by the cross-role-substitution event).
+   *
+   * Failed attempts are aggregated across all candidates. If everything
+   * exhausts, the thrown AllProvidersExhaustedError contains the union of
+   * per-candidate attempts — not just the last one's.
    */
   private async runWithStrategy<T>(
     name: RoleName,
     callerOpts: CompleteOptions | undefined,
-    attempt: (allowList: ReadonlySet<string>, opts: CompleteOptions) => Promise<T>,
+    attempt: (
+      allowList: ReadonlySet<string>,
+      opts: CompleteOptions,
+      attribution: CallAttribution,
+    ) => Promise<T>,
   ): Promise<T> {
     const cfg = this.requireRole(name);
     const eligible = this.eligibleCandidates(name, cfg);
     const primaryId = eligible[0]!.providerId;
+    const aggregateAttempts: { providerId: string; error: unknown }[] = [];
 
-    let lastErr: unknown;
     for (let i = 0; i < eligible.length; i++) {
       const candidate = eligible[i]!;
       const allowList = new Set([candidate.providerId]);
       const mergedOpts: CompleteOptions = { ...candidate.mode, ...callerOpts };
+      const attribution: CallAttribution = {};
       try {
-        const result = await attempt(allowList, mergedOpts);
-        // Fallback within the role's own list — emit warning if we used a non-primary.
+        const result = await attempt(allowList, mergedOpts, attribution);
         if (i > 0) {
           this.onEvent({
             type: "fallback-within-role",
             role: name,
             primaryProviderId: primaryId,
-            usedProviderId: candidate.providerId,
+            usedProviderId: attribution.providerId ?? candidate.providerId,
           });
         }
         return result;
       } catch (err) {
         if (err instanceof AllProvidersExhaustedError) {
-          lastErr = err;
+          aggregateAttempts.push(...err.attempts);
           continue;
         }
         throw err;
@@ -180,24 +192,20 @@ export class RoleResolver {
       const roleIds = new Set(eligible.map((c) => c.providerId));
       const foreignIds = [...this.registeredIds].filter((id) => !roleIds.has(id));
       if (foreignIds.length > 0) {
+        const subOpts: CompleteOptions = { ...eligible[0]!.mode, ...callerOpts };
+        const attribution: CallAttribution = {};
         try {
-          // Substitute uses the primary candidate's mode (best guess about role's intent).
-          const subOpts: CompleteOptions = { ...eligible[0]!.mode, ...callerOpts };
-          const result = await attempt(new Set(foreignIds), subOpts);
-          // Determine which foreign provider actually ran the call by snapshotting
-          // counts before and after. Simple heuristic: any provider whose success
-          // count is greater than its prior won. We don't track that here; just
-          // emit the substitution event with "<one of the foreigns>" as a marker.
+          const result = await attempt(new Set(foreignIds), subOpts, attribution);
           this.onEvent({
             type: "cross-role-substitution",
             role: name,
             primaryProviderId: primaryId,
-            usedProviderId: foreignIds.join("|"),
+            usedProviderId: attribution.providerId ?? foreignIds.join("|"),
           });
           return result;
         } catch (err) {
           if (err instanceof AllProvidersExhaustedError) {
-            lastErr = err;
+            aggregateAttempts.push(...err.attempts);
           } else {
             throw err;
           }
@@ -206,11 +214,10 @@ export class RoleResolver {
     }
 
     this.onEvent({ type: "role-exhausted", role: name, primaryProviderId: primaryId });
-    throw (
-      lastErr ??
-      new AllProvidersExhaustedError(
-        eligible.map((c) => ({ providerId: c.providerId, error: new Error("unreached") })),
-      )
+    throw new AllProvidersExhaustedError(
+      aggregateAttempts.length > 0
+        ? aggregateAttempts
+        : eligible.map((c) => ({ providerId: c.providerId, error: new Error("unreached") })),
     );
   }
 
