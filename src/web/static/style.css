@@ -482,35 +482,68 @@
   display: flex; justify-content: center; align-items: flex-start;
   padding: 4px 16px 0;
 }
-/* response list (middle) — scrolls if it overflows; newest sits at the
-   bottom (just above composer), oldest at the top. The reverse flex
-   direction lets us append in chronological order while still putting the
-   newest visually at the bottom of the scroll viewport. */
+/* response list (middle) — newest sits at the vertical center of this area
+   via an absolutely-positioned slot; older entries cluster ABOVE the
+   newest (most-recent-older closest to it) and fade upward. The composer
+   sits below in its own grid row, so "vertical center" here means center
+   of the available space between hint and composer. */
 .mm-stack-list {
+  position: relative;
+  padding: 4px 22px 8px;
+  overflow: hidden;  /* the older block manages its own scroll */
+}
+.mm-stack-newest {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%; max-width: 640px;
+  display: flex; flex-direction: column; align-items: stretch;
+  gap: 8px;
+  padding: 0 22px;
+  pointer-events: none;  /* re-enabled on inner card so children can still copy etc. */
+}
+.mm-stack-newest > * { pointer-events: auto; }
+.mm-stack-older {
+  position: absolute;
+  bottom: calc(50% + 56px);  /* sit just above the centered newest, with a small gap */
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%; max-width: 640px;
   display: flex; flex-direction: column;
-  gap: 14px;
-  padding: 8px 22px 14px;
+  justify-content: flex-end;  /* hug the bottom of the box: newer-older closest to newest */
+  align-items: stretch;
+  gap: 8px;
+  padding: 0 22px;
+  max-height: 32vh;
   overflow-y: auto;
+  /* Fade older entries the further up they go. */
+  mask-image: linear-gradient(180deg, transparent 0, rgba(0,0,0,0.4) 18%, rgba(0,0,0,1) 60%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, rgba(0,0,0,0.4) 18%, rgba(0,0,0,1) 60%);
   scrollbar-width: thin;
   scrollbar-color: rgba(245,243,239,0.15) transparent;
-  /* Pin scroll to the newest entry by default. */
-  justify-content: flex-end;
-  align-items: center;
 }
-.mm-stack-list::-webkit-scrollbar { width: 6px; }
-.mm-stack-list::-webkit-scrollbar-thumb { background: rgba(245,243,239,0.15); border-radius: 6px; }
+.mm-stack-older::-webkit-scrollbar { width: 6px; }
+.mm-stack-older::-webkit-scrollbar-thumb { background: rgba(245,243,239,0.15); border-radius: 6px; }
 
-.mm-stack-tools {
+/* Tools row anchored to the top of the list (outside the fading older
+   block), so the count + reset stay readable. */
+.mm-stack-tools-row {
+  position: absolute;
+  top: 6px; left: 50%;
+  transform: translateX(-50%);
   width: 100%; max-width: 640px;
+  padding: 0 4px;
   display: flex; justify-content: space-between; align-items: center;
-  padding: 0 4px 4px;
   font-family: 'Geist Mono', monospace; font-size: 10.5px;
   color: var(--mm-fg-faint); letter-spacing: 0.08em;
+  z-index: 2;
+  pointer-events: none;
 }
-.mm-stack-tools .mm-stack-count {
+.mm-stack-tools-row > * { pointer-events: auto; }
+.mm-stack-count {
   text-transform: uppercase;
 }
-.mm-stack-tools .mm-stack-count::before { content: '// '; opacity: 0.5; }
+.mm-stack-count::before { content: '// '; opacity: 0.5; }
 
 /* composer slot (bottom) */
 .mm-stack-composer-slot {
@@ -519,17 +552,16 @@
 }
 .mm-stack-composer-slot .mm-composer { width: 100%; max-width: 640px; }
 
-/* Each B card — uses a robotic mono header + an accent rail along the left
-   so multiple stacked responses read as a thread of agent outputs rather
-   than chat bubbles. Newest is scaled up and brighter. */
+/* B card — flatter, terminal-feel. No left rail. Tighter padding. Prompt
+   echo is a faint mono one-liner above the body. */
 .mm-stacked-response {
   position: relative;
   width: 100%; max-width: 640px;
-  border-radius: 14px;
-  background: var(--mm-card-bg);
+  border-radius: 10px;
+  background: rgba(15, 14, 18, 0.72);
   border: 0.5px solid var(--mm-line-strong);
-  padding: 12px 14px 12px 18px;
-  backdrop-filter: blur(16px);
+  padding: 9px 12px 9px 12px;
+  backdrop-filter: blur(12px);
   opacity: 1;
   transform-origin: bottom center;
   transition:
@@ -537,10 +569,6 @@
     transform 0.42s cubic-bezier(0.2, 0.7, 0.2, 1),
     border-color 0.3s ease,
     filter 0.3s ease;
-  /* Brand-new entries — pop out of the composer (translateY from below,
-     scale up). `--stack-i` is 0 for newest. The push-up effect on older
-     cards is achieved by re-running this animation on every render at the
-     newest slot, while older slots inherit the resting state. */
   animation: mmStackedIn 0.46s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 @keyframes mmStackedIn {
@@ -548,53 +576,49 @@
   60%  { opacity: 1; }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
-.mm-stacked-response::before {
-  content: '';
-  position: absolute; left: 6px; top: 12px; bottom: 12px;
-  width: 2px; border-radius: 2px;
-  background: linear-gradient(180deg,
-    color-mix(in oklch, var(--accent) 70%, transparent) 0%,
-    color-mix(in oklch, var(--accent) 18%, transparent) 100%);
-  box-shadow: 0 0 8px color-mix(in oklch, var(--accent) 55%, transparent);
-}
 .mm-stacked-response.older {
-  opacity: 0.72;
-  filter: saturate(0.7);
-  transform: scale(0.97);
+  opacity: 0.5;
+  filter: saturate(0.55);
+  transform: scale(0.95);
 }
 .mm-stacked-response.older:hover {
-  opacity: 0.92;
+  opacity: 0.82;
   filter: saturate(0.95);
-  transform: scale(0.99);
+  transform: scale(0.98);
 }
 .mm-stacked-response.newest {
-  border-color: color-mix(in oklch, var(--accent) 38%, var(--mm-line-strong));
+  border-color: color-mix(in oklch, var(--accent) 26%, var(--mm-line-strong));
   box-shadow:
-    0 18px 48px -18px color-mix(in oklch, var(--accent) 38%, transparent),
-    0 6px 20px rgba(0, 0, 0, 0.4);
+    0 18px 40px -22px color-mix(in oklch, var(--accent) 30%, transparent),
+    0 4px 14px rgba(0, 0, 0, 0.35);
 }
 .mm-stacked-meta {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .mm-stacked-prompt {
   font-family: 'Geist Mono', monospace;
-  font-size: 11px; letter-spacing: 0.03em;
+  font-size: 10px; letter-spacing: 0.02em;
   color: var(--mm-fg-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   flex: 1; min-width: 0;
 }
 .mm-stacked-body {
-  font-size: 14.5px; line-height: 1.55;
+  font-size: 13.5px; line-height: 1.5;
   color: var(--mm-fg);
   text-wrap: pretty;
-  padding-bottom: 4px;
 }
 .mm-stacked-foot {
   display: flex; justify-content: flex-end; align-items: center;
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
   border-top: 0.5px dashed var(--mm-line);
+}
+.mm-stacked-foot .mm-copy {
+  /* Smaller copy chip to match the tighter card */
+  padding: 2px 6px;
+  font-size: 9.5px;
+  border-radius: 6px;
 }
 
 /* ── Hint bar (sits at top of stack) ─────────────────── */
@@ -1205,6 +1229,224 @@
 /* Robotic accent on the burst-tag — a typewriter caret keeps "agents
    are still running" energy after the burst settles. */
 .mm-burst-tag::before { animation: mmcaret 1.2s steps(2) infinite; }
+
+/* ────────────────────────────────────────────────────────
+   Orbital mindmap — composer A at center, categorized nodes
+   in a loose force-directed cluster around it, SVG lines
+   from each node back to A.
+   ──────────────────────────────────────────────────────── */
+.mm-phase-orbital {
+  padding: 0; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: stretch;
+}
+.mm-orbit-stage {
+  position: relative;
+  flex: 1;
+  border-radius: 14px;
+  overflow: hidden;
+  /* Subtle radial halo at center to imply A's gravity. */
+  background:
+    radial-gradient(circle at 50% 50%,
+      color-mix(in oklch, var(--accent) 16%, transparent) 0%,
+      transparent 38%);
+}
+/* CRT scanline overlay so the burst still reads "agent" */
+.mm-orbit-stage::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(245, 243, 239, 0.022),
+    rgba(245, 243, 239, 0.022) 1px,
+    transparent 1px,
+    transparent 4px);
+  mix-blend-mode: overlay;
+  opacity: 0.55;
+  z-index: 8;
+}
+
+/* Connecting lines from center to each orbital node. */
+.mm-orbit-lines {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+@keyframes mmOrbitLineIn {
+  from { opacity: 0; stroke-dashoffset: 60; }
+  to   { opacity: 1; stroke-dashoffset: 0; }
+}
+
+/* Composer A at the center. The slot is positioned absolutely; the
+   composer inside keeps its existing visual treatment. A small mono tag
+   above it labels it as A so the user can identify it as their input. */
+.mm-orbit-center {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  width: clamp(280px, 38vw, 380px);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  /* Soft halo so the composer sits "in" the burst. */
+  filter: drop-shadow(0 0 32px color-mix(in oklch, var(--accent) 35%, transparent));
+  animation: mmOrbitCenterIn 600ms cubic-bezier(0.16, 0.7, 0.2, 1) both;
+}
+@keyframes mmOrbitCenterIn {
+  0%   { transform: translate(-50%, -50%) scale(0.05); opacity: 0; filter: brightness(2) blur(4px); }
+  60%  { opacity: 1; filter: brightness(1.2) blur(0); }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+.mm-orbit-center-tag {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 0.5px solid var(--mm-line-strong);
+  background: rgba(15, 14, 18, 0.6);
+}
+.mm-orbit-center-tag::before { content: '// '; opacity: 0.55; color: var(--accent); }
+.mm-orbit-center .mm-composer { width: 100%; }
+
+/* Orbital nodes — positioned absolutely at the polar-computed (x,y). The
+   per-node `--drift-x/y` + `--drift-dur` drive an infinite alternate float
+   so the cluster reads as "alive" without being distracting. */
+.mm-orbit-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 220px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 14, 18, 0.88);
+  border: 0.5px solid var(--mm-line-strong);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  color: var(--mm-fg-dim);
+  z-index: 3;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.4),
+    0 0 18px color-mix(in oklch, var(--accent) 10%, transparent);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245, 243, 239, 0.15) transparent;
+  opacity: 0;
+  animation:
+    mmOrbitNodeIn 0.6s cubic-bezier(0.16, 0.7, 0.2, 1) forwards,
+    mmOrbitNodeDrift var(--drift-dur, 7s) ease-in-out infinite alternate;
+  animation-delay: var(--burst-delay, 0ms);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.mm-orbit-node::-webkit-scrollbar { width: 4px; }
+.mm-orbit-node::-webkit-scrollbar-thumb { background: rgba(245, 243, 239, 0.15); border-radius: 4px; }
+.mm-orbit-node:hover {
+  border-color: color-mix(in oklch, var(--accent) 35%, var(--mm-line-strong));
+  z-index: 4;
+}
+@keyframes mmOrbitNodeIn {
+  0%   {
+    opacity: 0;
+    /* Start AT the center (via additional translate towards origin) and
+       blurred — the per-node positioning above already places the resting
+       coordinate. We approximate "burst from center" with a scale + the
+       drift offsets that resolve to 0. */
+    transform: translate(-50%, -50%) scale(0.1);
+    filter: blur(3px) brightness(1.4);
+  }
+  60%  { opacity: 1; filter: blur(0) brightness(1.1); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
+}
+@keyframes mmOrbitNodeDrift {
+  0%   { transform: translate(calc(-50% + 0px), calc(-50% + 0px)); }
+  100% { transform: translate(calc(-50% + var(--drift-x, 0px)),
+                              calc(-50% + var(--drift-y, 0px))); }
+}
+
+/* Node header (label · sub · copy) */
+.mm-orbit-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 0.5px solid var(--mm-line);
+}
+.mm-orbit-label {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; color: var(--mm-fg);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mm-orbit-sub {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+}
+
+.mm-orbit-body { color: var(--mm-fg-dim); line-height: 1.45; }
+.mm-orbit-body ul, .mm-orbit-body ol {
+  margin: 0; padding-left: 16px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.mm-orbit-body li::marker { color: var(--mm-fg-faint); }
+.mm-orbit-body ol li::marker { font-family: 'Geist Mono', monospace; font-size: 10.5px; }
+.mm-orbit-sources {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 0.5px dashed var(--mm-line);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.mm-orbit-sources-label {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mm-fg-faint);
+}
+.mm-orbit-sources a {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--mm-fg-dim);
+  text-decoration: none;
+  font-size: 11px;
+}
+.mm-orbit-sources a:hover { color: var(--mm-fg); }
+.mm-orbit-snippet {
+  margin: 0 0 6px; padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 0.5px solid var(--mm-line);
+  border-radius: 6px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 10.5px; line-height: 1.45;
+  color: rgba(245, 243, 239, 0.85);
+  max-height: 100px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mm-orbit-notes { margin: 4px 0 0; font-size: 11px; }
+
+/* Implode — orbital nodes converge to center; lines fade. */
+.mm-phase-orbital.imploding { pointer-events: none; }
+.mm-phase-orbital.imploding .mm-orbit-node {
+  animation: mmOrbitNodeOut 440ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+}
+@keyframes mmOrbitNodeOut {
+  to { opacity: 0; transform: translate(-50%, -50%) scale(0.06); filter: blur(3px); }
+}
+.mm-phase-orbital.imploding .mm-orbit-lines { animation: mmFadeOut 280ms ease-in forwards; }
+.mm-phase-orbital.imploding .mm-orbit-center {
+  animation: mmOrbitCenterOut 440ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+}
+@keyframes mmOrbitCenterOut {
+  to { transform: translate(-50%, -50%) scale(0.4); opacity: 0; filter: brightness(1.4); }
+}
+@keyframes mmFadeOut { to { opacity: 0; } }
 
 /* Thread strip gracefully wraps when content overflows */
 .mm-thread-strip { flex-wrap: wrap; }

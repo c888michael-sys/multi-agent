@@ -531,6 +531,9 @@ function ResponseStackView({
     }
   }, [imploding]);
 
+  const olderEntries = ordered.slice(0, -1); // oldest → second-most-recent
+  const newestEntry = ordered[ordered.length - 1] || null;
+
   return (
     <div
       className={
@@ -545,26 +548,52 @@ function ResponseStackView({
           <HintBar onExpand={expand} disabled={collapsing || imploding || ordered.length === 0} />
         </div>
         <div className="mm-stack-list">
-          <div className="mm-stack-tools">
-            <button className="mm-reset" onClick={reset} title="New thread — wipes the response stack">
-              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4">
-                <path d="M2.5 6a3.5 3.5 0 1 1 1.1 2.5" />
-                <path d="M2.5 3v2.5h2.5" strokeLinecap="round" />
-              </svg>
-              <span>new thread</span>
-            </button>
-            <span className="mm-stack-count">{ordered.length} {ordered.length === 1 ? 'response' : 'responses'}</span>
-          </div>
-          {ordered.map((entry, i) => (
-            <StackedResponse
-              key={entry.id}
-              entry={entry}
-              accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
-              isNewest={i === ordered.length - 1}
-              isOlder={i !== ordered.length - 1}
-              stackIndex={ordered.length - 1 - i /* 0 = newest, 1 = next, … */}
-            />
-          ))}
+          {/* Tools row — anchored at the top of the list area, OUTSIDE the
+              fading older block so the count + reset stay readable. */}
+          {ordered.length > 0 && (
+            <div className="mm-stack-tools-row">
+              <button className="mm-reset" onClick={reset} title="New thread — wipes the response stack">
+                <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4">
+                  <path d="M2.5 6a3.5 3.5 0 1 1 1.1 2.5" />
+                  <path d="M2.5 3v2.5h2.5" strokeLinecap="round" />
+                </svg>
+                <span>new thread</span>
+              </button>
+              <span className="mm-stack-count">{ordered.length} {ordered.length === 1 ? 'response' : 'responses'}</span>
+            </div>
+          )}
+          {/* Older entries: positioned above the centered newest. DOM order
+              is chronological (oldest first); flex-column with
+              justify-content:flex-end lays them out top-down so the
+              second-most-recent sits closest to the newest. Anything older
+              fades upward and can scroll. */}
+          {olderEntries.length > 0 && (
+            <div className="mm-stack-older">
+              {olderEntries.map((entry, i) => (
+                <StackedResponse
+                  key={entry.id}
+                  entry={entry}
+                  accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
+                  isNewest={false}
+                  isOlder={true}
+                  stackIndex={olderEntries.length - i}
+                />
+              ))}
+            </div>
+          )}
+          {/* Newest entry: absolutely centered both axes in the list area. */}
+          {newestEntry && (
+            <div className="mm-stack-newest">
+              <StackedResponse
+                key={newestEntry.id}
+                entry={newestEntry}
+                accent={TEMPLATE_DEFS[newestEntry.template]?.accent || accent}
+                isNewest={true}
+                isOlder={false}
+                stackIndex={0}
+              />
+            </div>
+          )}
         </div>
         <div className="mm-stack-composer-slot">
           <Composer value={draft} onChange={setDraft} onSubmit={submit} />
@@ -574,22 +603,170 @@ function ResponseStackView({
   );
 }
 
-// Mindmap (post-burst) — newest response expanded into the sorted template
-// grid. Cards animate from singularity (center) outward on mount, then
-// gently float once settled. Pressing collapse fires an implode animation
-// and we return to the response stack.
-function MindmapView({ responses, collapse, reset, phase }) {
+// Orbital mindmap.
+// Layout: an active composer (A) at the geometric center of the stage; one
+// node per categorized chunk of the newest response (sections / files /
+// targets / phases) positioned around A via polar coords with a per-node
+// random jitter to read as a loose force-directed cluster rather than a
+// rigid ring. Each node connects back to A by an SVG line drawn behind.
+// Nodes drift gently after mount; the lines do NOT track the drift (the
+// drift is sub-10px so the visual cost is hidden).
+//
+// Submitting from the center composer re-uses the parent's `submit()` — the
+// mindmap unmounts naturally as the parent flips to `loading` and back to
+// `response`. Clicking collapse plays an implode (lines + nodes converge
+// to center) and returns to the response stack.
+
+function useOrbitalPositions(nodes, stageRef) {
+  const [positions, setPositions] = React.useState([]);
+  const [size, setSize] = React.useState({ w: 0, h: 0 });
+
+  React.useEffect(() => {
+    if (!stageRef.current) return;
+    const update = () => {
+      const r = stageRef.current.getBoundingClientRect();
+      setSize({ w: r.width, h: r.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(stageRef.current);
+    return () => ro.disconnect();
+  }, [stageRef]);
+
+  React.useEffect(() => {
+    const n = nodes.length;
+    if (n === 0 || size.w === 0) { setPositions([]); return; }
+
+    // Node dimensions (kept in sync with .mm-orbit-node CSS).
+    const NODE_W = 220;
+    const NODE_H = 200;  // typical; tall ones scroll inside
+    const EDGE_PAD = 14;
+
+    const cx = size.w / 2;
+    const cy = size.h / 2;
+
+    // Base radius: large enough to clear the composer (≈190 px half-width
+    // for the orbital composer, half-height ≈ 80 px) plus the node's own
+    // half-extent, capped so nodes never spill past the stage edges.
+    const COMPOSER_HALF_W = 190;
+    const COMPOSER_HALF_H = 80;
+    const minR = COMPOSER_HALF_W + NODE_W / 2 - 40;  // small overlap allowed
+    const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
+    const maxR_y = cy - NODE_H / 2 - EDGE_PAD;
+    const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 320));
+
+    // Seeded RNG so positions stay stable across re-renders of the same
+    // response. Hash the node keys.
+    const seedFor = (i) => {
+      let h = 17;
+      const k = nodes[i].key;
+      for (let j = 0; j < k.length; j++) h = (h * 31 + k.charCodeAt(j)) | 0;
+      return Math.abs(h);
+    };
+    const rand = (i, off) => {
+      const s = (seedFor(i) + off * 1009) % 10000;
+      return s / 10000;
+    };
+
+    const pos = nodes.map((node, i) => {
+      const baseAngle = (i / n) * Math.PI * 2;
+      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
+      const radiusJitter = (rand(i, 2) - 0.5) * 60;
+      const angle = baseAngle + angleJitter - Math.PI / 2; // start at top
+      const radius = baseR + radiusJitter;
+      let x = cx + Math.cos(angle) * radius;
+      let y = cy + Math.sin(angle) * radius;
+      // Clamp to stage so cards stay fully visible.
+      const minX = NODE_W / 2 + EDGE_PAD;
+      const maxX = size.w - NODE_W / 2 - EDGE_PAD;
+      const minY = NODE_H / 2 + EDGE_PAD;
+      const maxY = size.h - NODE_H / 2 - EDGE_PAD;
+      x = Math.max(minX, Math.min(maxX, x));
+      y = Math.max(minY, Math.min(maxY, y));
+      // Per-node drift offsets (used by CSS keyframes via custom props).
+      const driftX = (rand(i, 3) - 0.5) * 8;
+      const driftY = (rand(i, 4) - 0.5) * 8;
+      const driftDur = 6 + rand(i, 5) * 4;
+      const driftDelay = rand(i, 6) * 3;
+      return { x, y, cx, cy, driftX, driftY, driftDur, driftDelay };
+    });
+    setPositions(pos);
+  }, [nodes, size.w, size.h]);
+
+  return { positions, size };
+}
+
+function OrbitalLines({ positions, size }) {
+  if (!size.w || positions.length === 0) return null;
+  return (
+    <svg className="mm-orbit-lines" width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`}>
+      <defs>
+        <radialGradient id="mm-orbit-line-grad" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.55" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.05" />
+        </radialGradient>
+      </defs>
+      {positions.map((p, i) => (
+        <line
+          key={i}
+          x1={p.cx} y1={p.cy} x2={p.x} y2={p.y}
+          stroke="url(#mm-orbit-line-grad)"
+          strokeWidth="1"
+          strokeDasharray="3 6"
+          style={{
+            opacity: 0,
+            animation: `mmOrbitLineIn 600ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards`,
+            animationDelay: `${220 + i * 60}ms`,
+          }}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function OrbitalNode({ node, pos, index }) {
+  return (
+    <div
+      className={'mm-orbit-node mm-orbit-node-' + node.kind}
+      style={{
+        left: pos.x,
+        top: pos.y,
+        '--drift-x': pos.driftX + 'px',
+        '--drift-y': pos.driftY + 'px',
+        '--drift-dur': pos.driftDur + 's',
+        '--drift-delay': pos.driftDelay + 's',
+        '--burst-delay': (180 + index * 70) + 'ms',
+        animationDelay: `${180 + index * 70}ms, ${1200 + pos.driftDelay * 1000}ms`,
+      }}
+    >
+      <div className="mm-orbit-head">
+        <span className="mm-orbit-label">{node.label}</span>
+        {node.sub && <span className="mm-orbit-sub">{node.sub}</span>}
+        <CopyButton tiny getText={() => node.copyText} />
+      </div>
+      {node.body}
+    </div>
+  );
+}
+
+function OrbitalMindmap({
+  responses, collapse, reset, phase,
+  draft, setDraft, submit,
+}) {
   const newest = responses[responses.length - 1];
+  const stageRef = React.useRef(null);
+  const nodes = React.useMemo(
+    () => (newest ? extractNodes(newest.template, newest.data) : []),
+    [newest]
+  );
+  const { positions, size } = useOrbitalPositions(nodes, stageRef);
+
   if (!newest) return null;
   const accent = TEMPLATE_DEFS[newest.template]?.accent || '#f5a25b';
-  const R = RENDERERS[newest.template] || PlanView;
-
-  // Phase === 'imploding' means user just hit collapse — wait for the burst
-  // implode animation to finish before switching to response.
   const imploding = phase === 'imploding';
 
   return (
-    <div className={'mm-phase mm-phase-mindmap' + (imploding ? ' imploding' : '')}
+    <div className={'mm-phase mm-phase-orbital' + (imploding ? ' imploding' : '')}
       style={{ '--accent': accent }}>
       <div className="mm-thread-strip">
         <button className="mm-collapse" onClick={collapse} title="Collapse back to thread">
@@ -617,8 +794,21 @@ function MindmapView({ responses, collapse, reset, phase }) {
           </button>
         </div>
       </div>
-      <div className="mm-burst-wrap">
-        <R data={newest.data} accent={accent} />
+
+      <div className="mm-orbit-stage" ref={stageRef}>
+        <OrbitalLines positions={positions} size={size} />
+
+        {/* The composer A — center, active. Same submit pipeline as the
+            stack view, so a new prompt from here lands as a new B in the
+            stack the moment we return to the response phase. */}
+        <div className="mm-orbit-center">
+          <span className="mm-orbit-center-tag">A · composer</span>
+          <Composer value={draft} onChange={setDraft} onSubmit={submit} />
+        </div>
+
+        {positions.map((pos, i) => (
+          <OrbitalNode key={nodes[i].key} node={nodes[i]} pos={pos} index={i} />
+        ))}
       </div>
     </div>
   );
@@ -814,7 +1004,11 @@ function HeroMindmap() {
           />
         )}
         {phase === 'mindmap' && (
-          <MindmapView responses={responses} collapse={collapse} reset={reset} phase={phase} />
+          <OrbitalMindmap
+            responses={responses}
+            collapse={collapse} reset={reset} phase={phase}
+            draft={draft} setDraft={setDraft} submit={submit}
+          />
         )}
       </div>
     </div>

@@ -314,6 +314,95 @@ function PlanView({ data, accent }) {
   );
 }
 
+// ─── Orbital node extraction ─────────────────────────────────
+// Each template's data flattens to a list of "nodes" — one node per
+// categorized chunk. Nodes are what orbit around A in the orbital mindmap.
+// The shape: { key, label, kind, body: ReactNode, copyText: string }.
+function extractNodes(template, data) {
+  if (!data) return [];
+  if (template === 'research') {
+    return (data.sections || []).map((s, i) => ({
+      key: `research-${i}`,
+      kind: 'research',
+      label: s.heading || `section ${i + 1}`,
+      body: (
+        <div className="mm-orbit-body">
+          <ul>{(s.points || []).map((p, j) => <li key={j}>{p}</li>)}</ul>
+          {s.sources?.length > 0 && (
+            <div className="mm-orbit-sources">
+              <span className="mm-orbit-sources-label">sources</span>
+              {s.sources.map((src, j) => (
+                <a key={j} href={src.url} target="_blank" rel="noreferrer">
+                  <span className="mm-src-dot" />{src.title}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      ),
+      copyText: `## ${s.heading}\n${(s.points || []).map((p) => `- ${p}`).join('\n')}\nSources:\n${(s.sources || []).map((x) => `- ${x.title} (${x.url})`).join('\n')}`,
+    }));
+  }
+  if (template === 'code') {
+    return (data.files || []).map((f, i) => ({
+      key: `code-${i}`,
+      kind: 'code',
+      label: f.name || `file ${i + 1}`,
+      sub: f.language,
+      body: (
+        <div className="mm-orbit-body">
+          <pre className="mm-orbit-snippet"><code>{f.snippet || ''}</code></pre>
+          {f.notes?.length > 0 && (
+            <ul className="mm-orbit-notes">{f.notes.map((n, j) => <li key={j}>{n}</li>)}</ul>
+          )}
+        </div>
+      ),
+      copyText: `// ${f.name}\n${f.snippet || ''}`,
+    }));
+  }
+  if (template === 'compare') {
+    const ranking = data.ranking || [];
+    return (data.targets || []).map((t, i) => {
+      const r = ranking.find((x) => x.name === t.name);
+      return {
+        key: `compare-${i}`,
+        kind: 'compare',
+        label: t.name || `target ${i + 1}`,
+        sub: r ? `#${r.rank} · ${Number(r.score).toFixed(1)}` : null,
+        body: (
+          <div className="mm-orbit-body">
+            <div className="mm-pc-grid">
+              <div className="mm-col">
+                <div className="mm-col-h">pros</div>
+                <ul>{(t.pros || []).map((p, j) => <li key={j}>{p}</li>)}</ul>
+              </div>
+              <div className="mm-col">
+                <div className="mm-col-h">cons</div>
+                <ul className="con">{(t.cons || []).map((p, j) => <li key={j}>{p}</li>)}</ul>
+              </div>
+            </div>
+            {t.reason && <div className="mm-reason"><span>why:</span> {t.reason}</div>}
+          </div>
+        ),
+        copyText: `${t.name}\nPros: ${(t.pros || []).join(', ')}\nCons: ${(t.cons || []).join(', ')}\n${t.reason ? 'Why: ' + t.reason : ''}`,
+      };
+    });
+  }
+  // plan + fallback
+  return (data.phases || []).map((p, i) => ({
+    key: `plan-${i}`,
+    kind: 'plan',
+    label: p.title || `phase ${i + 1}`,
+    sub: `phase ${String(i + 1).padStart(2, '0')}`,
+    body: (
+      <div className="mm-orbit-body">
+        <ol>{(p.steps || []).map((s, j) => <li key={j}>{s}</li>)}</ol>
+      </div>
+    ),
+    copyText: `Phase ${i + 1}: ${p.title}\n${(p.steps || []).map((s, j) => `${j + 1}. ${s}`).join('\n')}`,
+  }));
+}
+
 // ─── Renderer map ───────────────────────────────────────────
 const RENDERERS = {
   research: ResearchView,
@@ -333,4 +422,5 @@ Object.assign(window, {
   CodeView,
   CompareView,
   PlanView,
+  extractNodes,
 });
