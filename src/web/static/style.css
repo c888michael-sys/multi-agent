@@ -18,7 +18,11 @@
   background: var(--mm-bg);
   color: var(--mm-fg);
   position: relative;
-  overflow: hidden;
+  /* `clip` is stricter than `hidden` — disallows programmatic scrolling too.
+     We rely on this because focusing the bottom-pinned composer would
+     otherwise call scrollIntoView, push the root, and pull the hint bar off
+     the top of the viewport. */
+  overflow: clip;
   font-family: 'Geist', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -456,63 +460,267 @@
 }
 .mm-dispatch-row.on .st { color: var(--mm-fg-dim); }
 
-/* ── Response phase layout ───────────────────────────── */
+/* ── Response stack (A pinned at bottom, B's stack above) ── */
 .mm-phase-response {
-  justify-content: flex-start;
-  padding-top: 24px;
-  gap: 16px;
+  justify-content: stretch;
+  padding: 0;
+  gap: 0;
+  align-items: stretch;
+}
+.mm-stack-wrap {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: stretch;
+  padding: 14px 0 18px;
+  gap: 10px;
+}
+/* hint slot (top) */
+.mm-stack-hint-slot {
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 4px 16px 0;
+}
+/* response list (middle) — scrolls if it overflows; newest sits at the
+   bottom (just above composer), oldest at the top. The reverse flex
+   direction lets us append in chronological order while still putting the
+   newest visually at the bottom of the scroll viewport. */
+.mm-stack-list {
+  display: flex; flex-direction: column;
+  gap: 14px;
+  padding: 8px 22px 14px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245,243,239,0.15) transparent;
+  /* Pin scroll to the newest entry by default. */
+  justify-content: flex-end;
   align-items: center;
 }
-.mm-phase-response .mm-spacer { flex: 1; }
+.mm-stack-list::-webkit-scrollbar { width: 6px; }
+.mm-stack-list::-webkit-scrollbar-thumb { background: rgba(245,243,239,0.15); border-radius: 6px; }
 
-/* ── Pull handle ─────────────────────────────────────── */
-.mm-pull {
+.mm-stack-tools {
+  width: 100%; max-width: 640px;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0 4px 4px;
+  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  color: var(--mm-fg-faint); letter-spacing: 0.08em;
+}
+.mm-stack-tools .mm-stack-count {
+  text-transform: uppercase;
+}
+.mm-stack-tools .mm-stack-count::before { content: '// '; opacity: 0.5; }
+
+/* composer slot (bottom) */
+.mm-stack-composer-slot {
+  display: flex; justify-content: center;
+  padding: 0 16px;
+}
+.mm-stack-composer-slot .mm-composer { width: 100%; max-width: 640px; }
+
+/* Each B card — uses a robotic mono header + an accent rail along the left
+   so multiple stacked responses read as a thread of agent outputs rather
+   than chat bubbles. Newest is scaled up and brighter. */
+.mm-stacked-response {
   position: relative;
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  background: transparent; border: 0;
-  padding: 10px 18px;
+  width: 100%; max-width: 640px;
+  border-radius: 14px;
+  background: var(--mm-card-bg);
+  border: 0.5px solid var(--mm-line-strong);
+  padding: 12px 14px 12px 18px;
+  backdrop-filter: blur(16px);
+  opacity: 1;
+  transform-origin: bottom center;
+  transition:
+    opacity 0.4s ease,
+    transform 0.42s cubic-bezier(0.2, 0.7, 0.2, 1),
+    border-color 0.3s ease,
+    filter 0.3s ease;
+  /* Brand-new entries — pop out of the composer (translateY from below,
+     scale up). `--stack-i` is 0 for newest. The push-up effect on older
+     cards is achieved by re-running this animation on every render at the
+     newest slot, while older slots inherit the resting state. */
+  animation: mmStackedIn 0.46s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes mmStackedIn {
+  0%   { opacity: 0; transform: translateY(48px) scale(0.86); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.mm-stacked-response::before {
+  content: '';
+  position: absolute; left: 6px; top: 12px; bottom: 12px;
+  width: 2px; border-radius: 2px;
+  background: linear-gradient(180deg,
+    color-mix(in oklch, var(--accent) 70%, transparent) 0%,
+    color-mix(in oklch, var(--accent) 18%, transparent) 100%);
+  box-shadow: 0 0 8px color-mix(in oklch, var(--accent) 55%, transparent);
+}
+.mm-stacked-response.older {
+  opacity: 0.72;
+  filter: saturate(0.7);
+  transform: scale(0.97);
+}
+.mm-stacked-response.older:hover {
+  opacity: 0.92;
+  filter: saturate(0.95);
+  transform: scale(0.99);
+}
+.mm-stacked-response.newest {
+  border-color: color-mix(in oklch, var(--accent) 38%, var(--mm-line-strong));
+  box-shadow:
+    0 18px 48px -18px color-mix(in oklch, var(--accent) 38%, transparent),
+    0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.mm-stacked-meta {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  margin-bottom: 6px;
+}
+.mm-stacked-prompt {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px; letter-spacing: 0.03em;
+  color: var(--mm-fg-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; min-width: 0;
+}
+.mm-stacked-body {
+  font-size: 14.5px; line-height: 1.55;
+  color: var(--mm-fg);
+  text-wrap: pretty;
+  padding-bottom: 4px;
+}
+.mm-stacked-foot {
+  display: flex; justify-content: flex-end; align-items: center;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 0.5px dashed var(--mm-line);
+}
+
+/* ── Hint bar (sits at top of stack) ─────────────────── */
+.mm-hint-bar {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 7px 16px 8px;
+  border-radius: 999px;
+  background: rgba(15, 14, 18, 0.6);
+  border: 0.5px solid var(--mm-line-strong);
   color: var(--mm-fg-faint);
   font-family: 'Geist Mono', monospace;
   font-size: 10.5px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: grab;
-  transition: color 0.2s ease;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease,
+    box-shadow 0.2s ease, transform 0.18s ease;
   touch-action: none;
+  backdrop-filter: blur(10px);
+  user-select: none;
 }
-.mm-pull:hover { color: var(--mm-fg-dim); }
-.mm-pull:active { cursor: grabbing; }
-.mm-pull-grip {
-  display: flex; gap: 2px;
-  animation: mmpullHint 2.2s ease-in-out infinite;
+.mm-hint-bar:hover:not(.disabled) {
+  color: var(--mm-fg-dim);
+  border-color: color-mix(in oklch, var(--accent) 40%, var(--mm-line-strong));
+  background: color-mix(in oklch, var(--accent) 6%, rgba(15, 14, 18, 0.6));
+  box-shadow: 0 0 24px -6px color-mix(in oklch, var(--accent) 30%, transparent);
 }
-.mm-pull-grip i {
-  width: 4px; height: 4px; border-radius: 50%;
+.mm-hint-bar:active:not(.disabled) { cursor: grabbing; }
+.mm-hint-bar.disabled { opacity: 0.4; cursor: default; }
+.mm-hint-rail {
+  width: 28px; height: 2px; border-radius: 999px;
+  background: color-mix(in oklch, var(--accent) 55%, transparent);
+  box-shadow: 0 0 6px color-mix(in oklch, var(--accent) 55%, transparent);
+}
+.mm-hint-glyph { display: inline-flex; gap: 3px; }
+.mm-hint-glyph i {
+  width: 3.5px; height: 3.5px; border-radius: 50%;
   background: currentColor;
   opacity: 0.7;
+  animation: mmHintPulse 1.6s ease-in-out infinite;
 }
-.mm-pull-arrow {
-  display: inline-flex;
-  animation: mmpullHint 2.2s ease-in-out infinite;
-  animation-delay: 0.3s;
+.mm-hint-glyph i:nth-child(2) { animation-delay: 0.15s; }
+.mm-hint-glyph i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes mmHintPulse {
+  0%, 100% { opacity: 0.35; transform: translateY(0); }
+  50%      { opacity: 1;    transform: translateY(2px); }
 }
-.mm-pull-arrow svg { width: 14px; height: 9px; }
-@keyframes mmpullHint {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.7; }
-  40% { transform: translateY(4px); opacity: 1; }
-}
-.mm-pull-label { letter-spacing: 0.12em; }
-.mm-pull-progress {
-  width: 80px; height: 2px; border-radius: 999px;
-  background: rgba(245,243,239,0.06);
+.mm-hint-arrow { display: inline-flex; }
+.mm-hint-arrow svg { width: 12px; height: 8px; }
+.mm-hint-progress {
+  position: absolute; left: 12px; right: 12px; bottom: 2px;
+  height: 1.5px; border-radius: 999px;
+  background: rgba(245, 243, 239, 0.04);
   overflow: hidden;
-  margin-top: 4px;
 }
-.mm-pull-progress-fill {
+.mm-hint-progress-fill {
   height: 100%;
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent);
   transition: width 0.1s linear;
+}
+
+/* ── Big bang collapse — pre-burst singularity ───────── */
+/* When phase === 'collapsing', the whole stack converges toward the visual
+   center of the stage. The composer rises to center too. All responses
+   shrink/fade as they translate. The hint bar pulls in and brightens. */
+.mm-phase-response.collapsing {
+  pointer-events: none;
+}
+.mm-phase-response.collapsing .mm-stack-wrap {
+  animation: mmCollapseWrap 520ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+}
+@keyframes mmCollapseWrap {
+  to { transform: scale(0.985); }
+}
+.mm-phase-response.collapsing .mm-stack-composer-slot {
+  animation: mmCollapseComposer 520ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+}
+@keyframes mmCollapseComposer {
+  0%   { transform: translateY(0) scale(1); }
+  55%  { transform: translateY(-22vh) scale(0.94); filter: brightness(1.15); }
+  100% { transform: translateY(-22vh) scale(0.4); opacity: 0; filter: brightness(1.4); }
+}
+.mm-phase-response.collapsing .mm-stack-list .mm-stacked-response {
+  animation: mmCollapseCard 520ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+  /* Cards further from the singularity collapse with a touch more travel. */
+  animation-delay: calc(var(--stack-i, 0) * 18ms);
+}
+@keyframes mmCollapseCard {
+  0%   { transform: scale(1) translateY(0); opacity: 1; filter: blur(0); }
+  55%  { transform: scale(0.7) translateY(-6vh); opacity: 0.6; filter: blur(1px); }
+  100% { transform: scale(0.18) translateY(-2vh); opacity: 0; filter: blur(3px); }
+}
+.mm-phase-response.collapsing .mm-stack-hint-slot {
+  animation: mmCollapseHint 360ms ease-in forwards;
+}
+@keyframes mmCollapseHint {
+  to { transform: translateY(-8px) scale(0.85); opacity: 0; }
+}
+.mm-phase-response.collapsing .mm-stack-tools {
+  animation: mmCollapseHint 320ms ease-in forwards;
+}
+
+/* ── Re-materialize on return from mindmap ──────────── */
+.mm-phase-response.entering .mm-stack-wrap {
+  animation: mmEnterWrap 460ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes mmEnterWrap {
+  0%   { transform: scale(0.96); opacity: 0.7; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.mm-phase-response.entering .mm-stacked-response {
+  animation: mmEnterCard 460ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(60ms + var(--stack-i, 0) * 28ms);
+}
+@keyframes mmEnterCard {
+  from { opacity: 0; transform: translateY(28px) scale(0.9); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.mm-phase-response.entering .mm-stack-composer-slot {
+  animation: mmEnterComposer 460ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes mmEnterComposer {
+  from { opacity: 0; transform: translateY(-18vh) scale(0.85); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* ── Mindmap thread strip ────────────────────────────── */
@@ -569,7 +777,18 @@
   width: 5px; height: 5px; border-radius: 50%;
   background: var(--c); box-shadow: 0 0 5px var(--c);
 }
-.mm-thread-actions { display: flex; gap: 6px; }
+.mm-thread-actions { display: flex; gap: 6px; align-items: center; }
+.mm-thread-counter {
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 0.5px solid var(--mm-line);
+  background: rgba(255, 255, 255, 0.02);
+}
 
 /* ── Burst stage (mindmap) ───────────────────────────── */
 .mm-burst-wrap {
@@ -870,25 +1089,122 @@
   width: 100%;
 }
 
-/* Override prototype's absolute positioning when inside a grid */
+/* Burst cards radiate out from the central singularity. The wrap scales
+   up from a point ("big bang") and each card individually settles into its
+   grid cell with a stagger, then floats gently to suggest "stars". */
 .mm-burst-cards .mm-card {
   position: relative;
   top: auto; left: auto;
-  transform: none;
   width: auto;
   max-height: none;
   opacity: 0;
-  animation: mmCardIn 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
-  animation-delay: calc(0.06s * var(--i, 0));
+  /* Two stacked animations: entrance (plays once) + gentle drift (loops). */
+  animation:
+    mmCardBurstIn 0.6s cubic-bezier(0.18, 0.7, 0.2, 1) both,
+    mmCardFloat calc(7s + 0.6s * var(--i, 0)) ease-in-out infinite alternate;
+  animation-delay:
+    calc(0.18s + 0.05s * var(--i, 0)),
+    calc(1.1s + 0.15s * var(--i, 0));
 }
-@keyframes mmCardIn {
-  from { opacity: 0; transform: translateY(12px) scale(0.96); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+@keyframes mmCardBurstIn {
+  0%   {
+    opacity: 0;
+    transform: scale(0.32) translateY(24px);
+    filter: blur(2px) brightness(1.25);
+  }
+  60%  { opacity: 1; filter: blur(0) brightness(1.08); }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: blur(0) brightness(1);
+  }
+}
+@keyframes mmCardFloat {
+  0%   { transform: translateY(0) translateX(0) rotate(0deg); }
+  50%  { transform: translateY(-3px) translateX(1.5px) rotate(0.15deg); }
+  100% { transform: translateY(2.5px) translateX(-1px) rotate(-0.12deg); }
 }
 
 .mm-burst-cards .mm-card:hover {
+  animation-play-state: paused;
   transform: translateY(-2px);
+  border-color: color-mix(in oklch, var(--accent) 35%, var(--mm-line-strong));
 }
+
+/* Big bang wrap: the singularity explodes outward into the mindmap. */
+.mm-phase-mindmap .mm-burst-wrap {
+  animation: mmBurstExplode 680ms cubic-bezier(0.16, 0.7, 0.2, 1) both;
+}
+@keyframes mmBurstExplode {
+  0%   {
+    transform: scale(0.04);
+    opacity: 0;
+    filter: brightness(1.8) blur(4px);
+  }
+  40%  { opacity: 1; filter: brightness(1.3) blur(1px); }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+    filter: brightness(1) blur(0);
+  }
+}
+.mm-phase-mindmap .mm-thread-strip {
+  animation: mmThreadIn 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: 220ms;
+}
+
+/* Implode — reverse big bang. */
+.mm-phase-mindmap.imploding {
+  pointer-events: none;
+}
+.mm-phase-mindmap.imploding .mm-burst-wrap {
+  animation: mmBurstImplode 440ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+}
+@keyframes mmBurstImplode {
+  0%   { transform: scale(1); opacity: 1; filter: brightness(1) blur(0); }
+  100% { transform: scale(0.06); opacity: 0; filter: brightness(1.6) blur(3px); }
+}
+.mm-phase-mindmap.imploding .mm-thread-strip {
+  animation: mmThreadOut 320ms ease-in forwards;
+}
+@keyframes mmThreadOut {
+  to { opacity: 0; transform: translateY(-8px); }
+}
+
+/* Robotic / agent-attribution overlays on the burst stage. A faint
+   scanline + a corner "agents synthesized" mono tag drive the AI-agent
+   read without changing the card structure. */
+.mm-burst-wrap::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(245, 243, 239, 0.022),
+    rgba(245, 243, 239, 0.022) 1px,
+    transparent 1px,
+    transparent 4px);
+  mix-blend-mode: overlay;
+  opacity: 0.55;
+  z-index: 4;
+  border-radius: inherit;
+}
+.mm-burst-tag {
+  position: relative;
+}
+.mm-burst-tag::before {
+  content: '// ';
+  opacity: 0.55;
+  color: var(--accent);
+}
+.mm-burst-tag::after {
+  content: ' // synthesized';
+  opacity: 0.55;
+  color: var(--mm-fg-faint);
+}
+/* Robotic accent on the burst-tag — a typewriter caret keeps "agents
+   are still running" energy after the burst settles. */
+.mm-burst-tag::before { animation: mmcaret 1.2s steps(2) infinite; }
 
 /* Thread strip gracefully wraps when content overflows */
 .mm-thread-strip { flex-wrap: wrap; }

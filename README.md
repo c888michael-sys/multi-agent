@@ -163,7 +163,9 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 6: Mistral provider + Codestral as `action-code` (live-verified via `--role=action-code`)
 - [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
 - [x] Stage 5a: browser UI (live-verified end-to-end against real Gemini — idle / loading / response / mindmap phases all work for research / code / compare / plan templates; burst-card layout fixed + responsive breakpoints added)
+- [x] Stage 5a: response stack + big-bang mindmap (composer pins to bottom, newest B pops out of composer with older B's pushed up, hint at top pulls down to singularity-collapse then burst-from-center with gentle float; LS key bumped to `lattice.responseStack.v2`)
 - [ ] Stage 5b: bot integrations (Telegram / Discord / Instagram)
+- [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
@@ -414,14 +416,18 @@ Open the printed URL in a browser. Ctrl+C to stop.
 
 **What it does**
 
-Four phases, animated transitions between each:
+Six phase-states, animated transitions between each:
 
 1. **Idle** — centered composer with a hero headline, "5 agents online" status, template-type hints.
 2. **Loading** — your prompt locks into a card; the 5 specialist rows in the sidebar light up sequentially as "thinking".
-3. **Response** — orchestrator's reply appears in an accent-bordered card above your prompt; copy-whole-response button; a subtle pull-down handle hints at the mindmap.
-4. **Mindmap** — click or drag down the handle; prompt+response collapse into a thread strip and the response bursts out into a template-specific card grid (research → headings + sources, code → file snippets, compare → ranking + per-target, plan → phases + steps). Each card has its own copy button.
+3. **Response** — composer **A** pins to the bottom of the stage and the response **B** pops up out of it (motion). On every new prompt the new **B** appears just above A and any older B's get pushed up; the topmost slot above the stack is a **hint bar** that prompts "pull or tap // expand the mindmap". The newest B is brighter and slightly larger; older B's dim and shrink — the stack reads as a thread of agent outputs. Each B carries its own copy-whole-response button.
+4. **Collapsing** (transient ~520 ms) — pulling the hint down or clicking it fires the "big bang" pre-stage: the entire stack converges toward a central singularity. The composer rises off the bottom to the center, response cards shrink/blur as they fall into the same point.
+5. **Mindmap** — the singularity explodes outward into the sorted template grid (research → headings + sources, code → file snippets, compare → ranking + per-target, plan → phases + steps). Each card staggers in from the center and, once settled, **gently floats** (small translate + sub-degree rotation, infinite alternate). A scanline overlay + blinking caret on the `// research // synthesized` tag pushes the "agents are still running" feel. Click *collapse* to play the reverse: cards implode back to the singularity, then the response stack re-materializes.
+6. **Imploding** (transient ~440 ms) — collapse-back animation; the cards implode into the singularity before the stack returns.
 
-The prompt's *type* is detected via keyword heuristics (`research|find|sources|...` → research, `code|implement|function|...` → code, `compare|vs|tradeoffs|...` → compare, anything else → plan). The model is then asked for a JSON schema matching that template; the JSON drives the burst-stage renderer.
+The prompt's *type* is detected via keyword heuristics (`research|find|sources|...` → research, `code|implement|function|...` → code, `compare|vs|tradeoffs|...` → compare, anything else → plan). The model is then asked for a JSON schema matching that template; the JSON drives the burst-stage renderer. The mindmap visualizes the **newest** response in the stack — pull down on the hint and the most recent B is the one that bursts.
+
+Persistence: the full response stack (not just the last thread) is mirrored to `localStorage[lattice.responseStack.v2]`, so reloading the page restores every B in order and you land back in the response phase ready to continue.
 
 **Backend endpoints**
 
@@ -455,11 +461,16 @@ The prompt's *type* is detected via keyword heuristics (`research|find|sources|.
 
 1. `npm install` (no new deps but make sure node_modules is current).
 2. `npm run web` — expect: `multi-agent web UI live at http://localhost:7421/`.
-3. Open the URL in a browser. **Expected:** see the "Many minds, one conversation." hero with a composer.
+3. Open the URL in a browser. **Expected:** see the "Many minds, one conversation." hero with a centered composer.
 4. Type a research-ish prompt: "What is Rust's borrow checker?" — submit.
-5. **Expected:** prompt card animates down, sidebar agents pulse, then after ~1.6s minimum + the real API time, a response card appears above with a copy button and a pull-down handle below.
-6. Click the pull handle. **Expected:** prompt+response collapse to a thin strip at top; a "research" burst appears with 3-5 cards radiating around a central halo.
-7. Try a code prompt, a comparison prompt, a planning prompt. Each should pick a different template.
+5. **Expected:** the composer slides to the **bottom** of the stage; sidebar agents pulse; after ~1.6s minimum + the real API time, a response card **B** pops up out of the composer (translate-up + scale-in motion) and a **hint bar** appears at the top of the stack.
+6. Type a second prompt and submit. **Expected:** the new B' pops up out of the composer just above it; the previous B is pushed up and dims/shrinks slightly. Stack reads top-to-bottom: hint → older B → newest B' → composer.
+7. Click (or pull-drag-down past ~70 px) the hint bar. **Expected:** the whole stack — every B and the composer — converges toward a singularity at stage-center over ~520 ms; then the burst explodes outward into the sorted template grid. Cards arrive with a stagger and then **gently float**. The newest response is the one that bursts.
+8. Click *collapse* in the mindmap thread-strip. **Expected:** burst cards implode toward the singularity, then the response stack re-materializes with the cards staggering back into place.
+9. Try a code prompt, a comparison prompt, a planning prompt. Each should pick a different template and produce a different burst layout.
+10. Reload the page. **Expected:** the entire response stack is restored from `localStorage[lattice.responseStack.v2]` and you land back on the response phase.
+
+**Layout note — response stack + big bang (current).** The web UI uses a stacked response model (A at bottom, newest B above A, older B's pushed up, hint at top). Pulling the hint runs a collapse-into-singularity animation (520 ms) followed by a burst-from-center mindmap with a gentle infinite float. The CSS keyframes that drive this live in the *Response stack* / *Big bang collapse* / *Burst cards radiate* blocks of `src/web/static/style.css`. The response history is the full ordered stack, persisted under `localStorage[lattice.responseStack.v2]`. The earlier single-thread key `lattice.lastThread.v1` is dead.
 
 **Things to specifically watch for / known-likely-issues:**
 
@@ -636,6 +647,34 @@ files, push to git, install packages. The `--allow-bash` flag (separate from
 broad autonomy unless you're prepared for the consequences.
 
 ---
+
+## Planned: OpenRouter fallback routing
+
+OpenRouter accepts a list of models on every request. If the first choice fails or rate-limits, the request automatically runs against the next one in the list — same response shape, same SDK, no app-side changes. This is a cheaper-to-build alternative to the per-provider router we already have, and worth bolting on at the OpenRouter provider layer specifically (it doesn't replace the multi-provider Router — it strengthens the OpenRouter slot inside it).
+
+```python
+client.chat.completions.create(
+  model="anthropic/claude-sonnet-4.6",
+  extra_body={
+    "models": [
+      "anthropic/claude-sonnet-4.6",
+      "openai/gpt-5.4",
+      "google/gemini-3.1-pro-preview"
+    ],
+    "route": "fallback"
+  },
+  messages=[{"role": "user", "content": "..."}]
+)
+```
+
+Things worth knowing (per OpenRouter's docs):
+
+- List order is priority order — OpenRouter walks it top to bottom.
+- No extra fee for fallback routing; you pay for whichever model actually serves the request.
+- Rate limits, 5xx errors, content refusals, and context-length errors all count as failures, and the next model picks up automatically.
+- Providers can be mixed within the same chain (Anthropic + OpenAI + Google is fine).
+
+**Where it would plug in.** `src/providers/openrouter.ts` already constructs a single-model OpenRouter call. The fallback chain would be threaded through `CompleteOptions` (so callers can override per-call, e.g. `reasoning` role uses a different chain than `action-code`) and configured per-role via the role registry. The user has flagged this as optional and is still deciding on exact reroute chains — when those land the implementation should be ~50 lines + a config schema bump.
 
 ## Testing
 
