@@ -36,4 +36,13 @@ export interface Provider {
     tools: import("./tools/types.js").ToolDeclaration[],
     opts?: CompleteOptions,
   ): Promise<import("./tools/types.js").CompleteWithToolsResult>;
+  /**
+   * Optional multi-turn chat entry point — same as completeWithTools but
+   * without function calling. Used by ChatSession for persistent
+   * conversations. Falls back to undefined providers being skipped.
+   */
+  completeChat?(
+    history: import("./tools/types.js").ConversationPart[],
+    opts?: CompleteOptions,
+  ): Promise<string>;
 }

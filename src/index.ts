@@ -85,6 +85,16 @@ export {
   type Plan,
   type RoleRunTrace,
 } from "./agents/role-orchestrator.js";
+
+// Chat (Phase D)
+export {
+  ChatSession,
+  listSessions,
+  type ChatSessionOptions,
+  type SessionSnapshot,
+  type SendResult,
+} from "./chat/session.js";
+export { ChatRepl, type ReplOptions } from "./chat/repl.js";
 export {
   CONTROLLER_PRIMING,
   buildRoutingPrompt,

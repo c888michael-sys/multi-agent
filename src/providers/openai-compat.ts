@@ -144,6 +144,21 @@ export function extractTextFromCompletion(response: unknown): string {
   return r.choices?.[0]?.message?.content ?? "";
 }
 
+/** Chat-style request body builder. Used by the completeChat path on OpenAI-compat providers. */
+export function buildChatBody(
+  model: string,
+  history: ConversationPart[],
+  opts?: { maxTokens?: number; temperature?: number },
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model,
+    messages: historyToOpenAIMessages(history),
+  };
+  if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+  if (opts?.temperature !== undefined) body.temperature = opts.temperature;
+  return body;
+}
+
 /** Build the OpenAI-style tools array from our generic ToolDeclaration. */
 export function buildOpenAIToolsArray(tools: ToolDeclaration[]): unknown {
   return tools.map((t) => ({

@@ -113,6 +113,17 @@ export class RoleResolver {
     );
   }
 
+  /** Multi-turn chat through a role. No tools; just back-and-forth history. */
+  async runRoleChat(
+    name: RoleName,
+    history: ConversationPart[],
+    callerOpts?: CompleteOptions,
+  ): Promise<string> {
+    return this.runWithStrategy<string>(name, callerOpts, (allowList, opts) =>
+      this.router.completeChat(history, opts, allowList),
+    );
+  }
+
   /** Roster summary used by the orchestrator when deciding routing. */
   rosterDescription(): string {
     const lines: string[] = [];

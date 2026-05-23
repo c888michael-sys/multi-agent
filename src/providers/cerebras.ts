@@ -10,6 +10,7 @@ import {
   parseOpenAIToolResponse,
   extractTextFromCompletion,
   buildOpenAIToolsArray,
+  buildChatBody,
   looksLikeRateLimit,
   retryAfterMsFromHeaders,
 } from "./openai-compat.js";
@@ -57,6 +58,18 @@ export class CerebrasProvider implements Provider {
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
 
+    const res = await chatCompletion({
+      apiKey: this.apiKey,
+      baseUrl: this.baseUrl,
+      body,
+      providerName: "Cerebras",
+      ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
+    });
+    return extractTextFromCompletion(res);
+  }
+
+  async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
+    const body = buildChatBody(this.model, history, opts);
     const res = await chatCompletion({
       apiKey: this.apiKey,
       baseUrl: this.baseUrl,

@@ -155,7 +155,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 4: web browsing via Google Search grounding (`--search`, free up to 5000 grounded prompts/mo)
 - [x] Stage 4: local file tools (`--tools`: read_file, write_file, list_dir, path-confined to `--workdir`)
 - [x] Stage 4: bash exec tool (`--allow-bash`: cross-platform, timeout + output-cap, kills process tree on Windows)
-- [ ] Stage 4: multi-turn conversation + context window management (manual + auto-clear with warning)
+- [x] Stage 4: multi-turn conversation + context window management (`chat <session-id>` REPL with persistent history, `/clear` `/truncate` `/info` `/usage` `/help` `/exit` slash commands, 80%/95% budget warnings with confirm-to-continue, role-based failover for chat calls)
 - [x] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) — routes role calls to constrained provider subsets, falls back through candidates, validates registration
 - [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
 - [x] Stage 6: OpenRouter provider + DeepSeek V4 Flash as `reasoning` (live-verified; R1 free retired by OpenRouter, V4-Flash is the current free reasoning option)
@@ -195,8 +195,13 @@ multi-agent/
       runner.ts         — multi-turn tool-call loop (the "agent runtime")
       file-tools.ts     — FileTools (read/write/list, path-sandboxed)
       bash-tool.ts      — BashTool (cmd.exe/sh, timeout + output cap)
-    roles/              — Stage 6 (in progress)
-      types.ts          — RoleConfig / RoleName / ProviderRef
+    roles/
+      types.ts          — RoleConfig / RoleName / ProviderRef / RoleEvent
+      resolver.ts       — RoleResolver: priority-ordered routing with cross-role failover
+      default-registry.ts — DEFAULT_ROLES (perception / reasoning / orchestration / action-*)
+    chat/
+      session.ts        — ChatSession (persistent multi-turn history)
+      repl.ts           — ChatRepl (interactive readline loop with slash commands)
   tests/                — vitest, mocked SDK throughout
     fixtures.ts         — FakeProvider, ToolFakeProvider, RateLimitedError
   scripts/
@@ -252,6 +257,8 @@ multi-agent/
 - **`StateStore`** (`src/state.ts`) — JSON-on-disk persistence behind an interface. Per-provider counters + cooldowns survive process restarts; daily counters auto-reset at UTC midnight. Corrupt files fall back to empty state with a warning (never crash on read).
 - **`Agent`** (`src/agents/agent.ts`) — stateless. Applies a system prompt to a user input, calls the router. Used as a sub-agent in multi-agent flows.
 - **`Controller`** (`src/agents/controller.ts`) — multi-agent orchestrator with two runtime modes: `parallel` (all sub-agents independently → synthesize) and `specialist` (controller picks one sub-agent for the task). Threads `CompleteOptions` through to every underlying call. Used by the `agents` CLI command.
+- **`ChatSession`** (`src/chat/session.ts`) — multi-turn conversation with persistent disk-backed history. `send(userInput)` appends user/assistant turns and writes back. Token-budget estimation via simple chars/N heuristic; surfaces budget warnings without enforcing them at the session layer (the REPL handles user-facing prompts).
+- **`ChatRepl`** (`src/chat/repl.ts`) — interactive readline-based loop on top of `ChatSession`. Event-driven (queue + promise) rather than for-await to survive stdin closing mid-handler. Handles `/clear`, `/truncate`, `/info`, `/usage`, `/help`, `/exit` slash commands plus 80% warning / 95% confirm prompts.
 - **`RoleOrchestrator`** (`src/agents/role-orchestrator.ts`) — the Stage 6 capstone. Takes a free-form task, asks the orchestration role for a JSON plan (`direct` / `single` / `parallel`), executes the plan via `RoleResolver`, synthesizes per-role outputs when needed. Used by the `task` CLI command. Defensive plan parsing falls back to a single `action-structural` call on malformed JSON.
 - **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
 - **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual — no internal timer.
@@ -338,6 +345,39 @@ Every deviation from the happy path prints a warning to stderr:
 ```
 
 Disable cross-role substitution with `crossRoleFailover: false` when constructing `RoleResolver` programmatically (CLI defaults to enabled).
+
+### Multi-turn chat sessions
+
+`chat <session-id>` opens an interactive REPL with persistent history at `~/.multi-agent/sessions/<id>.json`. Sessions survive process restarts — open the same id later and the conversation continues. Underneath, chat calls go through the `orchestration` role, so they inherit the role's failover and cross-role substitution.
+
+```
+npm run cli -- chat my-session
+chat: session 'my-session' (role: orchestration). Type /help for commands, /exit to leave.
+chat:my-session> What's a closure in JavaScript?
+[answer with full context of prior turns]
+chat:my-session> Give me an example.
+[answer building on the previous turn]
+chat:my-session> /info
+session id: my-session, role: orchestration, turns: 2, est. tokens: 312 / 100000
+chat:my-session> /clear
+history cleared.
+chat:my-session> /exit
+```
+
+**Slash commands:**
+
+| Command | Action |
+|---|---|
+| `/help` | Show available commands |
+| `/clear` | Wipe history (persists immediately) |
+| `/truncate <N>` | Keep only the most recent N turns |
+| `/info` | Print session id, role, turn count, token estimate |
+| `/usage` | Print router provider usage snapshot |
+| `/exit` | Leave session (history persists) |
+
+**Context budget:** sessions track token usage via a character-count heuristic (~4 chars/token). At 80% of budget, a warning prints. At 95%, you're prompted to confirm/clear/cancel before the next call goes out — protects against silently exceeding the model's context window on long sessions. Default budget: 100,000 tokens. Override per session by constructing `ChatSession` with a custom `tokenBudget`.
+
+**List existing sessions:** `npm run cli -- sessions`
 
 ### Serious mode (Gemini 3.x extended reasoning)
 

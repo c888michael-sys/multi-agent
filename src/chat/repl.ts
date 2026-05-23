@@ -1,0 +1,220 @@
+import { createInterface, Interface as ReadlineInterface } from "node:readline";
+import type { Router } from "../router.js";
+import type { ChatSession } from "./session.js";
+
+export interface ReplOptions {
+  session: ChatSession;
+  router: Router;
+  /** stdin/stdout override for tests. */
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+}
+
+const HELP_TEXT = `Slash commands:
+  /clear              wipe session history
+  /usage              show provider usage snapshot
+  /info               show session id, turn count, token estimate
+  /truncate <N>       keep only the most recent N turns
+  /help               show this help
+  /exit               leave the session (history persists)`;
+
+/**
+ * Interactive REPL on top of a ChatSession. Synchronous input loop via
+ * node:readline. Slash commands are handled locally; everything else is
+ * sent to the session.
+ *
+ * Token warnings:
+ *   - At 80%, print a warning and continue.
+ *   - At 95%, prompt the user to clear, truncate, or continue anyway.
+ */
+export class ChatRepl {
+  private readonly session: ChatSession;
+  private readonly router: Router;
+  private readonly rl: ReadlineInterface;
+  private readonly output: NodeJS.WritableStream;
+  private exiting = false;
+
+  constructor(opts: ReplOptions) {
+    this.session = opts.session;
+    this.router = opts.router;
+    this.output = opts.output ?? process.stdout;
+    this.rl = createInterface({
+      input: opts.input ?? process.stdin,
+      output: this.output,
+      prompt: this.makePrompt(),
+      terminal: false, // avoid escape codes in piped output
+    });
+  }
+
+  async run(): Promise<void> {
+    this.println(
+      `chat: session '${this.session.id}' (role: ${this.session.role}). Type /help for commands, /exit to leave.`,
+    );
+
+    // Event-driven loop with a queue so handlers can be async without missing
+    // pipelined input. for-await would crash when the stream closes mid-handler.
+    const queue: string[] = [];
+    let resolveNext: ((value: string | null) => void) | null = null;
+    let inputClosed = false;
+
+    const onLine = (raw: string) => {
+      const line = raw.trim();
+      if (resolveNext) {
+        const r = resolveNext;
+        resolveNext = null;
+        r(line);
+      } else {
+        queue.push(line);
+      }
+    };
+    const onClose = () => {
+      inputClosed = true;
+      if (resolveNext) {
+        const r = resolveNext;
+        resolveNext = null;
+        r(null); // signal end
+      }
+    };
+    this.rl.on("line", onLine);
+    this.rl.on("close", onClose);
+
+    const nextLine = (): Promise<string | null> => {
+      if (queue.length > 0) return Promise.resolve(queue.shift()!);
+      if (inputClosed) return Promise.resolve(null);
+      return new Promise((res) => {
+        resolveNext = res;
+      });
+    };
+
+    this.safePrompt();
+    while (!this.exiting) {
+      const line = await nextLine();
+      if (line === null) break; // stdin closed
+      if (!line) {
+        this.safePrompt();
+        continue;
+      }
+      if (line.startsWith("/")) {
+        const handled = await this.handleSlash(line);
+        if (handled === "exit") break;
+      } else {
+        await this.handleMessage(line);
+      }
+      this.rl.setPrompt(this.makePrompt());
+      this.safePrompt();
+    }
+    this.rl.off("line", onLine);
+    this.rl.off("close", onClose);
+    try {
+      this.rl.close();
+    } catch {
+      // already closed
+    }
+  }
+
+  /** Call rl.prompt() only if readline hasn't been closed — avoids ERR_USE_AFTER_CLOSE. */
+  private safePrompt(): void {
+    try {
+      this.rl.prompt();
+    } catch {
+      // readline closed; nothing to do
+    }
+  }
+
+  /** Process a user message: warn on budget, optionally prompt before sending, then send. */
+  private async handleMessage(message: string): Promise<void> {
+    // Pre-send budget check on what the history WOULD be after appending.
+    // Cheap: just add message length to current estimate.
+    const projected =
+      this.session.estimateTokens() +
+      Math.ceil(message.length / 4); // matches default charsPerToken
+    const projectedPct = (projected / this.session.tokenBudget) * 100;
+    if (projectedPct >= 95) {
+      const proceed = await this.confirm(
+        `⚠ This message would push context to ~${projectedPct.toFixed(0)}% of budget (${projected} / ${this.session.tokenBudget} est. tokens). Continue anyway? [y/N/c] (c = clear history first) `,
+      );
+      if (proceed === "no") return;
+      if (proceed === "clear") this.session.clear();
+    } else if (projectedPct >= 80) {
+      this.println(
+        `⚠ Approaching token budget (${projectedPct.toFixed(0)}%). Consider /clear or /truncate.`,
+      );
+    }
+
+    let result;
+    try {
+      result = await this.session.send(message);
+    } catch (err) {
+      this.println(`error: ${(err as Error).message}`);
+      return;
+    }
+    this.println(result.reply);
+    if (result.warning === "over-budget") {
+      this.println(
+        `(now at ${result.budgetPct.toFixed(0)}% of token budget — /clear or /truncate recommended)`,
+      );
+    } else if (result.warning === "approaching-budget") {
+      this.println(`(now at ${result.budgetPct.toFixed(0)}% of token budget)`);
+    }
+  }
+
+  private async handleSlash(line: string): Promise<"continue" | "exit"> {
+    const [cmd, ...rest] = line.split(/\s+/);
+    switch (cmd) {
+      case "/help":
+        this.println(HELP_TEXT);
+        return "continue";
+      case "/clear":
+        this.session.clear();
+        this.println("history cleared.");
+        return "continue";
+      case "/usage": {
+        const { formatUsageReport } = await import("../conservation.js");
+        this.println(formatUsageReport(this.router));
+        return "continue";
+      }
+      case "/info":
+        this.println(
+          `session id: ${this.session.id}, role: ${this.session.role}, turns: ${this.session.turnCount()}, est. tokens: ${this.session.estimateTokens()} / ${this.session.tokenBudget}`,
+        );
+        return "continue";
+      case "/truncate": {
+        const n = parseInt(rest[0] ?? "", 10);
+        if (!Number.isFinite(n) || n < 1) {
+          this.println("usage: /truncate <positive integer>");
+          return "continue";
+        }
+        this.session.truncateToRecent(n);
+        this.println(`kept the most recent ${n} turn(s).`);
+        return "continue";
+      }
+      case "/exit":
+        this.exiting = true;
+        this.rl.close();
+        return "exit";
+      default:
+        this.println(`unknown command: ${cmd}. /help for list.`);
+        return "continue";
+    }
+  }
+
+  /** Prompt the user with a yes/no/clear choice. Returns "yes" | "no" | "clear". */
+  private confirm(question: string): Promise<"yes" | "no" | "clear"> {
+    return new Promise((resolve) => {
+      this.rl.question(question, (answer) => {
+        const a = answer.trim().toLowerCase();
+        if (a === "y" || a === "yes") resolve("yes");
+        else if (a === "c" || a === "clear") resolve("clear");
+        else resolve("no");
+      });
+    });
+  }
+
+  private makePrompt(): string {
+    return `chat:${this.session.id}> `;
+  }
+
+  private println(s: string): void {
+    this.output.write(s + "\n");
+  }
+}

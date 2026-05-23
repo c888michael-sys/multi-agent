@@ -29,6 +29,9 @@ import {
   ToolRunner,
   RoleResolver,
   RoleOrchestrator,
+  ChatSession,
+  ChatRepl,
+  listSessions,
   DEFAULT_ROLES,
   type ControllerMode,
   type CompleteOptions,
@@ -197,6 +200,23 @@ function cmdUsage(): void {
   console.log(formatUsageReport(router));
 }
 
+async function cmdChat(sessionId: string): Promise<void> {
+  const router = buildRouter();
+  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
+  const session = new ChatSession({ resolver, id: sessionId });
+  const repl = new ChatRepl({ session, router });
+  await repl.run();
+}
+
+function cmdSessions(): void {
+  const ids = listSessions();
+  if (ids.length === 0) {
+    console.log("(no sessions yet — start one with `npm run cli -- chat <name>`)");
+    return;
+  }
+  for (const id of ids) console.log(id);
+}
+
 async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions): Promise<void> {
   const router = buildRouter();
   const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
@@ -233,6 +253,8 @@ Commands:
   ask <prompt>             single completion through the router
   agents <prompt>          orchestrate fixed sub-agents (parallel/specialist modes)
   task <prompt>            roster-aware orchestrator picks roles automatically
+  chat <session-name>      interactive multi-turn REPL with persistent history
+  sessions                 list saved chat session names
   usage                    print router state (counts, cooldowns, % remaining)
 
 Flags for 'task':
@@ -282,6 +304,22 @@ async function main(): Promise<void> {
 
   if (command === "usage") {
     cmdUsage();
+    return;
+  }
+
+  if (command === "chat") {
+    const sessionId = argv[1];
+    if (!sessionId) {
+      console.error("Error: chat requires a session name. Example: npm run cli -- chat my-session");
+      printHelp();
+      process.exit(2);
+    }
+    await cmdChat(sessionId);
+    return;
+  }
+
+  if (command === "sessions") {
+    cmdSessions();
     return;
   }
 

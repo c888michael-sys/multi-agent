@@ -74,6 +74,27 @@ export class GeminiProvider implements Provider {
     return null;
   }
 
+  async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
+    const generationConfig: Record<string, unknown> = {
+      ...(opts?.maxTokens !== undefined && { maxOutputTokens: opts.maxTokens }),
+      ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+      ...(opts?.thinking !== undefined && {
+        thinkingConfig: { thinkingLevel: opts.thinking },
+      }),
+    };
+    const modelArgs: Record<string, unknown> = {
+      model: this.model,
+      generationConfig,
+    };
+    if (opts?.useSearch) modelArgs.tools = [{ googleSearch: {} }];
+    const model = this.client.getGenerativeModel(modelArgs as never);
+    const contents = historyToGeminiContents(history);
+    const result = await model.generateContent({ contents } as never);
+    const text = result.response.text();
+    if (!opts?.useSearch) return text;
+    return appendSources(text, result.response);
+  }
+
   async completeWithTools(
     history: ConversationPart[],
     tools: ToolDeclaration[],

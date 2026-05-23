@@ -168,6 +168,49 @@ export class Router {
     }
   }
 
+  /**
+   * Multi-turn chat completion (no tools). Same failover semantics as
+   * complete(). Providers without completeChat() are skipped.
+   */
+  async completeChat(
+    history: ConversationPart[],
+    opts?: CompleteOptions,
+    providerIds?: ReadonlySet<string>,
+  ): Promise<string> {
+    const attempts: { providerId: string; error: unknown }[] = [];
+    const startedAt = this.now();
+
+    while (true) {
+      for (let i = 0; i < this.pool.size(); i++) {
+        const pick = this.pool.pickAvailable(providerIds);
+        if (!pick) break;
+        if (!pick.provider.completeChat) continue; // skip non-chat-capable providers
+        try {
+          const result = await pick.provider.completeChat(history, opts);
+          this.pool.markSuccess(pick.index);
+          return result;
+        } catch (err) {
+          if (pick.provider.isRateLimitError(err)) {
+            this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+            attempts.push({ providerId: pick.provider.id, error: err });
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
+      const earliest = this.pool.earliestAvailable();
+      const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
+      if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
+      await this.sleep(waitMs);
+    }
+  }
+
   /** Caller-visible state — call counts, cooldowns, remaining quota %. */
   snapshot() {
     return this.pool.snapshot();
