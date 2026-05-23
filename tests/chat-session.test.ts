@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Router } from "../src/router.js";
 import { RoleResolver } from "../src/roles/resolver.js";
-import { ChatSession, listSessions } from "../src/chat/session.js";
+import { ChatSession, listSessions, parseRouteDirective } from "../src/chat/session.js";
 import { FakeProvider } from "./fixtures.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
@@ -13,16 +13,15 @@ import type { ConversationPart } from "../src/tools/types.js";
  * scripted with the given chat-style responses. The FakeProvider's complete()
  * isn't used; we add a completeChat handler manually via a wrapper.
  */
-function chatProvider(replies: string[]) {
-  const p = new FakeProvider("chat", []);
-  // Stub completeChat by replacing the prototype method on this instance.
+function chatProvider(replies: string[], id = "chat") {
+  const p = new FakeProvider(id, []);
+  // Stub completeChat by replacing the method on this instance.
   (p as unknown as { completeChat: (h: ConversationPart[]) => Promise<string> }).completeChat = async (
     history: ConversationPart[],
   ) => {
-    // record the call by stuffing a fake call entry
     p.calls.push({ prompt: JSON.stringify(history) });
     const next = replies.shift();
-    if (next === undefined) throw new Error("chatProvider: out of replies");
+    if (next === undefined) throw new Error(`chatProvider(${id}): out of replies`);
     return next;
   };
   return p;
@@ -152,6 +151,99 @@ describe("ChatSession", () => {
     await s.send("2");
     await s.send("3");
     expect(s.turnCount()).toBe(3);
+  });
+});
+
+describe("parseRouteDirective", () => {
+  it("returns null for normal text replies", () => {
+    expect(parseRouteDirective("hello world")).toBeNull();
+    expect(parseRouteDirective("Let me think...")).toBeNull();
+  });
+
+  it("recognizes ROUTE: directives with known roles", () => {
+    expect(parseRouteDirective("ROUTE: action-code")).toBe("action-code");
+    expect(parseRouteDirective("route: perception")).toBe("perception");
+    expect(parseRouteDirective("  ROUTE:  reasoning  ")).toBe("reasoning");
+  });
+
+  it("rejects ROUTE: with unknown roles", () => {
+    expect(parseRouteDirective("ROUTE: nope")).toBeNull();
+    expect(parseRouteDirective("ROUTE: orchestration")).toBeNull(); // can't route to self
+  });
+
+  it("rejects ROUTE: with extra text after the role", () => {
+    expect(parseRouteDirective("ROUTE: action-code then also do X")).toBeNull();
+  });
+
+  it("strips wrapping quotes", () => {
+    expect(parseRouteDirective('"ROUTE: action-code"')).toBe("action-code");
+  });
+});
+
+describe("ChatSession smart routing", () => {
+  let dir: string;
+  let storage: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "chatsmart-"));
+    storage = join(dir, "test.json");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("routes to specialist when orchestrator emits ROUTE: directive", async () => {
+    // Orchestrator says ROUTE: action-code; specialist then answers.
+    const orchestrator = chatProvider(["ROUTE: action-code"], "orc");
+    const specialist = chatProvider(["function fib(n) { return n; }"], "code");
+    const router = new Router([orchestrator, specialist], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "orc" }] },
+      { name: "action-code", description: "x", candidates: [{ providerId: "code" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "smart", storagePath: storage });
+
+    const result = await s.send("Write a fib function");
+    expect(result.servedBy).toBe("action-code");
+    expect(result.reply).toBe("function fib(n) { return n; }");
+    // History contains ONLY the user message + specialist's reply.
+    // The orchestrator's "ROUTE: action-code" directive is ephemeral, not persisted.
+    expect(s.snapshot().history).toEqual([
+      { kind: "user_text", text: "Write a fib function" },
+      { kind: "model_text", text: "function fib(n) { return n; }" },
+    ]);
+    // Orchestrator was called with the routing preamble + history. Specialist was
+    // called with the CLEAN history (no preamble).
+    expect(orchestrator.calls).toHaveLength(1);
+    expect(orchestrator.calls[0]!.prompt).toContain("CHAT-ROUTING PROTOCOL");
+    expect(specialist.calls).toHaveLength(1);
+    expect(specialist.calls[0]!.prompt).not.toContain("CHAT-ROUTING PROTOCOL");
+  });
+
+  it("uses orchestrator answer directly when no ROUTE: directive", async () => {
+    const orchestrator = chatProvider(["just a normal reply"]);
+    const router = new Router([orchestrator], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "direct", storagePath: storage });
+
+    const result = await s.send("hi");
+    expect(result.servedBy).toBe("orchestration");
+    expect(result.reply).toBe("just a normal reply");
+  });
+
+  it("smartRouting=false skips the routing layer entirely", async () => {
+    const p = chatProvider(["plain reply"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "simple", storagePath: storage, smartRouting: false });
+
+    const result = await s.send("hi");
+    expect(result.servedBy).toBe("orchestration");
+    expect(result.reply).toBe("plain reply");
+    // Single call — no routing planning overhead.
+    expect(p.calls).toHaveLength(1);
   });
 });
 

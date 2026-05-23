@@ -257,7 +257,7 @@ multi-agent/
 - **`StateStore`** (`src/state.ts`) — JSON-on-disk persistence behind an interface. Per-provider counters + cooldowns survive process restarts; daily counters auto-reset at UTC midnight. Corrupt files fall back to empty state with a warning (never crash on read).
 - **`Agent`** (`src/agents/agent.ts`) — stateless. Applies a system prompt to a user input, calls the router. Used as a sub-agent in multi-agent flows.
 - **`Controller`** (`src/agents/controller.ts`) — multi-agent orchestrator with two runtime modes: `parallel` (all sub-agents independently → synthesize) and `specialist` (controller picks one sub-agent for the task). Threads `CompleteOptions` through to every underlying call. Used by the `agents` CLI command.
-- **`ChatSession`** (`src/chat/session.ts`) — multi-turn conversation with persistent disk-backed history. `send(userInput)` appends user/assistant turns and writes back. Token-budget estimation via simple chars/N heuristic; surfaces budget warnings without enforcing them at the session layer (the REPL handles user-facing prompts).
+- **`ChatSession`** (`src/chat/session.ts`) — multi-turn conversation with persistent disk-backed history. `send(userInput)` appends user/assistant turns and writes back. Token-budget estimation via simple chars/N heuristic; surfaces budget warnings without enforcing them at the session layer (the REPL handles user-facing prompts). Smart-routing mode (default): each turn first asks the orchestrator whether to answer or delegate (`ROUTE: <role>` directive); on delegation the specialist receives the clean conversation history. Routing decisions are ephemeral — never persisted.
 - **`ChatRepl`** (`src/chat/repl.ts`) — interactive readline-based loop on top of `ChatSession`. Event-driven (queue + promise) rather than for-await to survive stdin closing mid-handler. Handles `/clear`, `/truncate`, `/info`, `/usage`, `/help`, `/exit` slash commands plus 80% warning / 95% confirm prompts.
 - **`RoleOrchestrator`** (`src/agents/role-orchestrator.ts`) — the Stage 6 capstone. Takes a free-form task, asks the orchestration role for a JSON plan (`direct` / `single` / `parallel`), executes the plan via `RoleResolver`, synthesizes per-role outputs when needed. Used by the `task` CLI command. Defensive plan parsing falls back to a single `action-structural` call on malformed JSON.
 - **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
@@ -350,7 +350,9 @@ Disable cross-role substitution with `crossRoleFailover: false` when constructin
 
 ### Multi-turn chat sessions
 
-`chat <session-id>` opens an interactive REPL with persistent history at `~/.multi-agent/sessions/<id>.json`. Sessions survive process restarts — open the same id later and the conversation continues. Underneath, chat calls go through the `orchestration` role, so they inherit the role's failover and cross-role substitution.
+`chat <session-id>` opens an interactive REPL with persistent history at `~/.multi-agent/sessions/<id>.json`. Sessions survive process restarts — open the same id later and the conversation continues.
+
+**Smart routing** (default): every turn first asks the orchestrator (Gemini) whether a specialist would serve the user's message better. If yes, the orchestrator emits `ROUTE: <role>` and the specialist (Codestral, DeepSeek V4, Cerebras Llama, etc.) handles the turn with the full conversation history. If no, the orchestrator answers directly. The routing decision is ephemeral — only the actual reply gets persisted to history, so the conversation stays clean. The REPL prints `[routed to X]` above the reply whenever a specialist served the turn. Disable per-session by constructing `ChatSession` with `smartRouting: false` (legacy single-role behavior).
 
 ```
 npm run cli -- chat my-session
@@ -376,6 +378,8 @@ chat:my-session> /exit
 | `/info` | Print session id, role, turn count, token estimate |
 | `/usage` | Print router provider usage snapshot |
 | `/exit` | Leave session (history persists) |
+
+Slash commands accept either `/cmd` or `\cmd` (Windows users habitually type backslash) and `exit`/`quit` work as bare aliases for `/exit`.
 
 **Context budget:** sessions track token usage via a character-count heuristic (~4 chars/token). At 80% of budget, a warning prints. At 95%, you're prompted to confirm/clear/cancel before the next call goes out — protects against silently exceeding the model's context window on long sessions. Default budget: 100,000 tokens. Override per session by constructing `ChatSession` with a custom `tokenBudget`.
 

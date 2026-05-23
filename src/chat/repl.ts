@@ -94,8 +94,14 @@ export class ChatRepl {
         this.safePrompt();
         continue;
       }
-      if (line.startsWith("/")) {
-        const handled = await this.handleSlash(line);
+      // Accept either "/cmd" or "\cmd" — Windows users habitually type backslash.
+      // Also accept bare "exit"/"quit" as friendly aliases for /exit.
+      if (line.startsWith("/") || line.startsWith("\\")) {
+        const normalized = "/" + line.slice(1);
+        const handled = await this.handleSlash(normalized);
+        if (handled === "exit") break;
+      } else if (line === "exit" || line === "quit") {
+        const handled = await this.handleSlash("/exit");
         if (handled === "exit") break;
       } else {
         await this.handleMessage(line);
@@ -147,6 +153,10 @@ export class ChatRepl {
     } catch (err) {
       this.println(`error: ${(err as Error).message}`);
       return;
+    }
+    // Surface specialist routing so the user knows which model answered.
+    if (result.servedBy !== "orchestration") {
+      this.println(`[routed to ${result.servedBy}]`);
     }
     this.println(result.reply);
     if (result.warning === "over-budget") {
