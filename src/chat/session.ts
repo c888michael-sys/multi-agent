@@ -55,6 +55,20 @@ export interface ChatSessionOptions {
    * by default; toggleable mid-session via /power slash command.
    */
   powerful?: boolean;
+  /**
+   * When true (default), automatically summarize the oldest turns before
+   * sending if estimated context usage is about to exceed
+   * `autoSummarizeAtPct` of the token budget. The summarization replaces
+   * the old turns with a single synthetic "[Earlier conversation summary]"
+   * pair, freeing budget. Most recent `keepRecentTurns` are preserved
+   * verbatim. Disabled when false; user must `/clear` or `/truncate`
+   * manually instead.
+   */
+  autoSummarize?: boolean;
+  /** Percent of token budget at which auto-summarization triggers. Default 85. */
+  autoSummarizeAtPct?: number;
+  /** Most recent N user/assistant pairs always kept verbatim. Default 3. */
+  keepRecentTurns?: number;
   /** Path to JSON file backing this session. Default ~/.multi-agent/sessions/<id>.json. */
   storagePath?: string;
   /** Soft token budget. Warn at 80%, prompt at 95%. Default 100_000 tokens. */
@@ -91,6 +105,8 @@ export interface SendResult {
   servedBy: RoleName[];
   /** Plan the orchestrator picked for this turn (smart-routing mode only). */
   plan?: Plan;
+  /** Number of older turns folded into a summary on this send, if any. */
+  summarizedTurns?: number;
 }
 
 const SESSION_VERSION = 1;
@@ -111,6 +127,9 @@ export class ChatSession {
   readonly smartRouting: boolean;
   readonly storagePath: string;
   readonly tokenBudget: number;
+  readonly autoSummarize: boolean;
+  readonly autoSummarizeAtPct: number;
+  readonly keepRecentTurns: number;
   private readonly charsPerToken: number;
   private readonly resolver: RoleResolver;
   private powerful: boolean;
@@ -125,6 +144,9 @@ export class ChatSession {
     this.role = opts.role ?? "orchestration";
     this.smartRouting = opts.smartRouting ?? true;
     this.powerful = opts.powerful ?? false;
+    this.autoSummarize = opts.autoSummarize ?? true;
+    this.autoSummarizeAtPct = opts.autoSummarizeAtPct ?? 85;
+    this.keepRecentTurns = opts.keepRecentTurns ?? 3;
     this.storagePath =
       opts.storagePath ?? join(homedir(), ".multi-agent", "sessions", `${opts.id}.json`);
     this.tokenBudget = opts.tokenBudget ?? DEFAULT_BUDGET;
@@ -161,13 +183,24 @@ export class ChatSession {
    * underlying call's opts. Non-Gemini providers ignore it.
    */
   async send(userInput: string, opts?: CompleteOptions): Promise<SendResult> {
-    this.history.push({ kind: "user_text", text: userInput });
-
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
       ...(this.powerful && { thinking: "high" as const }),
       ...opts,
     };
+
+    // Auto-summarize older turns if we're about to exceed budget.
+    let summarizedTurns = 0;
+    if (this.autoSummarize) {
+      const projected =
+        this.estimateTokens() + Math.ceil(userInput.length / this.charsPerToken);
+      const projectedPct = (projected / this.tokenBudget) * 100;
+      if (projectedPct >= this.autoSummarizeAtPct) {
+        summarizedTurns = await this.summarizeOlderTurns(effectiveOpts);
+      }
+    }
+
+    this.history.push({ kind: "user_text", text: userInput });
 
     let reply: string;
     let servedBy: RoleName[];
@@ -194,9 +227,72 @@ export class ChatSession {
     const budgetPct = (tokenEstimate / this.tokenBudget) * 100;
     const result: SendResult = { reply, tokenEstimate, budgetPct, servedBy };
     if (plan) result.plan = plan;
+    if (summarizedTurns > 0) result.summarizedTurns = summarizedTurns;
     if (budgetPct >= 95) result.warning = "over-budget";
     else if (budgetPct >= 80) result.warning = "approaching-budget";
     return result;
+  }
+
+  /**
+   * Collapse older turns into a single synthetic summary pair, keeping the
+   * most recent `keepRecentTurns` user/assistant pairs verbatim. Persists
+   * after the rewrite. Returns the number of turns (model_text entries)
+   * actually folded into the summary; 0 if there was nothing to summarize
+   * or the summarization call failed (in which case the call is silently
+   * skipped so the user's message can still go through).
+   */
+  private async summarizeOlderTurns(opts: CompleteOptions): Promise<number> {
+    const keepMessages = this.keepRecentTurns * 2;
+    // Need at least keepMessages + 2 to have something to fold (so the kept
+    // window doesn't include the summary slot itself).
+    if (this.history.length <= keepMessages + 2) return 0;
+
+    const cutoff = this.history.length - keepMessages;
+    const toFold = this.history.slice(0, cutoff);
+    const kept = this.history.slice(cutoff);
+
+    // Count user/assistant pairs we're collapsing for the SendResult report.
+    const foldedTurns = toFold.filter((p) => p.kind === "model_text").length;
+
+    const summary = await this.callSummarizer(toFold, opts);
+    if (!summary) return 0; // summarizer failed; leave history untouched
+
+    this.history = [
+      {
+        kind: "user_text",
+        text: `[The earlier portion of this conversation was auto-summarized to fit the context budget.]`,
+      },
+      { kind: "model_text", text: `Earlier conversation summary:\n\n${summary}` },
+      ...kept,
+    ];
+    this.persist();
+    return foldedTurns;
+  }
+
+  private async callSummarizer(
+    parts: ConversationPart[],
+    opts: CompleteOptions,
+  ): Promise<string | null> {
+    const lines: string[] = [];
+    for (const p of parts) {
+      if (p.kind === "user_text") lines.push(`User: ${p.text}`);
+      else if (p.kind === "model_text") lines.push(`Assistant: ${p.text}`);
+      else if (p.kind === "tool_result") lines.push(`Tool[${p.name}]: ${p.result}`);
+    }
+    const block = lines.join("\n\n");
+    const prompt = `Summarize this earlier portion of a conversation. Preserve any decisions made, names mentioned, key facts established, and ongoing tasks or unresolved questions. Be terse but complete — this summary will replace the original turns in the conversation history, so future turns must be able to infer relevant context from your summary alone.
+
+Conversation to summarize:
+
+${block}
+
+Output ONLY the summary, no preamble.`;
+    try {
+      return await this.resolver.runRole(this.role, prompt, opts);
+    } catch (err) {
+      console.error(`[chat-session] auto-summarize failed: ${(err as Error).message}`);
+      return null;
+    }
   }
 
   /**
@@ -280,6 +376,56 @@ export class ChatSession {
     this.history = [];
     this.updatedAt = Date.now();
     this.persist();
+  }
+
+  /**
+   * Save a snapshot of the current history under a new session id. The current
+   * session continues unchanged — useful for branching ("save here, then keep
+   * exploring; come back to this point later"). The new file lives next to
+   * this session's storage file by default.
+   */
+  saveAs(newId: string): string {
+    const newPath = join(dirname(this.storagePath), `${newId}.json`);
+    mkdirSync(dirname(newPath), { recursive: true });
+    const body = JSON.stringify(
+      {
+        version: SESSION_VERSION,
+        id: newId,
+        role: this.role,
+        createdAt: this.createdAt,
+        updatedAt: Date.now(),
+        history: this.history,
+      },
+      null,
+      2,
+    );
+    writeFileSync(newPath, body, "utf8");
+    return newPath;
+  }
+
+  /**
+   * Replace this session's history with the contents of another session file.
+   * The current history is overwritten (the new state immediately persists to
+   * THIS session's file). Use saveAs() first if you want to keep the current
+   * state under another id before loading.
+   *
+   * Returns true if the load succeeded, false if the source didn't exist.
+   */
+  loadFrom(otherId: string): boolean {
+    const otherPath = join(dirname(this.storagePath), `${otherId}.json`);
+    if (!existsSync(otherPath)) return false;
+    try {
+      const raw = readFileSync(otherPath, "utf8");
+      const parsed = JSON.parse(raw) as { history?: ConversationPart[] };
+      if (!Array.isArray(parsed.history)) return false;
+      this.history = parsed.history;
+      this.updatedAt = Date.now();
+      this.persist();
+      return true;
+    } catch (err) {
+      console.error(`[chat-session] failed to load ${otherPath}: ${(err as Error).message}`);
+      return false;
+    }
   }
 
   /**

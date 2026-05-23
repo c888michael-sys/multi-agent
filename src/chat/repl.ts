@@ -1,6 +1,7 @@
 import { createInterface, Interface as ReadlineInterface } from "node:readline";
 import type { Router } from "../router.js";
 import type { ChatSession } from "./session.js";
+import { startSpinner } from "./spinner.js";
 
 export interface ReplOptions {
   session: ChatSession;
@@ -13,6 +14,8 @@ export interface ReplOptions {
 const HELP_TEXT = `Slash commands (accept / or \\ prefix):
   /clear              wipe session history (persists immediately)
   /truncate <N>       keep only the most recent N turns
+  /save <name>        snapshot current history to a new session id (branch point)
+  /load <name>        replace current history with a saved session (overwrites!)
   /info               show session id, turn count, token estimate, mode flags
   /usage              show provider usage snapshot
   /power [on|off]     toggle "powerful" mode (Gemini thinking=high every call)
@@ -159,11 +162,22 @@ export class ChatRepl {
     }
 
     let result;
+    const stopSpinner = startSpinner(
+      this.session.isPowerful() ? "thinking (powerful mode)..." : "thinking...",
+      process.stderr,
+    );
     try {
       result = await this.session.send(message);
     } catch (err) {
+      stopSpinner();
       this.println(`error: ${(err as Error).message}`);
       return;
+    }
+    stopSpinner();
+    if (result.summarizedTurns) {
+      this.println(
+        `[auto-summarized ${result.summarizedTurns} older turn(s) to free context budget]`,
+      );
     }
     // Surface specialist routing so the user knows which model(s) answered.
     if (result.plan && result.plan.kind === "parallel") {
@@ -205,6 +219,44 @@ export class ChatRepl {
             `storage: ${this.session.storagePath}`,
         );
         return "continue";
+      case "/save": {
+        const name = rest[0];
+        if (!name) {
+          this.println("usage: /save <new-session-name>");
+          return "continue";
+        }
+        try {
+          const path = this.session.saveAs(name);
+          this.println(`saved current history as session '${name}' at ${path}`);
+        } catch (err) {
+          this.println(`save failed: ${(err as Error).message}`);
+        }
+        return "continue";
+      }
+      case "/load": {
+        const name = rest[0];
+        if (!name) {
+          this.println("usage: /load <existing-session-name>");
+          return "continue";
+        }
+        const proceed = await this.confirm(
+          `⚠ /load will OVERWRITE the current session's history with '${name}'. ` +
+            `Run /save <name> first if you want to keep the current state. Continue? [y/N] `,
+        );
+        if (proceed === "no") {
+          this.println("load cancelled.");
+          return "continue";
+        }
+        const ok = this.session.loadFrom(name);
+        if (ok) {
+          this.println(
+            `loaded '${name}' (${this.session.turnCount()} turn(s)) into current session.`,
+          );
+        } else {
+          this.println(`no session named '${name}' found.`);
+        }
+        return "continue";
+      }
       case "/power": {
         const arg = (rest[0] ?? "").toLowerCase();
         if (arg === "on") this.session.setPowerful(true);

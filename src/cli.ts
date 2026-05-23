@@ -23,6 +23,7 @@ import {
   Controller,
   loadAllProvidersFromEnv,
   formatUsageReport,
+  attachConservationPolicy,
   FileStateStore,
   FileTools,
   BashTool,
@@ -78,7 +79,11 @@ function buildRouter(): Router {
     );
     process.exit(1);
   }
-  return new Router(providers, { stateStore: new FileStateStore() });
+  const router = new Router(providers, { stateStore: new FileStateStore() });
+  // Wire ConservationPolicy to auto-tick after every successful call. No-op
+  // until any provider has an estimatedDailyBudget set (see Stage 4 polish).
+  attachConservationPolicy(router);
+  return router;
 }
 
 function buildDefaultAgents(router: Router): Agent[] {

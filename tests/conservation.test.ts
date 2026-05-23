@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Router } from "../src/router.js";
-import { ConservationPolicy } from "../src/conservation.js";
+import { ConservationPolicy, attachConservationPolicy } from "../src/conservation.js";
 import { FakeProvider } from "./fixtures.js";
 
 describe("ConservationPolicy", () => {
@@ -65,6 +65,61 @@ describe("ConservationPolicy", () => {
     const r = new Router([a]);
     expect(() => new ConservationPolicy(r, { thresholdPct: 50, releasePct: 50 })).toThrow();
     expect(() => new ConservationPolicy(r, { thresholdPct: 50, releasePct: 30 })).toThrow();
+  });
+});
+
+describe("attachConservationPolicy", () => {
+  it("ticks the policy after each successful router call", async () => {
+    const a = new FakeProvider("a", [
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+    ]);
+    const r = new Router([{ provider: a, estimatedDailyBudget: 5 }], { maxRetryWaitMs: 0 });
+    const policy = attachConservationPolicy(r, { thresholdPct: 25, releasePct: 50 });
+
+    expect(r.getMode()).toBe("round-robin"); // starts in default
+    // After 5 successful calls, used = 5, budget = 5, remainingPct = 0 → policy
+    // should auto-flip the router to serial mode without us calling tick().
+    for (let i = 0; i < 5; i++) await r.complete("hi");
+    expect(r.getMode()).toBe("serial");
+    expect(policy).toBeDefined(); // returned for further use if needed
+  });
+
+  it("policy's onAfterCall hook is invoked exactly once per successful call", async () => {
+    const a = new FakeProvider("a", [
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+    ]);
+    let ticks = 0;
+    const r = new Router([a], {
+      maxRetryWaitMs: 0,
+      onAfterCall: () => {
+        ticks++;
+      },
+    });
+    await r.complete("hi");
+    await r.complete("hi");
+    expect(ticks).toBe(2);
+  });
+
+  it("router setOnAfterCall replaces the hook (used by attachConservationPolicy)", async () => {
+    const a = new FakeProvider("a", [
+      { kind: "ok", text: "x" },
+      { kind: "ok", text: "x" },
+    ]);
+    const r = new Router([a], { maxRetryWaitMs: 0 });
+    let ticks = 0;
+    r.setOnAfterCall(() => {
+      ticks++;
+    });
+    await r.complete("hi");
+    expect(ticks).toBe(1);
   });
 });
 

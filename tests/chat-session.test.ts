@@ -346,6 +346,164 @@ describe("ChatSession powerful mode", () => {
   });
 });
 
+describe("ChatSession saveAs / loadFrom", () => {
+  let dir: string;
+  let storage: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "chatsl-"));
+    storage = join(dir, "original.json");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("saveAs copies history to a new session file without disturbing the original", async () => {
+    const p = chatProvider(["a"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "original",
+      storagePath: storage,
+      smartRouting: false,
+    });
+    await s.send("hello");
+
+    const branchPath = s.saveAs("branch");
+    expect(existsSync(branchPath)).toBe(true);
+    const branchJson = JSON.parse(readFileSync(branchPath, "utf8"));
+    expect(branchJson.history).toHaveLength(2);
+    // Original session file untouched and current in-memory state unchanged.
+    expect(s.snapshot().history).toHaveLength(2);
+  });
+
+  it("loadFrom replaces current history with another session's history and persists", async () => {
+    const p = chatProvider(["a", "b"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s1 = new ChatSession({
+      resolver,
+      id: "original",
+      storagePath: storage,
+      smartRouting: false,
+    });
+    await s1.send("hi");
+    s1.saveAs("snapshot");
+
+    // Now mutate the original session.
+    await s1.send("more");
+    expect(s1.snapshot().history).toHaveLength(4);
+
+    // Load the snapshot back — should overwrite current to 2 messages.
+    const ok = s1.loadFrom("snapshot");
+    expect(ok).toBe(true);
+    expect(s1.snapshot().history).toHaveLength(2);
+    // Original file on disk also reflects the loaded state.
+    const onDisk = JSON.parse(readFileSync(storage, "utf8"));
+    expect(onDisk.history).toHaveLength(2);
+  });
+
+  it("loadFrom returns false when the source session doesn't exist", () => {
+    const p = chatProvider([]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "original",
+      storagePath: storage,
+      smartRouting: false,
+    });
+    expect(s.loadFrom("does-not-exist")).toBe(false);
+  });
+});
+
+describe("ChatSession auto-summarization", () => {
+  let dir: string;
+  let storage: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "chatsum-"));
+    storage = join(dir, "test.json");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("triggers summarization when projected usage exceeds the threshold", async () => {
+    const p = chatProvider(["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]);
+    // The summarizer calls runRole → provider.complete (NOT completeChat).
+    // Override that to always return a stub summary.
+    (p as unknown as { complete: () => Promise<string> }).complete = async () => "stub summary";
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "sum",
+      storagePath: storage,
+      smartRouting: false,
+      tokenBudget: 100,
+      charsPerToken: 4,
+      autoSummarize: true,
+      autoSummarizeAtPct: 50,
+      keepRecentTurns: 1,
+    });
+
+    // Send long-ish messages; at some point summarization must trigger.
+    let sawSummary = false;
+    for (let i = 0; i < 6; i++) {
+      const r = await s.send("x".repeat(60));
+      if (r.summarizedTurns && r.summarizedTurns > 0) sawSummary = true;
+    }
+    expect(sawSummary).toBe(true);
+
+    // After at least one summarization, history starts with the synthetic summary.
+    const h = s.snapshot().history;
+    expect((h[0]! as { text: string }).text).toContain("auto-summarized");
+    expect((h[1]! as { text: string }).text).toContain("Earlier conversation summary");
+  });
+
+  it("does not summarize when below threshold", async () => {
+    const p = chatProvider(["a", "b", "c"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "nosum",
+      storagePath: storage,
+      smartRouting: false,
+      autoSummarize: true,
+      tokenBudget: 100_000, // huge — never trips
+    });
+    const result = await s.send("hi");
+    expect(result.summarizedTurns).toBeUndefined();
+  });
+
+  it("autoSummarize=false disables the feature entirely", async () => {
+    const p = chatProvider(["a", "b", "c"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "nosum2",
+      storagePath: storage,
+      smartRouting: false,
+      autoSummarize: false,
+      tokenBudget: 5, // tiny — would trigger if enabled
+    });
+    const result = await s.send("hello world this is long");
+    expect(result.summarizedTurns).toBeUndefined();
+  });
+});
+
 describe("listSessions", () => {
   let dir: string;
 

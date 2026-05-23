@@ -42,6 +42,7 @@ export {
 // Conservation
 export {
   ConservationPolicy,
+  attachConservationPolicy,
   formatUsageReport,
   type ConservationConfig,
   type ConservationStatus,

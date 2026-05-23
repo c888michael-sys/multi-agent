@@ -81,6 +81,24 @@ export class ConservationPolicy {
   }
 }
 
+/**
+ * Convenience helper: build a ConservationPolicy and wire it to auto-tick
+ * after every router call. The returned policy lets callers still invoke
+ * .tick() manually (e.g., from tests). Pass the SAME Router instance you
+ * want the policy to govern.
+ *
+ * Use this in CLI / app code paths where you want conservation mode to
+ * adapt in real time without an explicit polling loop.
+ */
+export function attachConservationPolicy(
+  router: Router,
+  config?: ConservationConfig,
+): ConservationPolicy {
+  const policy = new ConservationPolicy(router, config);
+  router.setOnAfterCall(() => policy.tick());
+  return policy;
+}
+
 /** Pretty-print snapshot for console display. */
 export function formatUsageReport(router: Router): string {
   const snap = router.snapshot();

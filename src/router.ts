@@ -40,6 +40,14 @@ export interface RouterOptions {
    * state lives only for this Router instance.
    */
   stateStore?: StateStore;
+  /**
+   * Optional callback invoked after every successful provider call (across
+   * complete / completeWithTools / completeChat). Used to drive
+   * ConservationPolicy.tick() so the pool mode adapts in real time. Errors
+   * in the callback are swallowed so an instrumentation bug can't kill a
+   * successful response.
+   */
+  onAfterCall?: () => void;
 }
 
 const DEFAULT_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -51,6 +59,7 @@ export class Router {
   private readonly maxRetryWaitMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly jitter: () => number;
+  private onAfterCall: () => void;
 
   constructor(providers: Array<Provider | ProviderConfig>, options?: RouterOptions) {
     if (providers.length === 0) throw new NoProvidersConfiguredError();
@@ -63,6 +72,21 @@ export class Router {
     this.maxRetryWaitMs = options?.maxRetryWaitMs ?? 90_000;
     this.sleep = options?.sleep ?? DEFAULT_SLEEP;
     this.jitter = options?.jitterMs ?? DEFAULT_JITTER;
+    this.onAfterCall = options?.onAfterCall ?? (() => {});
+  }
+
+  /** Replace the post-call hook. Used to wire ConservationPolicy after construction. */
+  setOnAfterCall(fn: () => void): void {
+    this.onAfterCall = fn;
+  }
+
+  /** Safely invoke the after-call hook — swallow any error from the listener. */
+  private fireAfterCall(): void {
+    try {
+      this.onAfterCall();
+    } catch {
+      // intentional: instrumentation must never break a successful response
+    }
   }
 
   /**
@@ -116,6 +140,7 @@ export class Router {
         if (attribution) attribution.providerId = pick.provider.id;
         const result = await pick.provider.complete(prompt, opts);
         this.pool.markSuccess(pick.index);
+        this.fireAfterCall();
         return { kind: "ok", text: result };
       } catch (err) {
         if (pick.provider.isRateLimitError(err)) {
@@ -158,6 +183,7 @@ export class Router {
           if (attribution) attribution.providerId = pick.provider.id;
           const result = await pick.provider.completeWithTools(history, tools, opts);
           this.pool.markSuccess(pick.index);
+          this.fireAfterCall();
           return result;
         } catch (err) {
           if (pick.provider.isRateLimitError(err)) {
@@ -206,6 +232,7 @@ export class Router {
           if (attribution) attribution.providerId = pick.provider.id;
           const result = await pick.provider.completeChat(history, opts);
           this.pool.markSuccess(pick.index);
+          this.fireAfterCall();
           return result;
         } catch (err) {
           if (pick.provider.isRateLimitError(err)) {

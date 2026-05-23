@@ -261,7 +261,7 @@ multi-agent/
 - **`ChatRepl`** (`src/chat/repl.ts`) — interactive readline-based loop on top of `ChatSession`. Event-driven (queue + promise) rather than for-await to survive stdin closing mid-handler. Handles `/clear`, `/truncate`, `/info`, `/usage`, `/help`, `/exit` slash commands plus 80% warning / 95% confirm prompts.
 - **`RoleOrchestrator`** (`src/agents/role-orchestrator.ts`) — the Stage 6 capstone. Takes a free-form task, asks the orchestration role for a JSON plan (`direct` / `single` / `parallel`), executes the plan via `RoleResolver`, synthesizes per-role outputs when needed. Used by the `task` CLI command. Defensive plan parsing falls back to a single `action-structural` call on malformed JSON.
 - **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
-- **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual — no internal timer.
+- **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual; `attachConservationPolicy(router)` registers a `router.onAfterCall` hook so the policy auto-ticks after every successful call. The CLI's `buildRouter` calls this by default — conservation adapts in real time once any provider has an `estimatedDailyBudget` set.
 - **`RoleConfig` / `RoleResolver`** (`src/roles/`) — Stage 6: functional role → ordered list of candidate providers. Resolver picks the first registered + non-cooling candidate and calls the Router constrained to that provider subset. Defaults in `default-registry.ts`. Currently all roles fall back to Gemini until other providers are wired (steps 2-5 of Stage 6).
 
 ## Setup
@@ -371,6 +371,23 @@ chat:my-tough-session> ...
 
 **To wipe history**: `/clear` inside the REPL, or delete `~/.multi-agent/sessions/<id>.json` from outside. The REPL also greets you with the prior turn count when you resume an existing session, with `/clear` mentioned right there.
 
+**Save / load (branching):**
+
+```
+chat:my-session> /save backup-before-rewrite
+saved current history as session 'backup-before-rewrite' at ~/.multi-agent/sessions/backup-before-rewrite.json
+chat:my-session> (continue talking, original is preserved as 'backup-before-rewrite')
+chat:my-session> /load backup-before-rewrite
+⚠ /load will OVERWRITE the current session's history with 'backup-before-rewrite'... Continue? [y/N] y
+loaded 'backup-before-rewrite' (5 turn(s)) into current session.
+```
+
+`/save <name>` snapshots the current history to a new session id; the current session continues. `/load <name>` replaces the current session's history with a saved one (prompts to confirm). Useful when you want to branch a conversation and explore without losing the original thread.
+
+**Auto-summarization (default on):** when projected token usage hits 85% of the budget, the orchestrator silently summarizes older turns into a single "[Earlier conversation summary]" pair, keeping the most recent 3 pairs verbatim. You'll see `[auto-summarized N older turn(s) to free context budget]` above the reply on turns that trigger it. Disable by constructing `ChatSession` with `autoSummarize: false`. Tunables: `autoSummarizeAtPct` (default 85), `keepRecentTurns` (default 3).
+
+**Generating indicator:** a tiny TTY spinner (`⠋ thinking...` / `⠋ thinking (powerful mode)...`) appears while waiting for the model. No-op in piped/non-interactive output so logs stay clean.
+
 ```
 npm run cli -- chat my-session
 chat: session 'my-session' (role: orchestration). Type /help for commands, /exit to leave.
@@ -395,6 +412,8 @@ chat:my-session> /exit
 | `/info` | Print session id, role, turn count, token estimate |
 | `/usage` | Print router provider usage snapshot |
 | `/power [on\|off]` | Toggle powerful (Gemini thinking=high) mode for the rest of the session |
+| `/save <name>` | Snapshot current history to a new session id (branch point) |
+| `/load <name>` | Replace current history with a saved session (asks to confirm) |
 | `/exit` | Leave session (history persists) |
 
 Slash commands accept either `/cmd` or `\cmd` (Windows users habitually type backslash) and `exit`/`quit` work as bare aliases for `/exit`.
