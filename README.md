@@ -427,7 +427,9 @@ Six phase-states, animated transitions between each:
 
 The prompt's *type* is detected via keyword heuristics (`research|find|sources|...` → research, `code|implement|function|...` → code, `compare|vs|tradeoffs|...` → compare, anything else → plan). The model is then asked for a JSON schema matching that template; the JSON drives the burst-stage renderer. The orbital mindmap always visualizes the **newest** response in the stack.
 
-**Orbital sizing.** The orbit radius is computed from the stage dimensions so nodes never spill past the edges: `baseR = max(minR, min(stageW/2 − nodeW/2 − pad, stageH/2 − nodeH/2 − pad, 320))`. Below the minimum, nodes slightly overlap the composer (which sits on top via z-index). On very narrow viewports the orbital starts to crowd — collapse the sidebar or widen the window if it feels tight.
+**Orbital sizing.** The orbit radius is computed from the stage dimensions so nodes never spill past the edges: `baseR = max(minR, min(stageW/2 − nodeW/2 − pad, stageH/2 − nodeH/2 − pad, 320))`. On very narrow viewports the orbital starts to crowd — collapse the sidebar or widen the window if it feels tight.
+
+> **Layout invariant — no overlaps.** The orbital layout must keep nodes (a) clear of the composer A at center, and (b) clear of each other. The current logic enforces (a) via `minR ≥ composerHalfW + nodeW/2 − slack` and (b) via even angular spacing + a per-pair repulsion pass (`resolveOverlaps`) after positions are computed. If you change node sizes, the composer max-width, jitter ranges, or the number of nodes per template, re-verify both invariants — especially on viewports under ~1100 px wide, where the available radius is small. Any future change here should keep the contract: no card visually intersects another card or the composer, including after drift settles.
 
 Persistence: the full response stack (not just the last thread) is mirrored to `localStorage[lattice.responseStack.v2]`, so reloading the page restores every B in order and you land back in the response phase ready to continue.
 

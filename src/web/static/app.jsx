@@ -676,20 +676,79 @@ function useOrbitalPositions(nodes, stageRef) {
       const radius = baseR + radiusJitter;
       let x = cx + Math.cos(angle) * radius;
       let y = cy + Math.sin(angle) * radius;
-      // Clamp to stage so cards stay fully visible.
-      const minX = NODE_W / 2 + EDGE_PAD;
-      const maxX = size.w - NODE_W / 2 - EDGE_PAD;
-      const minY = NODE_H / 2 + EDGE_PAD;
-      const maxY = size.h - NODE_H / 2 - EDGE_PAD;
-      x = Math.max(minX, Math.min(maxX, x));
-      y = Math.max(minY, Math.min(maxY, y));
       // Per-node drift offsets (used by CSS keyframes via custom props).
       const driftX = (rand(i, 3) - 0.5) * 8;
       const driftY = (rand(i, 4) - 0.5) * 8;
       const driftDur = 6 + rand(i, 5) * 4;
       const driftDelay = rand(i, 6) * 3;
-      return { x, y, cx, cy, driftX, driftY, driftDur, driftDelay };
+      return { x, y, driftX, driftY, driftDur, driftDelay };
     });
+
+    // Overlap invariant: no card visually intersects another card or the
+    // composer. Iterative repulsion — push each pair apart along the line
+    // between centers if their AABB-ish bounding boxes (treated as the
+    // node W×H plus a small buffer) overlap. Also push nodes away from
+    // the composer rectangle at center if they encroach.
+    const GAP = 14;
+    const COMP_W = COMPOSER_HALF_W * 2;
+    const COMP_H = COMPOSER_HALF_H * 2;
+    const minDx = NODE_W + GAP;
+    const minDy = NODE_H + GAP;
+    for (let iter = 0; iter < 24; iter++) {
+      let moved = false;
+      // Node ↔ node
+      for (let i = 0; i < pos.length; i++) {
+        for (let j = i + 1; j < pos.length; j++) {
+          const a = pos[i], b = pos[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const overlapX = minDx - Math.abs(dx);
+          const overlapY = minDy - Math.abs(dy);
+          if (overlapX > 0 && overlapY > 0) {
+            // Push along the axis of least overlap (cheaper resolution).
+            if (overlapX < overlapY) {
+              const push = overlapX / 2 + 0.5;
+              const sign = dx >= 0 ? 1 : -1;
+              a.x -= sign * push; b.x += sign * push;
+            } else {
+              const push = overlapY / 2 + 0.5;
+              const sign = dy >= 0 ? 1 : -1;
+              a.y -= sign * push; b.y += sign * push;
+            }
+            moved = true;
+          }
+        }
+      }
+      // Node ↔ composer (treat composer as a rectangle at center)
+      for (let i = 0; i < pos.length; i++) {
+        const p = pos[i];
+        const dx = p.x - cx;
+        const dy = p.y - cy;
+        const overlapX = (NODE_W / 2 + COMP_W / 2 + GAP) - Math.abs(dx);
+        const overlapY = (NODE_H / 2 + COMP_H / 2 + GAP) - Math.abs(dy);
+        if (overlapX > 0 && overlapY > 0) {
+          if (overlapX < overlapY) {
+            p.x += (dx >= 0 ? 1 : -1) * (overlapX + 0.5);
+          } else {
+            p.y += (dy >= 0 ? 1 : -1) * (overlapY + 0.5);
+          }
+          moved = true;
+        }
+      }
+      // Clamp to stage so nothing escapes the visible region.
+      const minX = NODE_W / 2 + EDGE_PAD;
+      const maxX = size.w - NODE_W / 2 - EDGE_PAD;
+      const minY = NODE_H / 2 + EDGE_PAD;
+      const maxY = size.h - NODE_H / 2 - EDGE_PAD;
+      for (const p of pos) {
+        const nx = Math.max(minX, Math.min(maxX, p.x));
+        const ny = Math.max(minY, Math.min(maxY, p.y));
+        if (nx !== p.x || ny !== p.y) { p.x = nx; p.y = ny; moved = true; }
+      }
+      if (!moved) break;
+    }
+    // Attach the (still constant) cx/cy used by the lines layer.
+    for (const p of pos) { p.cx = cx; p.cy = cy; }
     setPositions(pos);
   }, [nodes, size.w, size.h]);
 
