@@ -462,14 +462,6 @@ const COLLAPSE_TIMELINE = {
   total: 1900,
 };
 
-// Particle count derived from the newest response's category count.
-function getParticleCount(newest) {
-  if (!newest || !newest.data) return 4;
-  const d = newest.data;
-  const n = (d.sections?.length || d.files?.length || d.targets?.length || d.phases?.length || 4);
-  return Math.max(3, Math.min(n, 7));
-}
-
 function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const [t, setT] = React.useState(0);
   React.useEffect(() => {
@@ -496,175 +488,261 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
     return Math.max(0, Math.min(1, (t - w.start) / w.dur));
   };
 
-  // Tokens fly in from off-canvas; B enters from LEFT, A from RIGHT.
-  // They accelerate (ease-in) toward the collision point at the bar's
-  // landing spot (which is the center horizontally, slideDistance below
-  // the bar's start position).
-  const tokensP = progress('tokensFly');
-  // Ease-in cubic — slow start, fast finish.
-  const tokensEased = tokensP * tokensP * tokensP;
-  const tokensVisible = t >= COLLAPSE_TIMELINE.tokensFly.start && !after('shatter');
-  const tokenAX = `calc(50% + ${(1 - tokensEased) * 50}vw)`;
-  const tokenBX = `calc(50% - ${(1 - tokensEased) * 50}vw)`;
+  // The categories the newest response will explode into. We extract them
+  // ahead of time so each particle can wear its own label + preview
+  // during the fountain — particles aren't abstract dots, they're
+  // miniature versions of the eventual nodes.
+  const nodes = React.useMemo(
+    () => (newest ? extractNodes(newest.template, newest.data) : []),
+    [newest]
+  );
+  const n = nodes.length;
 
-  // Impact flash — short, bright bloom at the collision point.
-  const flashVisible = inWindow('impact') || (t > COLLAPSE_TIMELINE.impact.start && t < COLLAPSE_TIMELINE.impact.start + 250);
-  const flashP = (t - COLLAPSE_TIMELINE.impact.start) / 200;
+  // Tokens fly in from off-canvas; B (OUTPUT) enters from LEFT, A (MINDMAP)
+  // from RIGHT. They accelerate (ease-in) toward the collision point and
+  // disappear at impact (the anchor replaces them as a single element).
+  const tokensP = progress('tokensFly');
+  const tokensEased = tokensP * tokensP * tokensP;  // ease-in cubic
+  const tokensVisible = t >= COLLAPSE_TIMELINE.tokensFly.start && t < COLLAPSE_TIMELINE.impact.start;
+  // Final offset of 68 px = half token width + 2 px gap → tokens just
+  // TOUCH at collision; nothing overlaps.
+  const tokenAX = `calc(50% + ${(1 - tokensEased) * 60 + 68}px)`;
+  const tokenBX = `calc(50% - ${(1 - tokensEased) * 60 + 68}px)`;
+
+  // Impact moment — short ring.
+  const flashVisible = inWindow('impact') || (t > COLLAPSE_TIMELINE.impact.start && t < COLLAPSE_TIMELINE.impact.start + 280);
+  const flashP = (t - COLLAPSE_TIMELINE.impact.start) / 240;
+  const flashScale = 0.6 + flashP * 0.7;
   const flashOpacity = Math.max(0, 1 - flashP) * (flashP > 0 ? 1 : 0);
 
-  // Particle layout — N nodes' final positions. We use the same fan
-  // layout the mindmap uses post-settle (bottom-half) so particles
-  // arrive exactly where the nodes will live.
-  const n = getParticleCount(newest);
+  // Particle final positions — FULL 360° around A so more categories
+  // naturally expand into a complete cycle. Uses the same layout logic as
+  // useOrbitalPositions so particles arrive exactly where the settled
+  // orbital nodes will mount.
   const particleFinals = React.useMemo(() => {
-    if (!stageRect || !stageRect.w) return [];
+    if (!stageRect || !stageRect.w || n === 0) return [];
     const cx = stageRect.w / 2;
     const cy = stageRect.h / 2;
     const NODE_W = 220;
     const NODE_H = 200;
     const EDGE_PAD = 14;
+    const COMPOSER_HALF_W = 190;
+    const minR = COMPOSER_HALF_W + NODE_W / 2 - 40;
     const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
-    const maxR_y = stageRect.h - cy - NODE_H / 2 - EDGE_PAD;  // bottom-only
-    const baseR = Math.max(220, Math.min(maxR_x, maxR_y * 1.2, 340));
+    const maxR_y = cy - NODE_H / 2 - EDGE_PAD;
+    const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 320));
+    // Seeded RNG so positions are stable (matches useOrbitalPositions).
+    const seedFor = (i) => {
+      let h = 17;
+      const k = nodes[i].key;
+      for (let j = 0; j < k.length; j++) h = (h * 31 + k.charCodeAt(j)) | 0;
+      return Math.abs(h);
+    };
+    const rand = (i, off) => {
+      const s = (seedFor(i) + off * 1009) % 10000;
+      return s / 10000;
+    };
     const out = [];
     for (let i = 0; i < n; i++) {
-      const angle = ((i + 1) / (n + 1)) * Math.PI;  // 0..π = bottom half
-      const r = baseR + (i % 2 === 0 ? 0 : -28);  // alternating depth for organic feel
+      const baseAngle = (i / n) * Math.PI * 2;
+      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
+      const radiusJitter = (rand(i, 2) - 0.5) * 50;
+      const angle = baseAngle + angleJitter - Math.PI / 2;  // start at top
+      const r = baseR + radiusJitter;
       const fx = Math.cos(angle) * r;
       const fy = Math.sin(angle) * r;
-      // Bezier mid-point: pulled toward bottom-center for the fountain arc.
-      const midX = fx * 0.4;
-      const midY = fy * 0.55 + 60;
-      out.push({ fx, fy, midX, midY, angle });
+      // Bezier midpoint biased outward + slightly toward the gravity well
+      // so the trajectory arcs naturally — particles going up arc through
+      // an upward-curving path, particles going down through a falling one.
+      const midX = fx * 0.45;
+      const midY = fy * 0.55;
+      out.push({ fx, fy, midX, midY });
     }
     return out;
-  }, [n, stageRect?.w, stageRect?.h]);
+  }, [n, stageRect?.w, stageRect?.h, nodes]);
 
   const fountainP = progress('fountain');
-  // Ease-out — fast launch, soft cushion.
-  const fountainEased = 1 - Math.pow(1 - fountainP, 2.6);
+  const fountainEased = 1 - Math.pow(1 - fountainP, 2.6);  // ease-out
+
+  const cx0 = stageRect ? stageRect.w / 2 : 0;
+  const cy0 = stageRect ? stageRect.h / 2 : 0;
+
+  // Helper — partial quadratic Bezier from t=0 to t=u via de Casteljau.
+  // Returns { d, end:{x,y} } so the SVG path and the particle position
+  // can share the same exact endpoint (the line never pokes past the
+  // box). The visible path is start → control' → end' where
+  //   control' = lerp(start, control, u)
+  //   end'     = bezier(u)
+  const partialBezier = (sx, sy, cx, cy, ex, ey, u) => {
+    const a1x = sx + u * (cx - sx);
+    const a1y = sy + u * (cy - sy);
+    const b1x = cx + u * (ex - cx);
+    const b1y = cy + u * (ey - cy);
+    const endX = a1x + u * (b1x - a1x);
+    const endY = a1y + u * (b1y - a1y);
+    return {
+      d: `M ${sx} ${sy} Q ${a1x} ${a1y} ${endX} ${endY}`,
+      end: { x: endX, y: endY },
+    };
+  };
 
   return (
     <div className="mm-catalyst-overlay" aria-hidden="true">
-      {/* Tokens fly in from the sides */}
+      {/* Tokens fly in — labeled text boxes. */}
       {tokensVisible && (
         <>
           <div
             className="mm-collide-token mm-token-b"
             style={{
               left: tokenBX,
-              top: `calc(50% + 0px)`,
+              top: `50%`,
               opacity: tokensP > 0.05 ? 1 : 0,
             }}
-          />
+          >
+            <span className="mm-token-tick" />
+            <span>output</span>
+          </div>
           <div
             className="mm-collide-token mm-token-a"
             style={{
               left: tokenAX,
-              top: `calc(50% + 0px)`,
+              top: `50%`,
               opacity: tokensP > 0.05 ? 1 : 0,
             }}
-          />
+          >
+            <span className="mm-token-tick" />
+            <span>mindmap</span>
+          </div>
         </>
       )}
 
-      {/* Impact flash */}
+      {/* Impact ring */}
       {flashVisible && (
         <div
           className="mm-impact-flash"
-          style={{ opacity: flashOpacity }}
+          style={{
+            opacity: flashOpacity,
+            transform: `translate(-50%, -50%) scale(${flashScale.toFixed(2)})`,
+          }}
         />
       )}
 
-      {/* A anchor — appears at center after impact and STAYS visible
-          through fountain (it's the permanent anchor). */}
+      {/* A anchor — appears at center after impact and stays through the
+          fountain. Same labeled-box visual as the colliding A token. */}
       {t >= COLLAPSE_TIMELINE.impact.start && (
         <div className="mm-collide-token mm-token-a mm-anchor-a"
-          style={{ left: '50%', top: '50%', opacity: 1 }}
-        />
+          style={{ left: '50%', top: '50%', opacity: 1, transform: 'translate(-50%, -50%)' }}
+        >
+          <span className="mm-token-tick" />
+          <span>mindmap</span>
+        </div>
       )}
 
-      {/* Fountain — SVG trail paths + particle dots/cards */}
-      {t >= COLLAPSE_TIMELINE.shatter.start && stageRect && particleFinals.length > 0 && (
+      {/* Fountain — trails are drawn ONLY up to the current particle
+          position via de Casteljau subdivision. The line and the box
+          travel together; the endpoint of the path equals the box. */}
+      {t >= COLLAPSE_TIMELINE.fountain.start && stageRect && particleFinals.length > 0 && (
         <svg
           className="mm-fountain-svg"
           width={stageRect.w} height={stageRect.h}
           viewBox={`0 0 ${stageRect.w} ${stageRect.h}`}
         >
           {particleFinals.map((p, i) => {
-            const cx0 = stageRect.w / 2;
-            const cy0 = stageRect.h / 2;
-            // Quadratic bezier from center to final, via the arc midpoint.
-            const startX = cx0;
-            const startY = cy0;
-            const midX = cx0 + p.midX;
-            const midY = cy0 + p.midY;
-            const endX = cx0 + p.fx;
-            const endY = cy0 + p.fy;
-            // We morph the path's "current end" by interpolating along the
-            // bezier with fountainEased (handled in the renderer below).
-            // For trails: render the path with stroke-dasharray animated.
-            const path = `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`;
-            // Trail visible during fountain, fading at the end.
-            const trailOpacity = fountainP < 0.05 ? 0 : (fountainP < 0.8 ? 0.85 : (1 - (fountainP - 0.8) / 0.2) * 0.85);
+            const u = fountainEased;
+            const { d } = partialBezier(
+              cx0, cy0,
+              cx0 + p.midX, cy0 + p.midY,
+              cx0 + p.fx, cy0 + p.fy,
+              u
+            );
+            const trailOpacity = fountainP < 0.06
+              ? 0
+              : fountainP < 0.8
+                ? 0.55
+                : Math.max(0, (1 - (fountainP - 0.8) / 0.2)) * 0.55;
             return (
-              <path
-                key={i}
-                d={path}
-                fill="none"
-                stroke="oklch(1 0 0 / 0.9)"
-                strokeWidth="1"
-                strokeLinecap="round"
-                strokeDasharray="600"
-                strokeDashoffset={(1 - fountainEased) * 600}
-                style={{ opacity: trailOpacity }}
-              />
+              <path key={i} d={d} style={{ opacity: trailOpacity }} />
             );
           })}
         </svg>
       )}
 
-      {/* Particle dots / morphing nodes */}
+      {/* Particles — mini text-box previews of the eventual nodes. They
+          start tiny at the collision point (during shatter) and grow as
+          they travel to their final orbital positions. */}
       {t >= COLLAPSE_TIMELINE.shatter.start && stageRect && particleFinals.length > 0 &&
         particleFinals.map((p, i) => {
-          const cx0 = stageRect.w / 2;
-          const cy0 = stageRect.h / 2;
-          // Bezier point at parameter u (fountainEased).
-          const u = fountainEased;
-          const omu = 1 - u;
-          const px = omu * omu * cx0 + 2 * omu * u * (cx0 + p.midX) + u * u * (cx0 + p.fx);
-          const py = omu * omu * cy0 + 2 * omu * u * (cy0 + p.midY) + u * u * (cy0 + p.fy);
-          // Scale: tiny at start (during shatter), growing during fountain
-          // to roughly node-sized at the end.
-          const shatterP = progress('shatter');
-          const scale = 0.18 + (0.82 * u);
-          const radius = 6 + 18 * u;  // dot grows
-          // During shatter (pre-fountain) particles cluster near center
-          // with small jitter; once fountain starts they begin to move.
           const inShatter = t < COLLAPSE_TIMELINE.fountain.start;
-          // Clustering offset for shatter phase
-          const cluster = Math.PI * 2 * (i / n);
-          const cr = inShatter ? 16 + shatterP * 22 : 0;
-          const cx = inShatter ? cx0 + Math.cos(cluster) * cr : px;
-          const cy = inShatter ? cy0 + Math.sin(cluster) * cr * 0.6 : py;
-          // Opacity: full during shatter and fountain; fade slightly at the very end before nodes render
-          const opacity = fountainP > 0.92 ? Math.max(0, 1 - (fountainP - 0.92) / 0.08) : 1;
+          let px, py;
+          if (inShatter) {
+            // Cluster around the impact point with a small organic offset.
+            const shatterP = progress('shatter');
+            const ang = ((i / n) * Math.PI * 2) - Math.PI / 2;
+            const cr = 20 + shatterP * 26;
+            px = cx0 + Math.cos(ang) * cr;
+            py = cy0 + Math.sin(ang) * cr;
+          } else {
+            // Travel along bezier; endpoint matches the SVG path endpoint
+            // EXACTLY because we use the same de Casteljau evaluation.
+            const u = fountainEased;
+            const { end } = partialBezier(
+              cx0, cy0,
+              cx0 + p.midX, cy0 + p.midY,
+              cx0 + p.fx, cy0 + p.fy,
+              u
+            );
+            px = end.x; py = end.y;
+          }
+          // Scale: tiny at shatter (~0.08), grows linearly through the
+          // fountain to full size (1.0).
+          const scale = inShatter
+            ? 0.08 + progress('shatter') * 0.05
+            : 0.13 + 0.87 * fountainEased;
+          // Opacity holds through fountain; fades slightly at the very end
+          // so the real OrbitalNode mounting doesn't double-render.
+          const opacity = fountainP > 0.93
+            ? Math.max(0, 1 - (fountainP - 0.93) / 0.07)
+            : 1;
+          const node = nodes[i] || {};
+          // Preview text — first point/note/step/etc., pulled from the
+          // node's raw data when possible; falls back to the label.
+          const preview = previewTextForNode(node);
           return (
             <div
               key={i}
               className="mm-particle"
               style={{
-                left: cx, top: cy,
-                width: radius * 2, height: radius * 2,
+                left: px, top: py,
                 opacity,
                 transform: `translate(-50%, -50%) scale(${scale.toFixed(3)})`,
               }}
-            />
+            >
+              <div className="mm-particle-label">{node.label || '·'}</div>
+              {preview && <div className="mm-particle-preview">{preview}</div>}
+            </div>
           );
         })
       }
     </div>
   );
+}
+
+// Pull a short preview string from a node for the mini-card preview.
+// Templates store different shapes, so we try a few common keys.
+function previewTextForNode(node) {
+  if (!node) return '';
+  // Try to use the body's first line of text by inspecting the React
+  // children — but to stay simple we encode preview hints via the
+  // already-built copyText (which all extractors set).
+  const text = (node.copyText || '').trim();
+  if (!text) return '';
+  // Strip any leading heading marker / mono ticks, take the first 80 chars.
+  const cleaned = text
+    .replace(/^[#>\-]+\s*/, '')
+    .replace(/^\/\/\s*/, '')
+    .split('\n')
+    .find((ln) => ln.trim().length > 0) || '';
+  return cleaned.length > 90 ? cleaned.slice(0, 90) + '…' : cleaned;
 }
 
 // ─── Phase views ───────────────────────────────────────────
@@ -907,14 +985,14 @@ function useOrbitalPositions(nodes, stageRef) {
     };
 
     const pos = nodes.map((node, i) => {
-      // Fan layout — bottom half only. Angles span 0..π in screen coords
-      // (right semicircle), which is the visual bottom half because the
-      // y-axis grows downward.  We sub-divide (n+1) evenly so the first
-      // and last node aren't pinned at the exact 3 / 9 o'clock points.
-      const baseAngle = ((i + 1) / (n + 1)) * Math.PI;
-      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / (n + 1)) * 0.6;
+      // Full 360° cycle around A — angles span 0..2π so more categories
+      // naturally expand around the prompt box in a complete cycle.
+      // Starting offset of -π/2 places the first node at the top
+      // (12 o'clock) so the ring reads predictably.
+      const baseAngle = (i / n) * Math.PI * 2;
+      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
       const radiusJitter = (rand(i, 2) - 0.5) * 50;
-      const angle = baseAngle + angleJitter; // 0..π
+      const angle = baseAngle + angleJitter - Math.PI / 2;
       const radius = baseR + radiusJitter;
       let x = cx + Math.cos(angle) * radius;
       let y = cy + Math.sin(angle) * radius;
