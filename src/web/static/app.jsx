@@ -1796,6 +1796,41 @@ function clearPersistedStack() {
   try { localStorage.removeItem(STACK_LS_KEY); } catch {}
 }
 
+// Tiny error boundary used to wrap the orbital phase. Without this, a
+// thrown error inside any descendant component unmounts the whole
+// React tree → the page goes black with no error message. With it,
+// we catch the error and render a recoverable panel that lets the
+// user collapse back to the chat.
+class PhaseErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[phase-error]', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      const msg = String(this.state.error?.message || this.state.error || 'unknown error');
+      return (
+        <div className="mm-phase mm-phase-error" role="alert">
+          <div className="mm-phase-error-card">
+            <div className="mm-phase-error-title">mindmap render failed</div>
+            <div className="mm-phase-error-msg">{msg}</div>
+            <button className="mm-phase-error-back" onClick={this.props.onRecover}>
+              ← back to chat
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function HeroMindmap() {
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
@@ -1968,9 +2003,14 @@ function HeroMindmap() {
         try { parsed = JSON.parse(cleaned); } catch { parsed = null; }
       }
     } catch {/* swallow — fall through to null */}
+    // Only accept the prefetch result if its shape matches what the
+    // renderer needs. Malformed-but-parseable JSON (e.g. `sections` as
+    // a string) would otherwise crash extractNodes and black-screen
+    // the orbital phase.
+    const safe = parsed && isValidMindmapData(entry.template, parsed) ? parsed : null;
     setResponses((cur) => {
       const next = cur.map((e) =>
-        e.id === entry.id ? { ...e, dataLoading: false, data: parsed || e.data } : e
+        e.id === entry.id ? { ...e, dataLoading: false, data: safe || e.data } : e
       );
       savePersistedStack(next);
       return next;
@@ -1985,8 +2025,21 @@ function HeroMindmap() {
     if (phase !== 'response') return;
     const newestEntry = responses[responses.length - 1];
     if (!newestEntry) return;
-    const parsed = newestEntry.data ||
-      deriveMindmapData(newestEntry.template, newestEntry.prompt, newestEntry.text);
+    // Prefer Cerebras-prefetched data when it's valid; otherwise derive
+    // locally from the markdown answer. Both paths run through the
+    // validator so a malformed shape can never reach extractNodes.
+    let parsed = newestEntry.data;
+    if (!parsed || !isValidMindmapData(newestEntry.template, parsed)) {
+      try {
+        parsed = deriveMindmapData(newestEntry.template, newestEntry.prompt, newestEntry.text);
+      } catch (e) {
+        console.warn('[mindmap] deriveMindmapData threw:', e);
+        parsed = FALLBACK_DATA[newestEntry.template] || FALLBACK_DATA.plan;
+      }
+    }
+    if (!isValidMindmapData(newestEntry.template, parsed)) {
+      parsed = FALLBACK_DATA[newestEntry.template] || FALLBACK_DATA.plan;
+    }
     const next = responses.map((e) =>
       e.id === newestEntry.id ? { ...e, data: parsed } : e
     );
@@ -2077,11 +2130,13 @@ function HeroMindmap() {
           />
         )}
         {phase === 'mindmap' && (
-          <OrbitalMindmap
-            responses={responses}
-            collapse={collapse} reset={reset} phase={phase}
-            draft={draft} setDraft={setDraft} submit={submit}
-          />
+          <PhaseErrorBoundary onRecover={collapse}>
+            <OrbitalMindmap
+              responses={responses}
+              collapse={collapse} reset={reset} phase={phase}
+              draft={draft} setDraft={setDraft} submit={submit}
+            />
+          </PhaseErrorBoundary>
         )}
       </div>
     </div>

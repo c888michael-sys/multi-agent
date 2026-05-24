@@ -546,8 +546,25 @@ function PlanView({ data, accent }) {
 // Each template's data flattens to a list of "nodes" — one node per
 // categorized chunk. Nodes are what orbit around A in the orbital mindmap.
 // The shape: { key, label, kind, body: ReactNode, copyText: string }.
+// Validate that the data shape matches what the template's renderer
+// expects. Returns true if it's safe to feed to extractNodes; false
+// if any required field is the wrong type. Used to gate Cerebras
+// prefetch results before they reach React render.
+function isValidMindmapData(template, data) {
+  if (!data || typeof data !== 'object') return false;
+  if (template === 'research') return Array.isArray(data.sections);
+  if (template === 'code')     return Array.isArray(data.files);
+  if (template === 'compare')  return Array.isArray(data.targets);
+  if (template === 'plan')     return Array.isArray(data.phases);
+  return false;
+}
+
 function extractNodes(template, data) {
-  if (!data) return [];
+  // Defensive: any unexpected shape from a model that fudged the JSON
+  // schema would otherwise crash render and blank the page. Validate
+  // before iterating; fall back to empty so the caller can derive
+  // locally from the markdown answer instead.
+  if (!data || !isValidMindmapData(template, data)) return [];
 
   // Each node has TWO bodies:
   //   summaryBody — concise: 1 short line + count badge. Used in the
@@ -745,6 +762,7 @@ Object.assign(window, {
   RENDERERS,
   deriveMindmapData,
   comprehensiveCategorizePrompt,
+  isValidMindmapData,
   ResearchView,
   CodeView,
   CompareView,

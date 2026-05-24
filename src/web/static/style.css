@@ -2599,3 +2599,52 @@
   border-color: color-mix(in oklch, oklch(0.65 0.18 22) 35%, var(--mm-line));
 }
 .mm-dispatch-row.mm-dispatch-failed .st { color: oklch(0.78 0.15 22); }
+
+/* Phase error boundary panel — shown if a render crash escapes the
+   orbital phase. Without this, the page would just go black. */
+.mm-phase-error {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  z-index: 30;
+}
+.mm-phase-error-card {
+  max-width: 480px;
+  padding: 22px 26px;
+  border-radius: 14px;
+  background: var(--mm-card-elev);
+  border: 0.5px solid color-mix(in oklch, oklch(0.65 0.18 22) 40%, var(--mm-line-strong));
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4),
+              0 0 28px color-mix(in oklch, oklch(0.65 0.18 22) 18%, transparent);
+  font-family: var(--mm-font-body);
+}
+.mm-phase-error-title {
+  font-family: var(--mm-font-mono);
+  font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: oklch(0.78 0.15 22);
+  margin-bottom: 10px;
+}
+.mm-phase-error-msg {
+  font-size: 13px; line-height: 1.55;
+  color: var(--mm-fg);
+  margin-bottom: 16px;
+  word-break: break-word;
+}
+.mm-phase-error-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: transparent;
+  border: 0.5px solid var(--mm-line-strong);
+  color: var(--mm-fg-dim);
+  font-family: var(--mm-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 180ms ease, border-color 180ms ease;
+}
+.mm-phase-error-back:hover {
+  color: var(--mm-fg);
+  border-color: color-mix(in oklch, var(--accent) 45%, var(--mm-line-strong));
+}
