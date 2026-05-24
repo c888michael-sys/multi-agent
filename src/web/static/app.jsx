@@ -638,6 +638,7 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
       aria-label="Burst into mindmap"
     >
       <span className="mm-seam-line" />
+      <span className="mm-seam-void" aria-hidden="true" />
       <span className="mm-seam-knob">
         <svg viewBox="0 0 18 14" fill="none" aria-hidden="true">
           <path d="M3 3 L9 7 L15 3 M3 8 L9 12 L15 8"
@@ -1061,8 +1062,10 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
       )}
 
       {/* Fountain — trails are drawn ONLY up to the OUTER EDGE of the
-          particle's bounding box along the tangent direction. The line
-          never visually crosses the box. */}
+          particle's bounding box along the tangent direction. Each
+          particle's trail uses the color of the agent it represents,
+          cycling through the MM_AGENTS palette. Reads as the 5 agents
+          fanning out from the rip and becoming the mindmap categories. */}
       {t >= COLLAPSE_TIMELINE.fountain.start && stageRect && particleFinals.length > 0 && (
         <svg
           className="mm-fountain-svg"
@@ -1071,13 +1074,9 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         >
           {particleFinals.map((p, i) => {
             const u = fountainEased;
-            // Particle's current scale (matches the render below).
             const scale = 0.13 + 0.87 * u;
-            // Half extents of the particle BOX at this scale (~220×110).
             const boxHalfW = 110 * scale + 2;
             const boxHalfH = 55 * scale + 2;
-            // A-box (center "mindmap" anchor) half extents — width 132 +
-            // padding ~24 → 156 total → halfW 78. Height ~28 → halfH 14.
             const aHalfW = 78;
             const aHalfH = 14;
             const { d } = partialBezier(
@@ -1086,15 +1085,24 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
               cx0 + p.fx, cy0 + p.fy,
               u, boxHalfW, boxHalfH, aHalfW, aHalfH,
             );
-            // Trail opacity — full through most of fountain; fades in
-            // the last 18 % so it vanishes before the box morph completes.
             const trailOpacity = fountainP < 0.06
               ? 0
               : fountainP < 0.82
-                ? 0.5
-                : Math.max(0, (1 - (fountainP - 0.82) / 0.18)) * 0.5;
+                ? 0.85
+                : Math.max(0, (1 - (fountainP - 0.82) / 0.18)) * 0.85;
+            // Per-particle agent color — cycle through MM_AGENTS so
+            // each fanning particle visually claims an agent identity.
+            const agent = MM_AGENTS[i % MM_AGENTS.length];
+            const color = agent.color;
             return (
-              <path key={i} d={d} style={{ opacity: trailOpacity }} />
+              <g key={i} style={{ opacity: trailOpacity }}>
+                {/* Soft outer glow layer */}
+                <path d={d} stroke={color} strokeWidth="3" fill="none"
+                  strokeLinecap="round" style={{ opacity: 0.35, filter: 'blur(2.5px)' }} />
+                {/* Crisp inner core */}
+                <path d={d} stroke={color} strokeWidth="1.2" fill="none"
+                  strokeLinecap="round" />
+              </g>
             );
           })}
         </svg>
@@ -1143,6 +1151,7 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
           }
           const node = nodes[i] || {};
           const preview = previewTextForNode(node);
+          const agent = MM_AGENTS[i % MM_AGENTS.length];
           return (
             <div
               key={i}
@@ -1152,9 +1161,13 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
                 opacity,
                 filter: blur ? `blur(${blur.toFixed(1)}px)` : undefined,
                 transform: `translate(-50%, -50%) scale(${scale.toFixed(3)})`,
+                // Tinted border + halo so each fanning particle carries its
+                // agent's visual identity all the way to the settled node.
+                borderColor: `color-mix(in oklch, ${agent.color} 70%, transparent)`,
+                boxShadow: `0 0 18px color-mix(in oklch, ${agent.color} 35%, transparent)`,
               }}
             >
-              <div className="mm-particle-label">{node.label || '·'}</div>
+              <div className="mm-particle-label" style={{ color: agent.color }}>{node.label || '·'}</div>
               {preview && <div className="mm-particle-preview">{preview}</div>}
             </div>
           );

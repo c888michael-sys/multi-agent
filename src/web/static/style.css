@@ -863,27 +863,49 @@
 .mm-seam-handle.disabled { opacity: 0.22; cursor: default; }
 
 /* The horizontal hairline that spans the row. Stays subtle at rest;
-   brightens to accent on hover/drag. */
+   brightens to accent on hover/drag. Rendered as TWO halves so we can
+   rip them apart horizontally during the catalyst. The center "void"
+   sits between them and pulses when the rip fires. */
 .mm-seam-line {
   position: absolute; left: 8%; right: 8%; top: 50%;
   height: 1px;
-  background: linear-gradient(90deg,
-    transparent 0%,
-    var(--mm-line-strong) 18%,
-    var(--mm-line-strong) 82%,
-    transparent 100%);
-  transition: background 220ms ease, opacity 220ms ease;
   pointer-events: none;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.mm-seam-handle:hover:not(.disabled) .mm-seam-line,
-.mm-seam-handle.active:not(.disabled) .mm-seam-line {
+.mm-seam-line::before,
+.mm-seam-line::after {
+  content: '';
+  flex: 1;
+  height: 1px;
   background: linear-gradient(90deg,
-    transparent 0%,
-    var(--accent-soft) 18%,
-    var(--accent) 50%,
-    var(--accent-soft) 82%,
-    transparent 100%);
+    transparent 0%, var(--mm-line-strong) 30%, var(--mm-line-strong) 70%, transparent 100%);
+  transition: background 220ms ease, transform 360ms cubic-bezier(0.45, 0, 0.3, 1),
+              opacity 360ms ease;
 }
+.mm-seam-handle:hover:not(.disabled) .mm-seam-line::before,
+.mm-seam-handle:hover:not(.disabled) .mm-seam-line::after,
+.mm-seam-handle.active:not(.disabled) .mm-seam-line::before,
+.mm-seam-handle.active:not(.disabled) .mm-seam-line::after {
+  background: linear-gradient(90deg,
+    transparent 0%, var(--accent-soft) 30%, var(--accent) 60%, var(--accent-soft) 90%, transparent 100%);
+}
+/* The void — invisible at rest, blooms in the rip's center. */
+.mm-seam-void {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 0; height: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle,
+    color-mix(in oklch, var(--accent) 90%, white 10%) 0%,
+    color-mix(in oklch, var(--accent) 40%, transparent) 40%,
+    transparent 75%);
+  filter: blur(6px);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+/* (legacy single-line hover rule no longer needed — handled by ::before / ::after above) */
 
 /* The center "knob" — chevron icon + label. Sits on top of the seam. */
 .mm-seam-knob {
@@ -930,15 +952,43 @@
   transition: width 0.08s linear;
 }
 
-/* The slide animation that fires when the user triggers expansion. */
-.mm-seam-handle.sliding {
-  animation: mmBarSlide 420ms cubic-bezier(0.45, 0, 0.3, 1) forwards;
-  pointer-events: none;
+/* RIP-SEAM CATALYST — the seam splits at the center, the two halves
+   slide horizontally apart (not down), and a glowing accent void
+   blooms in the gap. The knob fades + shrinks. The catalyst tokens /
+   particles emerge from the void. */
+.mm-seam-handle.sliding { pointer-events: none; }
+.mm-seam-handle.sliding .mm-seam-line::before {
+  animation: mmSeamRipLeft 520ms cubic-bezier(0.45, 0, 0.3, 1) forwards;
 }
-@keyframes mmBarSlide {
-  0%   { transform: translateY(0);                                  opacity: 1; }
-  85%  { transform: translateY(var(--bar-slide-distance, 30vh)) scale(0.92); opacity: 0.6; }
-  100% { transform: translateY(var(--bar-slide-distance, 30vh)) scale(0.4);  opacity: 0; }
+.mm-seam-handle.sliding .mm-seam-line::after {
+  animation: mmSeamRipRight 520ms cubic-bezier(0.45, 0, 0.3, 1) forwards;
+}
+.mm-seam-handle.sliding .mm-seam-knob {
+  animation: mmSeamKnobOut 320ms cubic-bezier(0.45, 0, 0.3, 1) forwards;
+}
+.mm-seam-handle.sliding .mm-seam-void {
+  animation: mmSeamVoidBloom 700ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+  animation-delay: 80ms;
+}
+@keyframes mmSeamRipLeft {
+  0%   { transform: translateX(0)   scaleX(1);   opacity: 1; }
+  60%  { transform: translateX(-32%) scaleX(1.1); opacity: 1; }
+  100% { transform: translateX(-90%) scaleX(0.6); opacity: 0; }
+}
+@keyframes mmSeamRipRight {
+  0%   { transform: translateX(0)   scaleX(1);   opacity: 1; }
+  60%  { transform: translateX(32%) scaleX(1.1); opacity: 1; }
+  100% { transform: translateX(90%) scaleX(0.6); opacity: 0; }
+}
+@keyframes mmSeamKnobOut {
+  0%   { transform: scale(1)   translateY(0);   opacity: 1; filter: blur(0); }
+  50%  { transform: scale(0.9) translateY(2px); opacity: 0.6; filter: blur(1px); }
+  100% { transform: scale(0.4) translateY(6px); opacity: 0;   filter: blur(4px); }
+}
+@keyframes mmSeamVoidBloom {
+  0%   { width: 0;   height: 0;   opacity: 0; filter: blur(2px); }
+  35%  { width: 220px; height: 24px; opacity: 1; filter: blur(8px); }
+  100% { width: 360px; height: 8px;  opacity: 0; filter: blur(16px); }
 }
 
 /* ── Catalyst sequence — bar slide → collide → shatter → fountain ───
