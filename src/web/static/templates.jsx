@@ -314,117 +314,7 @@ function PlanView({ data, accent }) {
   );
 }
 
-// ─── Mindmap category extraction from markdown ──────────────
-// The orchestrator's reply is natural markdown (headings, lists, etc.).
-// To categorize visually, we split on the predominant heading level:
-//   - If the response has any `##` headings, each H2 + its content = node.
-//   - Else if it has any `###`, each H3 + its content = node.
-//   - Else we chunk by paragraph groups (≤5 nodes total).
-//
-// Returned shape matches what OrbitalNode and the catalyst particles
-// expect: { key, label, kind, body, copyText, sub? }.
-function extractCategoriesFromMarkdown(md) {
-  const text = (md || '').replace(/\r\n?/g, '\n').trim();
-  if (!text) return [];
-
-  const lines = text.split('\n');
-  const hasH2 = lines.some((l) => /^##\s+\S/.test(l));
-  const hasH3 = !hasH2 && lines.some((l) => /^###\s+\S/.test(l));
-
-  if (hasH2 || hasH3) {
-    const level = hasH2 ? 2 : 3;
-    const re = new RegExp('^' + '#'.repeat(level) + '\\s+(.+?)\\s*$');
-    const sections = [];
-    let current = null;
-    for (const line of lines) {
-      const m = line.match(re);
-      if (m) {
-        if (current) sections.push(current);
-        current = { label: m[1], lines: [] };
-      } else if (current) {
-        current.lines.push(line);
-      }
-      // Lines before the first heading are dropped — they're typically an
-      // intro paragraph that doesn't belong to any one category.
-    }
-    if (current) sections.push(current);
-    return sections.map((s, i) => {
-      const body = s.lines.join('\n').trim();
-      const cleanLabel = stripInlineMarkdown(s.label);
-      return {
-        key: `cat-${i}-${cleanLabel.slice(0, 24).replace(/\W+/g, '_')}`,
-        kind: 'category',
-        label: cleanLabel,
-        body: <MarkdownPreview text={body} />,
-        copyText: '#'.repeat(level) + ' ' + s.label + '\n\n' + body,
-      };
-    });
-  }
-
-  // No headings — chunk by paragraphs, up to 5 nodes.
-  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  if (paras.length === 0) return [];
-  if (paras.length <= 5) {
-    return paras.map((p, i) => {
-      // Use the first line as a sub-label, but strip markdown markers so
-      // the label reads as plain text (no ** or _ artifacts).
-      const firstLine = stripInlineMarkdown(p.split('\n')[0]);
-      const sub = firstLine.length > 36 ? firstLine.slice(0, 36) + '…' : firstLine;
-      return {
-        key: `p-${i}`,
-        kind: 'category',
-        label: `Part ${String(i + 1).padStart(2, '0')}`,
-        sub,
-        body: <MarkdownPreview text={p} />,
-        copyText: p,
-      };
-    });
-  }
-  // More than 5 paragraphs — group evenly into ~5 chunks.
-  const groupCount = 5;
-  const perGroup = Math.ceil(paras.length / groupCount);
-  const groups = [];
-  for (let i = 0; i < paras.length; i += perGroup) {
-    const chunk = paras.slice(i, i + perGroup);
-    const text = chunk.join('\n\n');
-    groups.push({
-      key: `g-${i}`,
-      kind: 'category',
-      label: `Part ${String(groups.length + 1).padStart(2, '0')}`,
-      sub: `${chunk.length} paragraphs`,
-      body: <MarkdownPreview text={text} />,
-      copyText: text,
-    });
-  }
-  return groups;
-}
-
-// Tiny preview renderer for orbital node bodies — uses the parent's
-// Markdown component if globally available, falls back to plain text
-// truncation. We can't import here (no module system), so we look for
-// window.Markdown which app.jsx exposes.
-function MarkdownPreview({ text }) {
-  if (typeof window !== 'undefined' && typeof window.Markdown === 'function') {
-    const M = window.Markdown;
-    return <M text={text} />;
-  }
-  return <div className="mm-orbit-body-fallback">{text}</div>;
-}
-
-// Strip the inline markdown emphasis/code/link markers from a string so
-// it reads as plain prose. Used for node labels / sub-labels.
-function stripInlineMarkdown(s) {
-  return (s || '')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/\*([^*\n]+)\*/g, '$1')
-    .replace(/_([^_\n]+)_/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .trim();
-}
-
-// ─── (Legacy) Per-template orbital node extraction ──────────
+// ─── Orbital node extraction ─────────────────────────────────
 // Each template's data flattens to a list of "nodes" — one node per
 // categorized chunk. Nodes are what orbit around A in the orbital mindmap.
 // The shape: { key, label, kind, body: ReactNode, copyText: string }.
@@ -533,6 +423,4 @@ Object.assign(window, {
   CompareView,
   PlanView,
   extractNodes,
-  extractCategoriesFromMarkdown,
-  MarkdownPreview,
 });
