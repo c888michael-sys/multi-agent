@@ -453,6 +453,128 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
 //                          vector trails, scaling up as they descend
 // Parent transitions phase → 'mindmap' at t≈1900ms.
 
+// ─── Shared orbital layout ────────────────────────────────────
+// Used by BOTH the catalyst (so fountain particles end exactly where the
+// real nodes will mount) and the settled orbital mindmap. Pure function —
+// given nodes + stage size, returns the same positions on every call.
+//
+// Steps:
+//   1. Polar placement: full 360° around A with seeded per-node random
+//      angle + radius jitter, starting at 12 o'clock.
+//   2. Overlap-resolver: iterative AABB repulsion — node↔node + node↔composer
+//      rectangle. Enforces the no-overlap invariant.
+const ORBIT_LAYOUT_CONSTS = {
+  NODE_W: 220,
+  NODE_H: 200,
+  COMPOSER_HALF_W: 190,
+  COMPOSER_HALF_H: 80,
+  EDGE_PAD: 14,
+  OVERLAP_GAP: 14,
+};
+
+function computeOrbitalLayout(nodes, stageW, stageH) {
+  const n = nodes.length;
+  if (n === 0 || stageW === 0) return [];
+
+  const {
+    NODE_W, NODE_H, COMPOSER_HALF_W, COMPOSER_HALF_H, EDGE_PAD, OVERLAP_GAP,
+  } = ORBIT_LAYOUT_CONSTS;
+
+  const cx = stageW / 2;
+  const cy = stageH / 2;
+  const minR = COMPOSER_HALF_W + NODE_W / 2 - 40;
+  const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
+  const maxR_y = cy - NODE_H / 2 - EDGE_PAD;
+  const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 320));
+
+  // Seeded RNG so positions are stable across re-renders.
+  const seedFor = (i) => {
+    let h = 17;
+    const k = nodes[i].key;
+    for (let j = 0; j < k.length; j++) h = (h * 31 + k.charCodeAt(j)) | 0;
+    return Math.abs(h);
+  };
+  const rand = (i, off) => {
+    const s = (seedFor(i) + off * 1009) % 10000;
+    return s / 10000;
+  };
+
+  const pos = nodes.map((node, i) => {
+    const baseAngle = (i / n) * Math.PI * 2;
+    const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
+    const radiusJitter = (rand(i, 2) - 0.5) * 50;
+    const angle = baseAngle + angleJitter - Math.PI / 2;
+    const radius = baseR + radiusJitter;
+    const x = cx + Math.cos(angle) * radius;
+    const y = cy + Math.sin(angle) * radius;
+    const driftX = (rand(i, 3) - 0.5) * 8;
+    const driftY = (rand(i, 4) - 0.5) * 8;
+    const driftDur = 6 + rand(i, 5) * 4;
+    const driftDelay = rand(i, 6) * 3;
+    return { x, y, driftX, driftY, driftDur, driftDelay };
+  });
+
+  // Overlap resolver — node↔node, node↔composer, stage clamp.
+  const COMP_W = COMPOSER_HALF_W * 2;
+  const COMP_H = COMPOSER_HALF_H * 2;
+  const minDx = NODE_W + OVERLAP_GAP;
+  const minDy = NODE_H + OVERLAP_GAP;
+  const minX = NODE_W / 2 + EDGE_PAD;
+  const maxX = stageW - NODE_W / 2 - EDGE_PAD;
+  const minY = NODE_H / 2 + EDGE_PAD;
+  const maxY = stageH - NODE_H / 2 - EDGE_PAD;
+
+  for (let iter = 0; iter < 24; iter++) {
+    let moved = false;
+    for (let i = 0; i < pos.length; i++) {
+      for (let j = i + 1; j < pos.length; j++) {
+        const a = pos[i], b = pos[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const overlapX = minDx - Math.abs(dx);
+        const overlapY = minDy - Math.abs(dy);
+        if (overlapX > 0 && overlapY > 0) {
+          if (overlapX < overlapY) {
+            const push = overlapX / 2 + 0.5;
+            const sign = dx >= 0 ? 1 : -1;
+            a.x -= sign * push; b.x += sign * push;
+          } else {
+            const push = overlapY / 2 + 0.5;
+            const sign = dy >= 0 ? 1 : -1;
+            a.y -= sign * push; b.y += sign * push;
+          }
+          moved = true;
+        }
+      }
+    }
+    for (let i = 0; i < pos.length; i++) {
+      const p = pos[i];
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const overlapX = (NODE_W / 2 + COMP_W / 2 + OVERLAP_GAP) - Math.abs(dx);
+      const overlapY = (NODE_H / 2 + COMP_H / 2 + OVERLAP_GAP) - Math.abs(dy);
+      if (overlapX > 0 && overlapY > 0) {
+        if (overlapX < overlapY) {
+          p.x += (dx >= 0 ? 1 : -1) * (overlapX + 0.5);
+        } else {
+          p.y += (dy >= 0 ? 1 : -1) * (overlapY + 0.5);
+        }
+        moved = true;
+      }
+    }
+    for (const p of pos) {
+      const nx = Math.max(minX, Math.min(maxX, p.x));
+      const ny = Math.max(minY, Math.min(maxY, p.y));
+      if (nx !== p.x || ny !== p.y) { p.x = nx; p.y = ny; moved = true; }
+    }
+    if (!moved) break;
+  }
+
+  // Attach center coords so callers can draw lines to A.
+  for (const p of pos) { p.cx = cx; p.cy = cy; }
+  return pos;
+}
+
 const COLLAPSE_TIMELINE = {
   barSlide:      { start:    0, dur:  420 },
   tokensFly:     { start:  420, dur:  500 },  // tokens enter & travel
@@ -515,50 +637,27 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const flashScale = 0.6 + flashP * 0.7;
   const flashOpacity = Math.max(0, 1 - flashP) * (flashP > 0 ? 1 : 0);
 
-  // Particle final positions — FULL 360° around A so more categories
-  // naturally expand into a complete cycle. Uses the same layout logic as
-  // useOrbitalPositions so particles arrive exactly where the settled
-  // orbital nodes will mount.
+  // Particle final positions — call the SAME shared layout function as
+  // useOrbitalPositions so every particle lands at exactly the resting
+  // position of its corresponding OrbitalNode (including any nudges from
+  // the overlap-resolver pass). This is what makes the "mini grows into
+  // big" transition seamless: nothing shifts at handoff.
   const particleFinals = React.useMemo(() => {
     if (!stageRect || !stageRect.w || n === 0) return [];
     const cx = stageRect.w / 2;
     const cy = stageRect.h / 2;
-    const NODE_W = 220;
-    const NODE_H = 200;
-    const EDGE_PAD = 14;
-    const COMPOSER_HALF_W = 190;
-    const minR = COMPOSER_HALF_W + NODE_W / 2 - 40;
-    const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
-    const maxR_y = cy - NODE_H / 2 - EDGE_PAD;
-    const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 320));
-    // Seeded RNG so positions are stable (matches useOrbitalPositions).
-    const seedFor = (i) => {
-      let h = 17;
-      const k = nodes[i].key;
-      for (let j = 0; j < k.length; j++) h = (h * 31 + k.charCodeAt(j)) | 0;
-      return Math.abs(h);
-    };
-    const rand = (i, off) => {
-      const s = (seedFor(i) + off * 1009) % 10000;
-      return s / 10000;
-    };
-    const out = [];
-    for (let i = 0; i < n; i++) {
-      const baseAngle = (i / n) * Math.PI * 2;
-      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
-      const radiusJitter = (rand(i, 2) - 0.5) * 50;
-      const angle = baseAngle + angleJitter - Math.PI / 2;  // start at top
-      const r = baseR + radiusJitter;
-      const fx = Math.cos(angle) * r;
-      const fy = Math.sin(angle) * r;
-      // Bezier midpoint biased outward + slightly toward the gravity well
-      // so the trajectory arcs naturally — particles going up arc through
-      // an upward-curving path, particles going down through a falling one.
-      const midX = fx * 0.45;
-      const midY = fy * 0.55;
-      out.push({ fx, fy, midX, midY });
-    }
-    return out;
+    const layout = computeOrbitalLayout(nodes, stageRect.w, stageRect.h);
+    return layout.map((p) => {
+      // Bezier midpoint biased outward so the trajectory arcs naturally.
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      return {
+        fx: dx,
+        fy: dy,
+        midX: dx * 0.45,
+        midY: dy * 0.55,
+      };
+    });
   }, [n, stageRect?.w, stageRect?.h, nodes]);
 
   const fountainP = progress('fountain');
@@ -568,21 +667,47 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const cy0 = stageRect ? stageRect.h / 2 : 0;
 
   // Helper — partial quadratic Bezier from t=0 to t=u via de Casteljau.
-  // Returns { d, end:{x,y} } so the SVG path and the particle position
-  // can share the same exact endpoint (the line never pokes past the
-  // box). The visible path is start → control' → end' where
-  //   control' = lerp(start, control, u)
-  //   end'     = bezier(u)
-  const partialBezier = (sx, sy, cx, cy, ex, ey, u) => {
-    const a1x = sx + u * (cx - sx);
-    const a1y = sy + u * (cy - sy);
-    const b1x = cx + u * (ex - cx);
-    const b1y = cy + u * (ey - cy);
-    const endX = a1x + u * (b1x - a1x);
-    const endY = a1y + u * (b1y - a1y);
+  // Two outputs:
+  //   box  → bezier(u)           — where the box is drawn (its CENTER)
+  //   d    → SVG path that ENDS just outside the box's edge along the
+  //          tangent direction, so the line never visually crosses the
+  //          box. We back the line off by the box's half-extent in the
+  //          tangent direction by re-evaluating de Casteljau at a slightly
+  //          smaller u_line.
+  const partialBezier = (sx, sy, cx, cy, ex, ey, u, boxHalfW, boxHalfH) => {
+    const evalAt = (uu) => {
+      const a1x = sx + uu * (cx - sx);
+      const a1y = sy + uu * (cy - sy);
+      const b1x = cx + uu * (ex - cx);
+      const b1y = cy + uu * (ey - cy);
+      const endX = a1x + uu * (b1x - a1x);
+      const endY = a1y + uu * (b1y - a1y);
+      return { a1x, a1y, endX, endY };
+    };
+    const at = evalAt(u);
+    // Tangent at u — derivative of quadratic Bezier.
+    const omu = 1 - u;
+    const tx = 2 * omu * (cx - sx) + 2 * u * (ex - cx);
+    const ty = 2 * omu * (cy - sy) + 2 * u * (ey - cy);
+    const tlen = Math.hypot(tx, ty) || 1;
+    const ux = tx / tlen;
+    const uy = ty / tlen;
+    // Retreat from the box CENTER by min(hw/|ux|, hh/|uy|) — distance along
+    // the tangent until we exit the box rectangle. Add a 2 px safety gap.
+    const retreat = boxHalfW > 0 && boxHalfH > 0
+      ? Math.min(
+          boxHalfW / Math.max(0.05, Math.abs(ux)),
+          boxHalfH / Math.max(0.05, Math.abs(uy))
+        ) + 2
+      : 0;
+    // Convert retreat (in px) to a delta in parameter space. Tangent
+    // magnitude tells us "stage-units per unit u".
+    const deltaU = Math.min(u, retreat / Math.max(tlen, 0.01));
+    const uLine = Math.max(0, u - deltaU);
+    const line = evalAt(uLine);
     return {
-      d: `M ${sx} ${sy} Q ${a1x} ${a1y} ${endX} ${endY}`,
-      end: { x: endX, y: endY },
+      d: `M ${sx} ${sy} Q ${line.a1x} ${line.a1y} ${line.endX} ${line.endY}`,
+      box: { x: at.endX, y: at.endY },
     };
   };
 
@@ -638,9 +763,9 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         </div>
       )}
 
-      {/* Fountain — trails are drawn ONLY up to the current particle
-          position via de Casteljau subdivision. The line and the box
-          travel together; the endpoint of the path equals the box. */}
+      {/* Fountain — trails are drawn ONLY up to the OUTER EDGE of the
+          particle's bounding box along the tangent direction. The line
+          never visually crosses the box. */}
       {t >= COLLAPSE_TIMELINE.fountain.start && stageRect && particleFinals.length > 0 && (
         <svg
           className="mm-fountain-svg"
@@ -649,17 +774,24 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         >
           {particleFinals.map((p, i) => {
             const u = fountainEased;
+            // Particle's current scale (matches the render below).
+            const scale = 0.13 + 0.87 * u;
+            // Half extents of the particle BOX at this scale (~220×110).
+            const boxHalfW = 110 * scale + 2;
+            const boxHalfH = 55 * scale + 2;
             const { d } = partialBezier(
               cx0, cy0,
               cx0 + p.midX, cy0 + p.midY,
               cx0 + p.fx, cy0 + p.fy,
-              u
+              u, boxHalfW, boxHalfH
             );
+            // Trail opacity — full through most of fountain; fades in
+            // the last 18 % so it vanishes before the box morph completes.
             const trailOpacity = fountainP < 0.06
               ? 0
-              : fountainP < 0.8
-                ? 0.55
-                : Math.max(0, (1 - (fountainP - 0.8) / 0.2)) * 0.55;
+              : fountainP < 0.82
+                ? 0.5
+                : Math.max(0, (1 - (fountainP - 0.82) / 0.18)) * 0.5;
             return (
               <path key={i} d={d} style={{ opacity: trailOpacity }} />
             );
@@ -668,12 +800,15 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
       )}
 
       {/* Particles — mini text-box previews of the eventual nodes. They
-          start tiny at the collision point (during shatter) and grow as
-          they travel to their final orbital positions. */}
+          start tiny at the collision point and grow into the full-size
+          card. The last ~15 % of fountain plays a "blur + expand" exit
+          so the handoff to the real OrbitalNode reads as the box growing
+          into focus, not popping in. */}
       {t >= COLLAPSE_TIMELINE.shatter.start && stageRect && particleFinals.length > 0 &&
         particleFinals.map((p, i) => {
           const inShatter = t < COLLAPSE_TIMELINE.fountain.start;
           let px, py;
+          let scale, blur, opacity;
           if (inShatter) {
             // Cluster around the impact point with a small organic offset.
             const shatterP = progress('shatter');
@@ -681,31 +816,31 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
             const cr = 20 + shatterP * 26;
             px = cx0 + Math.cos(ang) * cr;
             py = cy0 + Math.sin(ang) * cr;
+            scale = 0.08 + shatterP * 0.05;
+            blur = 0;
+            opacity = 1;
           } else {
-            // Travel along bezier; endpoint matches the SVG path endpoint
-            // EXACTLY because we use the same de Casteljau evaluation.
+            // Travel along bezier; box position uses the SAME de Casteljau
+            // evaluation as the trail's tangent-retreat origin, so the
+            // trail endpoint and the box outer-edge meet exactly.
             const u = fountainEased;
-            const { end } = partialBezier(
+            const { box } = partialBezier(
               cx0, cy0,
               cx0 + p.midX, cy0 + p.midY,
               cx0 + p.fx, cy0 + p.fy,
-              u
+              u, 0, 0
             );
-            px = end.x; py = end.y;
+            px = box.x; py = box.y;
+            scale = 0.13 + 0.87 * u;
+            // Exit transition in the last 15 % of fountain — particle
+            // expands (scale up by ~12 %), blurs, and fades. The real
+            // OrbitalNode entrance picks up here.
+            const exitP = Math.max(0, Math.min(1, (fountainP - 0.85) / 0.15));
+            scale = scale + exitP * 0.12;
+            blur = exitP * 6;
+            opacity = 1 - exitP * exitP;  // ease-in fade (slow start)
           }
-          // Scale: tiny at shatter (~0.08), grows linearly through the
-          // fountain to full size (1.0).
-          const scale = inShatter
-            ? 0.08 + progress('shatter') * 0.05
-            : 0.13 + 0.87 * fountainEased;
-          // Opacity holds through fountain; fades slightly at the very end
-          // so the real OrbitalNode mounting doesn't double-render.
-          const opacity = fountainP > 0.93
-            ? Math.max(0, 1 - (fountainP - 0.93) / 0.07)
-            : 1;
           const node = nodes[i] || {};
-          // Preview text — first point/note/step/etc., pulled from the
-          // node's raw data when possible; falls back to the label.
           const preview = previewTextForNode(node);
           return (
             <div
@@ -714,6 +849,7 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
               style={{
                 left: px, top: py,
                 opacity,
+                filter: blur ? `blur(${blur.toFixed(1)}px)` : undefined,
                 transform: `translate(-50%, -50%) scale(${scale.toFixed(3)})`,
               }}
             >
@@ -950,126 +1086,8 @@ function useOrbitalPositions(nodes, stageRef) {
   }, [stageRef]);
 
   React.useEffect(() => {
-    const n = nodes.length;
-    if (n === 0 || size.w === 0) { setPositions([]); return; }
-
-    // Node dimensions (kept in sync with .mm-orbit-node CSS).
-    const NODE_W = 220;
-    const NODE_H = 200;  // typical; tall ones scroll inside
-    const EDGE_PAD = 14;
-
-    const cx = size.w / 2;
-    const cy = size.h / 2;
-
-    // Base radius: large enough to clear the composer (≈190 px half-width
-    // for the orbital composer, half-height ≈ 80 px) plus the node's own
-    // half-extent, capped so nodes never spill past the stage edges.
-    const COMPOSER_HALF_W = 190;
-    const COMPOSER_HALF_H = 80;
-    const minR = COMPOSER_HALF_W + NODE_W / 2 - 40;  // small overlap allowed
-    const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
-    const maxR_y = cy - NODE_H / 2 - EDGE_PAD;
-    const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 320));
-
-    // Seeded RNG so positions stay stable across re-renders of the same
-    // response. Hash the node keys.
-    const seedFor = (i) => {
-      let h = 17;
-      const k = nodes[i].key;
-      for (let j = 0; j < k.length; j++) h = (h * 31 + k.charCodeAt(j)) | 0;
-      return Math.abs(h);
-    };
-    const rand = (i, off) => {
-      const s = (seedFor(i) + off * 1009) % 10000;
-      return s / 10000;
-    };
-
-    const pos = nodes.map((node, i) => {
-      // Full 360° cycle around A — angles span 0..2π so more categories
-      // naturally expand around the prompt box in a complete cycle.
-      // Starting offset of -π/2 places the first node at the top
-      // (12 o'clock) so the ring reads predictably.
-      const baseAngle = (i / n) * Math.PI * 2;
-      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
-      const radiusJitter = (rand(i, 2) - 0.5) * 50;
-      const angle = baseAngle + angleJitter - Math.PI / 2;
-      const radius = baseR + radiusJitter;
-      let x = cx + Math.cos(angle) * radius;
-      let y = cy + Math.sin(angle) * radius;
-      // Per-node drift offsets (used by CSS keyframes via custom props).
-      const driftX = (rand(i, 3) - 0.5) * 8;
-      const driftY = (rand(i, 4) - 0.5) * 8;
-      const driftDur = 6 + rand(i, 5) * 4;
-      const driftDelay = rand(i, 6) * 3;
-      return { x, y, driftX, driftY, driftDur, driftDelay };
-    });
-
-    // Overlap invariant: no card visually intersects another card or the
-    // composer. Iterative repulsion — push each pair apart along the line
-    // between centers if their AABB-ish bounding boxes (treated as the
-    // node W×H plus a small buffer) overlap. Also push nodes away from
-    // the composer rectangle at center if they encroach.
-    const GAP = 14;
-    const COMP_W = COMPOSER_HALF_W * 2;
-    const COMP_H = COMPOSER_HALF_H * 2;
-    const minDx = NODE_W + GAP;
-    const minDy = NODE_H + GAP;
-    for (let iter = 0; iter < 24; iter++) {
-      let moved = false;
-      // Node ↔ node
-      for (let i = 0; i < pos.length; i++) {
-        for (let j = i + 1; j < pos.length; j++) {
-          const a = pos[i], b = pos[j];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const overlapX = minDx - Math.abs(dx);
-          const overlapY = minDy - Math.abs(dy);
-          if (overlapX > 0 && overlapY > 0) {
-            // Push along the axis of least overlap (cheaper resolution).
-            if (overlapX < overlapY) {
-              const push = overlapX / 2 + 0.5;
-              const sign = dx >= 0 ? 1 : -1;
-              a.x -= sign * push; b.x += sign * push;
-            } else {
-              const push = overlapY / 2 + 0.5;
-              const sign = dy >= 0 ? 1 : -1;
-              a.y -= sign * push; b.y += sign * push;
-            }
-            moved = true;
-          }
-        }
-      }
-      // Node ↔ composer (treat composer as a rectangle at center)
-      for (let i = 0; i < pos.length; i++) {
-        const p = pos[i];
-        const dx = p.x - cx;
-        const dy = p.y - cy;
-        const overlapX = (NODE_W / 2 + COMP_W / 2 + GAP) - Math.abs(dx);
-        const overlapY = (NODE_H / 2 + COMP_H / 2 + GAP) - Math.abs(dy);
-        if (overlapX > 0 && overlapY > 0) {
-          if (overlapX < overlapY) {
-            p.x += (dx >= 0 ? 1 : -1) * (overlapX + 0.5);
-          } else {
-            p.y += (dy >= 0 ? 1 : -1) * (overlapY + 0.5);
-          }
-          moved = true;
-        }
-      }
-      // Clamp to stage so nothing escapes the visible region.
-      const minX = NODE_W / 2 + EDGE_PAD;
-      const maxX = size.w - NODE_W / 2 - EDGE_PAD;
-      const minY = NODE_H / 2 + EDGE_PAD;
-      const maxY = size.h - NODE_H / 2 - EDGE_PAD;
-      for (const p of pos) {
-        const nx = Math.max(minX, Math.min(maxX, p.x));
-        const ny = Math.max(minY, Math.min(maxY, p.y));
-        if (nx !== p.x || ny !== p.y) { p.x = nx; p.y = ny; moved = true; }
-      }
-      if (!moved) break;
-    }
-    // Attach the (still constant) cx/cy used by the lines layer.
-    for (const p of pos) { p.cx = cx; p.cy = cy; }
-    setPositions(pos);
+    if (nodes.length === 0 || size.w === 0) { setPositions([]); return; }
+    setPositions(computeOrbitalLayout(nodes, size.w, size.h));
   }, [nodes, size.w, size.h]);
 
   return { positions, size };
@@ -1264,6 +1282,9 @@ function HeroMindmap() {
   React.useEffect(() => {
     if (!stageRef.current) return;
     const update = () => {
+      // mm-stage has no padding/border, so getBoundingClientRect gives the
+      // exact coordinate area both the catalyst overlay and the orbital
+      // stage paint into.
       const r = stageRef.current.getBoundingClientRect();
       setStageRect({ w: r.width, h: r.height });
     };
