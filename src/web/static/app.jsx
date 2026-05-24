@@ -18,15 +18,16 @@
 //                 dashed accent lines; nodes drift gently.
 //   imploding   → reverse implode (~440 ms) then back to response.
 
-// Agent roster colors — single cool palette so the constellation reads as
-// "instrument panel" not "rainbow LEDs". Differentiation comes from hue
-// shifts within a narrow blue-cyan band.
+// Agent roster colors — muted "ink palette" tuned for the warm Atelier
+// theme. Each color sits on the same lightness band so they read as
+// peer agents, distinguished by hue (amber → sage → mauve → olive →
+// terracotta) without going neon.
 const MM_AGENTS = [
-  { id: 'orchestration',     name: 'Orchestrator', color: 'oklch(0.82 0.14 230)', quota: 128000 },
-  { id: 'perception',        name: 'Perception',   color: 'oklch(0.85 0.10 215)', quota: 128000 },
-  { id: 'reasoning',         name: 'Reasoning',    color: 'oklch(0.80 0.08 260)', quota: 128000 },
-  { id: 'action-code',       name: 'Coder',        color: 'oklch(0.86 0.08 195)', quota: 128000 },
-  { id: 'action-structural', name: 'Structural',   color: 'oklch(0.78 0.06 240)', quota: 128000 },
+  { id: 'orchestration',     name: 'Orchestrator', color: 'oklch(0.80 0.11 65)',  quota: 128000 },
+  { id: 'perception',        name: 'Perception',   color: 'oklch(0.78 0.08 165)', quota: 128000 },
+  { id: 'reasoning',         name: 'Reasoning',    color: 'oklch(0.78 0.08 330)', quota: 128000 },
+  { id: 'action-code',       name: 'Coder',        color: 'oklch(0.78 0.08 130)', quota: 128000 },
+  { id: 'action-structural', name: 'Structural',   color: 'oklch(0.76 0.10 35)',  quota: 128000 },
 ];
 
 // ─── Cursor-attracted particle constellation overlay ─────────
@@ -168,7 +169,7 @@ function CompactNumber(n) {
   return String(n);
 }
 
-function Sidebar({ phase, latestResponse }) {
+function Sidebar({ phase, latestResponse, open }) {
   const [usage, setUsage] = React.useState({ roles: {}, mode: 'round-robin' });
   React.useEffect(() => {
     let cancelled = false;
@@ -229,7 +230,7 @@ function Sidebar({ phase, latestResponse }) {
   const dispPct = (dispTotal / totalQuota) * 100;
 
   return (
-    <aside className="mm-sidebar">
+    <aside className={'mm-sidebar' + (open ? ' open' : '')}>
       <div className="mm-section">
         <div className="mm-lbl">agents <i>{phase === 'loading' ? '5 thinking' : '5 ready'}</i></div>
         {MM_AGENTS.map((a) => {
@@ -264,12 +265,21 @@ function Sidebar({ phase, latestResponse }) {
         </div>
         {MM_AGENTS.map((a) => {
           const u = disp[a.id] || 0;
-          const p = (u / a.quota) * 100;
+          const role = (usage.roles || {})[a.id];
+          // Prefer the live remainingPct from /api/usage.json when the
+          // provider declared an estimatedDailyBudget; fall back to the
+          // local synthetic count / quota when it doesn't.
+          const hasReal = role && typeof role.remainingPct === 'number';
+          const usedPct = hasReal
+            ? Math.max(0, 100 - role.remainingPct)
+            : Math.min(100, (u / a.quota) * 100);
           return (
             <div key={a.id} className="mm-bar-row" style={{ '--c': a.color }}>
               <span className="label">{a.name.toLowerCase()}</span>
-              <span className="bar"><span className="fill" style={{ width: p + '%' }} /></span>
-              <span className="num">{CompactNumber(u)}</span>
+              <span className="bar"><span className="fill" style={{ width: usedPct + '%' }} /></span>
+              <span className="num" title={hasReal ? `${role.remainingPct.toFixed(0)}% of daily budget remaining` : `~${CompactNumber(u)} tokens (estimated)`}>
+                {usedPct.toFixed(0)}%
+              </span>
             </div>
           );
         })}
@@ -321,6 +331,17 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
     ta.style.height = 'auto';
     ta.style.height = Math.min(140, ta.scrollHeight) + 'px';
   }, [value]);
+  // When autoFocus is on AND the textarea already has content (focused-node
+  // prefill case), place the caret at the END of the value so the user can
+  // start typing immediately after "For the X part: ".
+  React.useEffect(() => {
+    if (!autoFocus) return;
+    const ta = ref.current; if (!ta) return;
+    ta.focus();
+    const end = ta.value.length;
+    try { ta.setSelectionRange(end, end); } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocus]);
   return (
     <div className="mm-composer">
       <div className="mm-composer-in">
@@ -358,8 +379,46 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
 // scan the thread at a glance. Newest gets `data-newest`, which the CSS uses
 // to scale it up slightly and brighten the accent — a subtle "you're looking
 // at the latest result" cue.
+// One turn in the chat-style scroll view. User prompt on top
+// (right-aligned), AI response below (left-aligned). The AI bubble
+// renders the orchestrator's RAW prose answer (no category split —
+// that's the mindmap's job). Newest gets a subtle accent ring.
+function ChatTurn({ entry, accent, isNewest }) {
+  const tpl = TEMPLATE_DEFS[entry.template];
+  return (
+    <div
+      className={'mm-turn' + (isNewest ? ' newest' : '')}
+      style={{ '--accent': accent }}
+    >
+      <div className="mm-turn-user">
+        <span className="mm-turn-role">you</span>
+        <div className="mm-turn-user-bubble">{entry.prompt}</div>
+      </div>
+      <div className="mm-turn-ai">
+        <span className="mm-turn-role">
+          orchestrator
+          <span className="mm-turn-pill">
+            <span className="mm-template-dot" />
+            {tpl?.label || entry.template}
+          </span>
+        </span>
+        <div className="mm-turn-ai-bubble">
+          <div className="mm-turn-prose">{entry.text}</div>
+          <div className="mm-turn-foot">
+            <CopyButton getText={() => entry.text || ''} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
   const tpl = TEMPLATE_DEFS[entry.template];
+  // Render the full structured response (every section / file / target /
+  // phase) — this is the "chat AI" view. The summary text stays as a lead
+  // paragraph above it. Mindmap is one click away for the structured grid.
+  const Renderer = RENDERERS[entry.template];
   return (
     <div
       className={'mm-stacked-response' + (isNewest ? ' newest' : '') + (isOlder ? ' older' : '')}
@@ -373,7 +432,14 @@ function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
           {tpl?.label || entry.template}
         </span>
       </div>
-      <div className="mm-stacked-body">{entry.text}</div>
+      {entry.text && (
+        <p className="mm-stacked-summary">{entry.text}</p>
+      )}
+      <div className="mm-stacked-full">
+        {Renderer && entry.data
+          ? <Renderer data={entry.data} accent={accent} />
+          : <div className="mm-stacked-body">{entry.text}</div>}
+      </div>
       <div className="mm-stacked-foot">
         <CopyButton getText={() => formatResponseText(entry)} />
       </div>
@@ -381,10 +447,11 @@ function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
   );
 }
 
-// ─── Bar handle — the catalyst at the top of the canvas ───────
-// A small subtle white pill that the user hovers/clicks/pulls. Trigger
-// fires `onExpand()` which kicks off the bar-slide → collide → fountain
-// choreography (orchestrated in `HeroMindmap`'s timeline).
+// ─── Bar handle — explicit "burst into mindmap" affordance ─────
+// Not an iOS pill. A wide horizontal seam labeled with double-chevron
+// + text. Hover → label brightens + chevron animates downward; drag
+// or click → fire onExpand. During the catalyst sequence (`sliding`)
+// the bar slides down toward the collision point.
 function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
   const [dragY, setDragY] = React.useState(0);
   const startY = React.useRef(0);
@@ -419,9 +486,10 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
   return (
     <button
       className={
-        'mm-bar-handle' +
+        'mm-seam-handle' +
         (disabled ? ' disabled' : '') +
-        (sliding ? ' sliding' : '')
+        (sliding ? ' sliding' : '') +
+        (dragY > 0 ? ' active' : '')
       }
       onClick={disabled || sliding ? undefined : onExpand}
       onPointerDown={onPointerDown}
@@ -432,11 +500,20 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
         transform: sliding ? undefined : `translateY(${dragY}px)`,
         '--bar-slide-distance': slideDistance ? `${slideDistance}px` : '30vh',
       }}
-      aria-label="Initiate"
+      aria-label="Burst into mindmap"
     >
+      <span className="mm-seam-line" />
+      <span className="mm-seam-knob">
+        <svg viewBox="0 0 18 14" fill="none" aria-hidden="true">
+          <path d="M3 3 L9 7 L15 3 M3 8 L9 12 L15 8"
+            stroke="currentColor" strokeWidth="1.6"
+            strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="mm-seam-label">burst into mindmap</span>
+      </span>
       {!sliding && dragY > 0 && (
-        <span className="mm-bar-progress">
-          <span className="mm-bar-progress-fill" style={{ width: progress * 100 + '%' }} />
+        <span className="mm-seam-progress" aria-hidden="true">
+          <span className="mm-seam-progress-fill" style={{ width: progress * 100 + '%' }} />
         </span>
       )}
     </button>
@@ -455,22 +532,49 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
 
 // ─── Shared orbital layout ────────────────────────────────────
 // Used by BOTH the catalyst (so fountain particles end exactly where the
-// real nodes will mount) and the settled orbital mindmap. Pure function —
-// given nodes + stage size, returns the same positions on every call.
+// real nodes will mount) and the settled orbital mindmap.
 //
-// Steps:
-//   1. Polar placement: full 360° around A with seeded per-node random
-//      angle + radius jitter, starting at 12 o'clock.
-//   2. Overlap-resolver: iterative AABB repulsion — node↔node + node↔composer
-//      rectangle. Enforces the no-overlap invariant.
+// Strategy: explicit pre-computed angle table for branch counts 2..6
+// (the realistic range — most templates produce 3-5). Larger counts fall
+// back to evenly-spaced polar placement. Positions are then enforced not
+// to overlap each other or the central composer rectangle by a final
+// AABB pass, but with explicit angles that pass is usually a no-op.
+//
+// Box-edge intersections for connectors are computed by callers via
+// `lineFromBoxToBox` below; the layout itself only returns centers.
 const ORBIT_LAYOUT_CONSTS = {
   NODE_W: 220,
-  NODE_H: 200,
-  COMPOSER_HALF_W: 190,
-  COMPOSER_HALF_H: 80,
-  EDGE_PAD: 14,
-  OVERLAP_GAP: 14,
+  NODE_H: 132,           // concise summary card — matches .mm-orbit-node max-height
+  COMPOSER_HALF_W: 150,
+  COMPOSER_HALF_H: 90,
+  EDGE_PAD: 18,
+  OVERLAP_GAP: 22,
+  // The thread strip overlays the top of the orbit stage at top:12 + ~56px
+  // strip height + 12 gap = ~80. Reserve it so top nodes don't crash into it.
+  TOP_INSET: 92,
+  BOTTOM_INSET: 18,
 };
+
+// Explicit angle tables (degrees from 12 o'clock, clockwise positive).
+// Chosen so that:
+//   - composer's east/west edges are never lined up with a node center
+//     (so connectors don't overlap the composer corner)
+//   - at every count, the visual weight is balanced top + bottom
+//   - rotations were sketched on paper for each count rather than divided
+//     evenly, so 2/3/4/5/6 each have their own deliberate shape.
+const ANGLE_TABLES_DEG = {
+  2: [-90, 90],                          // left + right
+  3: [-90, 35, 145],                     // top + lower-right + lower-left
+  4: [-65, 65, -115, 115],               // 4 corners (NE, SE, NW, SW — skips cardinals so nothing aligns)
+  5: [-90, -28, 28, -150, 150],          // crown: 1 top + 2 upper-flank + 2 lower-flank
+  6: [-90, -35, 35, -145, 145, 90],      // hexagonal: top, both upper, both lower, bottom
+};
+
+function anglesForCount(n) {
+  if (ANGLE_TABLES_DEG[n]) return ANGLE_TABLES_DEG[n].map((d) => (d * Math.PI) / 180);
+  // Fallback for outliers — even spacing starting at 12 o'clock.
+  return Array.from({ length: n }, (_, i) => (i / n) * Math.PI * 2 - Math.PI / 2);
+}
 
 function computeOrbitalLayout(nodes, stageW, stageH) {
   const n = nodes.length;
@@ -478,16 +582,30 @@ function computeOrbitalLayout(nodes, stageW, stageH) {
 
   const {
     NODE_W, NODE_H, COMPOSER_HALF_W, COMPOSER_HALF_H, EDGE_PAD, OVERLAP_GAP,
+    TOP_INSET, BOTTOM_INSET,
   } = ORBIT_LAYOUT_CONSTS;
 
+  // The usable area for the orbit excludes the thread-strip overlay at the
+  // top and a small bottom margin. We re-center the composer (and thus
+  // the radial origin) into that usable area so the top node never
+  // collides with the strip.
+  const usableTop = TOP_INSET;
+  const usableBottom = stageH - BOTTOM_INSET;
   const cx = stageW / 2;
-  const cy = stageH / 2;
-  const minR = COMPOSER_HALF_W + NODE_W / 2 - 40;
-  const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
-  const maxR_y = cy - NODE_H / 2 - EDGE_PAD;
-  const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 320));
+  const cy = (usableTop + usableBottom) / 2;
 
-  // Seeded RNG so positions are stable across re-renders.
+  // Radius needs to keep the node box clear of the composer box. We size
+  // it to the smaller of horizontal and vertical breathing room so even
+  // narrow stages produce a clean layout.
+  const minR = COMPOSER_HALF_W + NODE_W / 2 + OVERLAP_GAP - 30;
+  const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
+  const maxR_y_top = cy - NODE_H / 2 - usableTop;       // top edge of usable
+  const maxR_y_bot = usableBottom - cy - NODE_H / 2;    // bottom edge
+  const maxR_y = Math.min(maxR_y_top, maxR_y_bot);
+  const baseR = Math.max(minR, Math.min(maxR_x, maxR_y, 360));
+
+  // Seeded RNG only for drift values (not for placement — placement is
+  // now deterministic per branch count).
   const seedFor = (i) => {
     let h = 17;
     const k = nodes[i].key;
@@ -499,14 +617,11 @@ function computeOrbitalLayout(nodes, stageW, stageH) {
     return s / 10000;
   };
 
+  const angles = anglesForCount(n);
   const pos = nodes.map((node, i) => {
-    const baseAngle = (i / n) * Math.PI * 2;
-    const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
-    const radiusJitter = (rand(i, 2) - 0.5) * 50;
-    const angle = baseAngle + angleJitter - Math.PI / 2;
-    const radius = baseR + radiusJitter;
-    const x = cx + Math.cos(angle) * radius;
-    const y = cy + Math.sin(angle) * radius;
+    const angle = angles[i];
+    const x = cx + Math.cos(angle) * baseR;
+    const y = cy + Math.sin(angle) * baseR;
     const driftX = (rand(i, 3) - 0.5) * 8;
     const driftY = (rand(i, 4) - 0.5) * 8;
     const driftDur = 6 + rand(i, 5) * 4;
@@ -514,32 +629,33 @@ function computeOrbitalLayout(nodes, stageW, stageH) {
     return { x, y, driftX, driftY, driftDur, driftDelay };
   });
 
-  // Overlap resolver — node↔node, node↔composer, stage clamp.
+  // Safety pass — should be a no-op for n<=6 but enforces invariant for
+  // outliers or unusual stage sizes.
   const COMP_W = COMPOSER_HALF_W * 2;
   const COMP_H = COMPOSER_HALF_H * 2;
   const minDx = NODE_W + OVERLAP_GAP;
   const minDy = NODE_H + OVERLAP_GAP;
   const minX = NODE_W / 2 + EDGE_PAD;
   const maxX = stageW - NODE_W / 2 - EDGE_PAD;
-  const minY = NODE_H / 2 + EDGE_PAD;
-  const maxY = stageH - NODE_H / 2 - EDGE_PAD;
-
+  // Constrain Y to the usable area — never let a node climb into the
+  // thread-strip zone at the top.
+  const minY = usableTop + NODE_H / 2;
+  const maxY = usableBottom - NODE_H / 2;
   for (let iter = 0; iter < 24; iter++) {
     let moved = false;
     for (let i = 0; i < pos.length; i++) {
       for (let j = i + 1; j < pos.length; j++) {
         const a = pos[i], b = pos[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const overlapX = minDx - Math.abs(dx);
-        const overlapY = minDy - Math.abs(dy);
-        if (overlapX > 0 && overlapY > 0) {
-          if (overlapX < overlapY) {
-            const push = overlapX / 2 + 0.5;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const ox = minDx - Math.abs(dx);
+        const oy = minDy - Math.abs(dy);
+        if (ox > 0 && oy > 0) {
+          if (ox < oy) {
+            const push = ox / 2 + 0.5;
             const sign = dx >= 0 ? 1 : -1;
             a.x -= sign * push; b.x += sign * push;
           } else {
-            const push = overlapY / 2 + 0.5;
+            const push = oy / 2 + 0.5;
             const sign = dy >= 0 ? 1 : -1;
             a.y -= sign * push; b.y += sign * push;
           }
@@ -547,18 +663,13 @@ function computeOrbitalLayout(nodes, stageW, stageH) {
         }
       }
     }
-    for (let i = 0; i < pos.length; i++) {
-      const p = pos[i];
-      const dx = p.x - cx;
-      const dy = p.y - cy;
-      const overlapX = (NODE_W / 2 + COMP_W / 2 + OVERLAP_GAP) - Math.abs(dx);
-      const overlapY = (NODE_H / 2 + COMP_H / 2 + OVERLAP_GAP) - Math.abs(dy);
-      if (overlapX > 0 && overlapY > 0) {
-        if (overlapX < overlapY) {
-          p.x += (dx >= 0 ? 1 : -1) * (overlapX + 0.5);
-        } else {
-          p.y += (dy >= 0 ? 1 : -1) * (overlapY + 0.5);
-        }
+    for (const p of pos) {
+      const dx = p.x - cx, dy = p.y - cy;
+      const ox = (NODE_W / 2 + COMP_W / 2 + OVERLAP_GAP) - Math.abs(dx);
+      const oy = (NODE_H / 2 + COMP_H / 2 + OVERLAP_GAP) - Math.abs(dy);
+      if (ox > 0 && oy > 0) {
+        if (ox < oy) p.x += (dx >= 0 ? 1 : -1) * (ox + 0.5);
+        else        p.y += (dy >= 0 ? 1 : -1) * (oy + 0.5);
         moved = true;
       }
     }
@@ -570,9 +681,30 @@ function computeOrbitalLayout(nodes, stageW, stageH) {
     if (!moved) break;
   }
 
-  // Attach center coords so callers can draw lines to A.
   for (const p of pos) { p.cx = cx; p.cy = cy; }
   return pos;
+}
+
+// Given two AABB-defined rectangles (composer at center, node at p) and
+// their centers, return the line endpoints that sit on each rectangle's
+// EDGE along the line between centers. Used by OrbitalLines so the
+// connector neither emerges from inside the composer nor punches into
+// the node box.
+function lineFromBoxToBox(cx, cy, nx, ny, compHalfW, compHalfH, nodeHalfW, nodeHalfH) {
+  const dx = nx - cx, dy = ny - cy;
+  if (dx === 0 && dy === 0) return { sx: cx, sy: cy, ex: nx, ey: ny };
+  // Edge intersection of a ray from (0,0) with an AABB centered at origin.
+  // t = how far along the ray (in normalized parameter) until we exit.
+  const exitT = (hw, hh) => Math.min(hw / Math.max(0.01, Math.abs(dx)),
+                                      hh / Math.max(0.01, Math.abs(dy)));
+  const tComp = exitT(compHalfW, compHalfH);
+  const tNode = 1 - exitT(nodeHalfW, nodeHalfH);
+  return {
+    sx: cx + dx * tComp,
+    sy: cy + dy * tComp,
+    ex: cx + dx * tNode,
+    ey: cy + dy * tNode,
+  };
 }
 
 const COLLAPSE_TIMELINE = {
@@ -667,14 +799,12 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const cy0 = stageRect ? stageRect.h / 2 : 0;
 
   // Helper — partial quadratic Bezier from t=0 to t=u via de Casteljau.
-  // Two outputs:
-  //   box  → bezier(u)           — where the box is drawn (its CENTER)
-  //   d    → SVG path that ENDS just outside the box's edge along the
-  //          tangent direction, so the line never visually crosses the
-  //          box. We back the line off by the box's half-extent in the
-  //          tangent direction by re-evaluating de Casteljau at a slightly
-  //          smaller u_line.
-  const partialBezier = (sx, sy, cx, cy, ex, ey, u, boxHalfW, boxHalfH) => {
+  // Trims BOTH ends so the visible line sits between the source box's
+  // edge (the A token at center) and the particle box's edge along the
+  // tangent direction. Returns:
+  //   box  → bezier(u)            — where the particle box is drawn (its CENTER)
+  //   d    → SVG path retreated at both ends
+  const partialBezier = (sx, sy, cx, cy, ex, ey, u, boxHalfW, boxHalfH, srcHalfW = 0, srcHalfH = 0) => {
     const evalAt = (uu) => {
       const a1x = sx + uu * (cx - sx);
       const a1y = sy + uu * (cy - sy);
@@ -685,28 +815,55 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
       return { a1x, a1y, endX, endY };
     };
     const at = evalAt(u);
-    // Tangent at u — derivative of quadratic Bezier.
+    // Tangent at u — derivative of quadratic Bezier — used to retreat
+    // the END point from the particle box edge.
     const omu = 1 - u;
     const tx = 2 * omu * (cx - sx) + 2 * u * (ex - cx);
     const ty = 2 * omu * (cy - sy) + 2 * u * (ey - cy);
     const tlen = Math.hypot(tx, ty) || 1;
     const ux = tx / tlen;
     const uy = ty / tlen;
-    // Retreat from the box CENTER by min(hw/|ux|, hh/|uy|) — distance along
-    // the tangent until we exit the box rectangle. Add a 2 px safety gap.
-    const retreat = boxHalfW > 0 && boxHalfH > 0
+    const retreatEnd = boxHalfW > 0 && boxHalfH > 0
       ? Math.min(
           boxHalfW / Math.max(0.05, Math.abs(ux)),
           boxHalfH / Math.max(0.05, Math.abs(uy))
         ) + 2
       : 0;
-    // Convert retreat (in px) to a delta in parameter space. Tangent
-    // magnitude tells us "stage-units per unit u".
-    const deltaU = Math.min(u, retreat / Math.max(tlen, 0.01));
-    const uLine = Math.max(0, u - deltaU);
+    const deltaUEnd = Math.min(u, retreatEnd / Math.max(tlen, 0.01));
+    const uLine = Math.max(0, u - deltaUEnd);
     const line = evalAt(uLine);
+
+    // Tangent at u=0 — used to retreat the START point from the A-box edge
+    // along the initial direction of the trail. Without this, the trail
+    // visually emerges from inside the center A box.
+    let startX = sx, startY = sy, startCtrlX = line.a1x, startCtrlY = line.a1y;
+    if (srcHalfW > 0 && srcHalfH > 0) {
+      const t0x = 2 * (cx - sx);   // dB/du at u=0
+      const t0y = 2 * (cy - sy);
+      const t0len = Math.hypot(t0x, t0y) || 1;
+      const u0x = t0x / t0len;
+      const u0y = t0y / t0len;
+      const retreatStart = Math.min(
+        srcHalfW / Math.max(0.05, Math.abs(u0x)),
+        srcHalfH / Math.max(0.05, Math.abs(u0y)),
+      ) + 2;
+      const deltaUStart = Math.min(uLine, retreatStart / Math.max(t0len, 0.01));
+      const startEval = evalAt(deltaUStart);
+      startX = startEval.endX;
+      startY = startEval.endY;
+      // Recompute control point on the SHORTENED segment so the bezier
+      // shape between start and end remains smooth.
+      const subU = uLine - deltaUStart;
+      if (subU > 0) {
+        // The first-half control of the partial Q (de Casteljau a1 at uLine)
+        // already approximates the new mid-handle; pull it slightly toward
+        // the new startX/Y so the curve doesn't kink at the cut.
+        startCtrlX = line.a1x + (startX - sx) * 0.4;
+        startCtrlY = line.a1y + (startY - sy) * 0.4;
+      }
+    }
     return {
-      d: `M ${sx} ${sy} Q ${line.a1x} ${line.a1y} ${line.endX} ${line.endY}`,
+      d: `M ${startX} ${startY} Q ${startCtrlX} ${startCtrlY} ${line.endX} ${line.endY}`,
       box: { x: at.endX, y: at.endY },
     };
   };
@@ -779,11 +936,15 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
             // Half extents of the particle BOX at this scale (~220×110).
             const boxHalfW = 110 * scale + 2;
             const boxHalfH = 55 * scale + 2;
+            // A-box (center "mindmap" anchor) half extents — width 132 +
+            // padding ~24 → 156 total → halfW 78. Height ~28 → halfH 14.
+            const aHalfW = 78;
+            const aHalfH = 14;
             const { d } = partialBezier(
               cx0, cy0,
               cx0 + p.midX, cy0 + p.midY,
               cx0 + p.fx, cy0 + p.fy,
-              u, boxHalfW, boxHalfH
+              u, boxHalfW, boxHalfH, aHalfW, aHalfH,
             );
             // Trail opacity — full through most of fountain; fades in
             // the last 18 % so it vanishes before the box morph completes.
@@ -946,108 +1107,89 @@ function LoadingView({ prompt }) {
   );
 }
 
-// Stacked-response view.
-// Layout (top → bottom):
-//   [hint bar]
-//   [older Bs … oldest at the top, newest just above A]
-//   [composer A pinned at bottom]
-// When phase === 'collapsing' the whole stack converges toward stage-center
-// (the singularity); the hint pulls inward and the composer rises to the
-// center too. When phase === 'response' (back from imploding) the stack
-// re-materializes with an entrance animation per child.
+// Response view — normal vertical-scroll chat. Each turn is a row
+// containing the user's prompt above the AI response card. The
+// composer pins at the bottom; the BURST seam sits at the very top
+// of the scroll area and operates on the NEWEST turn (the one the
+// user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase,
 }) {
   const newest = responses[responses.length - 1];
-  const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || '#f5a25b') : '#f5a25b';
-  // Render order top→bottom matches DOM order: hint, oldest…newest, composer.
-  // Oldest goes first in DOM (top); newest goes last (just above composer).
-  const ordered = responses; // already oldest→newest
-
+  const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
   const collapsing = phase === 'collapsing';
   const imploding = phase === 'imploding';
-  // `entering` plays the materialize animation right after returning from the
-  // mindmap. We toggle it off after the animation duration so a subsequent
-  // submit doesn't re-trigger it.
-  const [entering, setEntering] = React.useState(imploding);
-  React.useEffect(() => {
-    if (imploding) {
-      setEntering(true);
-      const t = setTimeout(() => setEntering(false), 600);
-      return () => clearTimeout(t);
-    }
-  }, [imploding]);
 
-  const olderEntries = ordered.slice(0, -1); // oldest → second-most-recent
-  const newestEntry = ordered[ordered.length - 1] || null;
+  // Smooth-scroll to the newest turn whenever it changes (new send,
+  // initial mount with restored stack, or return from mindmap). Two
+  // rAFs + a small setTimeout give React time to paint the new turn
+  // AND its template renderer (which may itself be tall) before we
+  // measure. lastIdRef starts as null so the effect fires on first
+  // mount when there's a persisted stack.
+  const listRef = React.useRef(null);
+  const bottomRef = React.useRef(null);
+  const lastIdRef = React.useRef(null);
+  React.useEffect(() => {
+    const list = listRef.current;
+    const bottom = bottomRef.current;
+    if (!list || !bottom) return;
+    if (lastIdRef.current === newest?.id && !imploding) return;
+    lastIdRef.current = newest?.id;
+    const doScroll = () => {
+      try {
+        bottom.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      } catch {
+        list.scrollTop = list.scrollHeight;
+      }
+    };
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(doScroll, 80)));
+  }, [newest?.id, imploding, responses.length]);
 
   return (
     <div
       className={
-        'mm-phase mm-phase-response' +
-        (collapsing ? ' collapsing' : '') +
-        (entering ? ' entering' : '')
+        'mm-phase mm-phase-response mm-chat' +
+        (collapsing ? ' collapsing' : '')
       }
       style={{ '--accent': accent }}
     >
-      <div className="mm-stack-wrap" style={{ '--stack-size': ordered.length }}>
-        <div className="mm-stack-hint-slot">
+      <div className="mm-chat-wrap">
+        {responses.length > 0 && (
           <BarHandle
             onExpand={expand}
-            disabled={imploding || ordered.length === 0}
+            disabled={imploding || responses.length === 0}
             sliding={collapsing}
-            slideDistance={null /* CSS variable default */}
+            slideDistance={null}
           />
-        </div>
-        <div className="mm-stack-list">
-          {/* Tools row — anchored at the top of the list area, OUTSIDE the
-              fading older block so the count + reset stay readable. */}
-          {ordered.length > 0 && (
-            <div className="mm-stack-tools-row">
-              <button className="mm-reset" onClick={reset} title="New thread — wipes the response stack">
+        )}
+        <div className="mm-chat-list" ref={listRef}>
+          {responses.length > 0 && (
+            <div className="mm-chat-toolbar">
+              <span className="mm-chat-count">
+                {responses.length} {responses.length === 1 ? 'turn' : 'turns'}
+              </span>
+              <button className="mm-reset" onClick={reset} title="Clear conversation and start over">
                 <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4">
                   <path d="M2.5 6a3.5 3.5 0 1 1 1.1 2.5" />
                   <path d="M2.5 3v2.5h2.5" strokeLinecap="round" />
                 </svg>
                 <span>new thread</span>
               </button>
-              <span className="mm-stack-count">{ordered.length} {ordered.length === 1 ? 'response' : 'responses'}</span>
             </div>
           )}
-          {/* Older entries: positioned above the centered newest. DOM order
-              is chronological (oldest first); flex-column with
-              justify-content:flex-end lays them out top-down so the
-              second-most-recent sits closest to the newest. Anything older
-              fades upward and can scroll. */}
-          {olderEntries.length > 0 && (
-            <div className="mm-stack-older">
-              {olderEntries.map((entry, i) => (
-                <StackedResponse
-                  key={entry.id}
-                  entry={entry}
-                  accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
-                  isNewest={false}
-                  isOlder={true}
-                  stackIndex={olderEntries.length - i}
-                />
-              ))}
-            </div>
-          )}
-          {/* Newest entry: absolutely centered both axes in the list area. */}
-          {newestEntry && (
-            <div className="mm-stack-newest">
-              <StackedResponse
-                key={newestEntry.id}
-                entry={newestEntry}
-                accent={TEMPLATE_DEFS[newestEntry.template]?.accent || accent}
-                isNewest={true}
-                isOlder={false}
-                stackIndex={0}
-              />
-            </div>
-          )}
+          {responses.map((entry, i) => (
+            <ChatTurn
+              key={entry.id}
+              entry={entry}
+              accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
+              isNewest={i === responses.length - 1}
+            />
+          ))}
+          {/* Scroll anchor — scrollIntoView target so smooth-scroll
+              survives heavy-render newest turns. */}
+          <div ref={bottomRef} className="mm-chat-anchor" aria-hidden="true" />
         </div>
-        <div className="mm-stack-composer-slot">
+        <div className="mm-chat-composer">
           <Composer value={draft} onChange={setDraft} onSubmit={submit} />
         </div>
       </div>
@@ -1095,6 +1237,9 @@ function useOrbitalPositions(nodes, stageRef) {
 
 function OrbitalLines({ positions, size }) {
   if (!size.w || positions.length === 0) return null;
+  const { COMPOSER_HALF_W, COMPOSER_HALF_H, NODE_W, NODE_H } = ORBIT_LAYOUT_CONSTS;
+  const nodeHalfW = NODE_W / 2;
+  const nodeHalfH = NODE_H / 2;
   return (
     <svg className="mm-orbit-lines" width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`}>
       <defs>
@@ -1103,25 +1248,34 @@ function OrbitalLines({ positions, size }) {
           <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.05" />
         </radialGradient>
       </defs>
-      {positions.map((p, i) => (
-        <line
-          key={i}
-          x1={p.cx} y1={p.cy} x2={p.x} y2={p.y}
-          stroke="url(#mm-orbit-line-grad)"
-          strokeWidth="1"
-          strokeDasharray="3 6"
-          style={{
-            opacity: 0,
-            animation: `mmOrbitLineIn 600ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards`,
-            animationDelay: `${220 + i * 60}ms`,
-          }}
-        />
-      ))}
+      {positions.map((p, i) => {
+        // Connector terminates on BOTH boxes' edges so it never visually
+        // pierces the composer or the node card.
+        const { sx, sy, ex, ey } = lineFromBoxToBox(
+          p.cx, p.cy, p.x, p.y,
+          COMPOSER_HALF_W, COMPOSER_HALF_H,
+          nodeHalfW, nodeHalfH,
+        );
+        return (
+          <line
+            key={i}
+            x1={sx} y1={sy} x2={ex} y2={ey}
+            stroke="url(#mm-orbit-line-grad)"
+            strokeWidth="1"
+            strokeDasharray="3 6"
+            style={{
+              opacity: 0,
+              animation: `mmOrbitLineIn 600ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards`,
+              animationDelay: `${220 + i * 60}ms`,
+            }}
+          />
+        );
+      })}
     </svg>
   );
 }
 
-function OrbitalNode({ node, pos, index }) {
+function OrbitalNode({ node, pos, index, onFocus }) {
   return (
     <div
       className={'mm-orbit-node mm-orbit-node-' + node.kind}
@@ -1135,13 +1289,63 @@ function OrbitalNode({ node, pos, index }) {
         '--burst-delay': (180 + index * 70) + 'ms',
         animationDelay: `${180 + index * 70}ms, ${1200 + pos.driftDelay * 1000}ms`,
       }}
+      onClick={(e) => {
+        // Don't fire when the inner CopyButton is clicked.
+        if (e.target.closest('.mm-copy')) return;
+        if (onFocus) onFocus(node);
+      }}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && onFocus) {
+          e.preventDefault();
+          onFocus(node);
+        }
+      }}
     >
       <div className="mm-orbit-head">
         <span className="mm-orbit-label">{node.label}</span>
         {node.sub && <span className="mm-orbit-sub">{node.sub}</span>}
         <CopyButton tiny getText={() => node.copyText} />
       </div>
-      {node.body}
+      {/* Render the concise summary in the mindmap; full body is reserved
+          for the FocusedNodeView. */}
+      {node.summaryBody || node.body}
+      <span className="mm-orbit-expand-hint">click to expand</span>
+    </div>
+  );
+}
+
+// Focused-node view — covers the stage (sidebar untouched), composer
+// slides up to the bottom strip and is pre-filled so the next message
+// is scoped to this specific category.
+function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit }) {
+  return (
+    <div className="mm-focus-overlay" style={{ '--accent': accent }}>
+      <div className="mm-focus-bar">
+        <button className="mm-focus-back" onClick={onBack} title="Back to mindmap">
+          <svg viewBox="0 0 16 12" fill="none">
+            <path d="M7 2 L2 6 L7 10 M2 6 L14 6"
+              stroke="currentColor" strokeWidth="1.6"
+              strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>back to mindmap</span>
+        </button>
+        <span className="mm-focus-title">
+          <i style={{ background: accent }} />
+          <span className="lbl">{node.label}</span>
+          {node.sub && <span className="sub">{node.sub}</span>}
+        </span>
+        <CopyButton getText={() => node.copyText} />
+      </div>
+      <div className={'mm-focus-card mm-orbit-node-' + node.kind}>
+        <div className="mm-focus-body-scroll">
+          {node.body}
+        </div>
+      </div>
+      <div className="mm-focus-composer-wrap">
+        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus />
+      </div>
     </div>
   );
 }
@@ -1158,20 +1362,42 @@ function OrbitalMindmap({
   );
   const { positions, size } = useOrbitalPositions(nodes, stageRef);
 
+  // Per-category focus state. Clicking a node sets `focused` and pre-fills
+  // the composer with a scoped prompt prefix. Going back to the mindmap
+  // clears focus and restores the draft to whatever the user had.
+  const [focused, setFocused] = React.useState(null);
+  const [savedDraft, setSavedDraft] = React.useState('');
+  const openFocus = (node) => {
+    setSavedDraft(draft);
+    setFocused(node);
+    setDraft(`For the ${node.label} part: `);
+  };
+  const closeFocus = () => {
+    setFocused(null);
+    setDraft(savedDraft);
+  };
+
   if (!newest) return null;
-  const accent = TEMPLATE_DEFS[newest.template]?.accent || '#f5a25b';
+  const accent = TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)';
   const imploding = phase === 'imploding';
+
+  if (focused) {
+    return (
+      <FocusedNodeView
+        node={focused}
+        accent={accent}
+        onBack={closeFocus}
+        draft={draft} setDraft={setDraft} submit={submit}
+      />
+    );
+  }
 
   return (
     <div className={'mm-phase mm-phase-orbital' + (imploding ? ' imploding' : '')}
       style={{ '--accent': accent }}>
+      {/* Compact thread header — collapse moved OUT of here; this strip
+          now just shows prompt + template + counter + reset. */}
       <div className="mm-thread-strip">
-        <button className="mm-collapse" onClick={collapse} title="Collapse back to thread">
-          <svg viewBox="0 0 16 10" fill="none">
-            <path d="M2 8l6-6 6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <span>collapse</span>
-        </button>
         <div className="mm-thread-content">
           <span className="mm-thread-prompt">{newest.prompt}</span>
           <span className="mm-thread-arrow">→</span>
@@ -1195,16 +1421,30 @@ function OrbitalMindmap({
       <div className="mm-orbit-stage" ref={stageRef}>
         <OrbitalLines positions={positions} size={size} />
 
-        {/* The composer A — center, active. Same submit pipeline as the
-            stack view, so a new prompt from here lands as a new B in the
-            stack the moment we return to the response phase. */}
-        <div className="mm-orbit-center">
+        {/* The composer A — center of the USABLE area (not stage center),
+            so it shares the same origin the orbit layout uses. Without
+            this offset the top node would crash into the thread strip. */}
+        <div
+          className="mm-orbit-center"
+          style={positions[0]?.cy ? { top: positions[0].cy + 'px' } : undefined}
+        >
+          {/* Collapse sits directly above the composer so it lives where
+              the user's hand already is after they dragged the bar down
+              to reach the mindmap. */}
+          <button className="mm-orbit-collapse" onClick={collapse} title="Collapse back to thread">
+            <svg viewBox="0 0 16 10" fill="none">
+              <path d="M2 8 L8 2 L14 8"
+                stroke="currentColor" strokeWidth="1.6"
+                strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>collapse to thread</span>
+          </button>
           <span className="mm-orbit-center-tag">A · composer</span>
           <Composer value={draft} onChange={setDraft} onSubmit={submit} />
         </div>
 
         {positions.map((pos, i) => (
-          <OrbitalNode key={nodes[i].key} node={nodes[i]} pos={pos} index={i} />
+          <OrbitalNode key={nodes[i].key} node={nodes[i]} pos={pos} index={i} onFocus={openFocus} />
         ))}
       </div>
     </div>
@@ -1278,6 +1518,8 @@ function HeroMindmap() {
   const [responses, setResponses] = React.useState(initialStack);
   const stageRef = React.useRef(null);
   const [stageRect, setStageRect] = React.useState({ w: 0, h: 0 });
+  // Mobile sidebar drawer (the desktop sidebar is hidden by media query).
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (!stageRef.current) return;
@@ -1297,6 +1539,24 @@ function HeroMindmap() {
   const newest = responses[responses.length - 1] || null;
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
 
+  // Shared HTTP helper for /api/complete.
+  const completeApi = async (prompt) => {
+    const res = await fetch('/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!res.ok) throw new Error(`/api/complete ${res.status}`);
+    const json = await res.json();
+    if (typeof json.reply !== 'string') throw new Error('bad response shape');
+    return json.reply;
+  };
+
+  // Submit a new chat turn. Sends the user's RAW prompt to the
+  // orchestrator (no template-JSON wrapping) so the chat shows the
+  // natural prose answer — exactly like Claude/ChatGPT. The
+  // structured per-category breakdown is fetched lazily on burst
+  // (see expand() below) so the chat phase costs one API call.
   const submit = async () => {
     const q = draft.trim();
     if (!q) return;
@@ -1306,36 +1566,17 @@ function HeroMindmap() {
     setPhase('loading');
 
     try {
-      const sys = TEMPLATE_DEFS[template].prompt(q);
-      const completeApi = async (prompt) => {
-        const res = await fetch('/api/complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
-        });
-        if (!res.ok) throw new Error(`/api/complete ${res.status}`);
-        const json = await res.json();
-        if (typeof json.reply !== 'string') throw new Error('bad response shape');
-        return json.reply;
-      };
       const [reply] = await Promise.all([
-        completeApi(sys),
-        new Promise((r) => setTimeout(r, 1600)),
+        completeApi(q),
+        new Promise((r) => setTimeout(r, 1200)),
       ]);
-      let parsed;
-      try {
-        const cleaned = reply.replace(/```json|```/g, '').trim();
-        parsed = JSON.parse(cleaned);
-      } catch (e) {
-        parsed = FALLBACK_DATA[template];
-      }
-      const text = typeof parsed.summary === 'string'
-        ? parsed.summary
-        : 'Synthesized response. Pull down to expand into a detailed mindmap.';
       const entry = {
         id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
         prompt: q,
-        template, text, data: parsed,
+        template,
+        text: reply.trim(),
+        data: null,            // lazy-loaded on burst
+        dataLoading: false,
       };
       const next = [...responses, entry];
       setResponses(next);
@@ -1345,7 +1586,10 @@ function HeroMindmap() {
       const entry = {
         id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
         prompt: q,
-        template, text: 'Synthesized response.', data: FALLBACK_DATA[template],
+        template,
+        text: `(error: ${e.message || 'request failed'})`,
+        data: null,
+        dataLoading: false,
       };
       const next = [...responses, entry];
       setResponses(next);
@@ -1355,14 +1599,46 @@ function HeroMindmap() {
   };
 
   // The catalyst sequence: bar slides → tokens collide → B shatters →
-  // fountain settles. The CatalystOverlay drives the visuals from a single
-  // animation timeline (`COLLAPSE_TIMELINE`). At the end (~1900 ms) we
-  // switch to the mindmap phase where the settled nodes mount as real
-  // OrbitalNode components in a fan layout.
-  const expand = () => {
+  // fountain settles. Fires a SECOND /api/complete in parallel with
+  // the catalyst animation that asks for the template-specific JSON
+  // (categorization for the mindmap). Cached on the entry so re-bursts
+  // reuse it. If the JSON request hasn't returned by the time the
+  // catalyst ends, we wait for it before flipping to the mindmap.
+  const expand = async () => {
     if (phase !== 'response') return;
+    const newestEntry = responses[responses.length - 1];
+    if (!newestEntry) return;
     setPhase('collapsing');
-    setTimeout(() => setPhase('mindmap'), COLLAPSE_TIMELINE.total);
+
+    // Decide if we need to fetch the structured JSON or already have it.
+    const needJson = !newestEntry.data;
+    const jsonPromise = needJson
+      ? (async () => {
+          try {
+            const sys = TEMPLATE_DEFS[newestEntry.template].prompt(newestEntry.prompt);
+            const reply = await completeApi(sys);
+            const cleaned = reply.replace(/```json|```/g, '').trim();
+            return JSON.parse(cleaned);
+          } catch {
+            return FALLBACK_DATA[newestEntry.template];
+          }
+        })()
+      : Promise.resolve(newestEntry.data);
+
+    // Wait for BOTH the catalyst animation AND the JSON request to land.
+    const [parsed] = await Promise.all([
+      jsonPromise,
+      new Promise((r) => setTimeout(r, COLLAPSE_TIMELINE.total)),
+    ]);
+
+    // Cache the parsed data back onto the entry so re-bursts skip the
+    // refetch.
+    const next = responses.map((e) =>
+      e.id === newestEntry.id ? { ...e, data: parsed } : e
+    );
+    setResponses(next);
+    savePersistedStack(next);
+    setPhase('mindmap');
   };
   // Reverse: implode the burst, then re-materialize the stack.
   const collapse = () => {
@@ -1402,7 +1678,15 @@ function HeroMindmap() {
         <div className="mm-status"><i />5/5 AGENTS ONLINE</div>
       </nav>
 
-      <Sidebar phase={phase} latestResponse={newest} />
+      <Sidebar phase={phase} latestResponse={newest} open={sidebarOpen} />
+      {/* Mobile-only quota/stats toggle. Hidden via media query >880px. */}
+      <button
+        className={'mm-sidebar-toggle' + (sidebarOpen ? ' active' : '')}
+        onClick={() => setSidebarOpen((v) => !v)}
+        title={sidebarOpen ? 'Hide quota panel' : 'Show quota / agents'}
+      >
+        {sidebarOpen ? 'close' : 'quota'}
+      </button>
 
       <div
         ref={stageRef}

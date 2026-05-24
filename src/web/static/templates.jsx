@@ -320,87 +320,141 @@ function PlanView({ data, accent }) {
 // The shape: { key, label, kind, body: ReactNode, copyText: string }.
 function extractNodes(template, data) {
   if (!data) return [];
+
+  // Each node has TWO bodies:
+  //   summaryBody — concise: 1 short line + count badge. Used in the
+  //                 orbital mindmap so cards fit without crowding the
+  //                 composer.
+  //   body        — full: pros/cons grid / snippet / sources. Used in
+  //                 the focused-node overlay when the user clicks.
+
   if (template === 'research') {
-    return (data.sections || []).map((s, i) => ({
-      key: `research-${i}`,
-      kind: 'research',
-      label: s.heading || `section ${i + 1}`,
-      body: (
-        <div className="mm-orbit-body">
-          <ul>{(s.points || []).map((p, j) => <li key={j}>{p}</li>)}</ul>
-          {s.sources?.length > 0 && (
-            <div className="mm-orbit-sources">
-              <span className="mm-orbit-sources-label">sources</span>
-              {s.sources.map((src, j) => (
-                <a key={j} href={src.url} target="_blank" rel="noreferrer">
-                  <span className="mm-src-dot" />{src.title}
-                </a>
-              ))}
-            </div>
-          )}
-        </div>
-      ),
-      copyText: `## ${s.heading}\n${(s.points || []).map((p) => `- ${p}`).join('\n')}\nSources:\n${(s.sources || []).map((x) => `- ${x.title} (${x.url})`).join('\n')}`,
-    }));
+    return (data.sections || []).map((s, i) => {
+      const pts = s.points || [];
+      const srcs = s.sources || [];
+      return {
+        key: `research-${i}`,
+        kind: 'research',
+        label: s.heading || `section ${i + 1}`,
+        sub: srcs.length ? `${srcs.length} src` : null,
+        summaryBody: (
+          <div className="mm-orbit-summary">
+            {pts[0] && <div className="mm-orbit-summary-line">{pts[0]}</div>}
+            {pts.length > 1 && <div className="mm-orbit-summary-more">+ {pts.length - 1} more</div>}
+          </div>
+        ),
+        body: (
+          <div className="mm-orbit-body">
+            <ul>{pts.map((p, j) => <li key={j}>{p}</li>)}</ul>
+            {srcs.length > 0 && (
+              <div className="mm-orbit-sources">
+                <span className="mm-orbit-sources-label">sources</span>
+                {srcs.map((src, j) => (
+                  <a key={j} href={src.url} target="_blank" rel="noreferrer">
+                    <span className="mm-src-dot" />{src.title}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+        copyText: `## ${s.heading}\n${pts.map((p) => `- ${p}`).join('\n')}\nSources:\n${srcs.map((x) => `- ${x.title} (${x.url})`).join('\n')}`,
+      };
+    });
   }
+
   if (template === 'code') {
-    return (data.files || []).map((f, i) => ({
-      key: `code-${i}`,
-      kind: 'code',
-      label: f.name || `file ${i + 1}`,
-      sub: f.language,
-      body: (
-        <div className="mm-orbit-body">
-          <pre className="mm-orbit-snippet"><code>{f.snippet || ''}</code></pre>
-          {f.notes?.length > 0 && (
-            <ul className="mm-orbit-notes">{f.notes.map((n, j) => <li key={j}>{n}</li>)}</ul>
-          )}
-        </div>
-      ),
-      copyText: `// ${f.name}\n${f.snippet || ''}`,
-    }));
+    return (data.files || []).map((f, i) => {
+      const firstLine = (f.snippet || '').split('\n').find((l) => l.trim().length) || '';
+      const notes = f.notes || [];
+      return {
+        key: `code-${i}`,
+        kind: 'code',
+        label: f.name || `file ${i + 1}`,
+        sub: f.language,
+        summaryBody: (
+          <div className="mm-orbit-summary">
+            {firstLine && <code className="mm-orbit-summary-code">{firstLine.length > 38 ? firstLine.slice(0, 38) + '…' : firstLine}</code>}
+            {notes[0] && <div className="mm-orbit-summary-line">{notes[0]}</div>}
+            {notes.length > 1 && <div className="mm-orbit-summary-more">+ {notes.length - 1} more</div>}
+          </div>
+        ),
+        body: (
+          <div className="mm-orbit-body">
+            <pre className="mm-orbit-snippet"><code>{f.snippet || ''}</code></pre>
+            {notes.length > 0 && (
+              <ul className="mm-orbit-notes">{notes.map((n, j) => <li key={j}>{n}</li>)}</ul>
+            )}
+          </div>
+        ),
+        copyText: `// ${f.name}\n${f.snippet || ''}`,
+      };
+    });
   }
+
   if (template === 'compare') {
     const ranking = data.ranking || [];
     return (data.targets || []).map((t, i) => {
       const r = ranking.find((x) => x.name === t.name);
+      const pros = t.pros || [];
+      const cons = t.cons || [];
+      const why = t.reason || '';
       return {
         key: `compare-${i}`,
         kind: 'compare',
         label: t.name || `target ${i + 1}`,
         sub: r ? `#${r.rank} · ${Number(r.score).toFixed(1)}` : null,
+        summaryBody: (
+          <div className="mm-orbit-summary">
+            {why && <div className="mm-orbit-summary-line">{why.length > 80 ? why.slice(0, 80) + '…' : why}</div>}
+            <div className="mm-orbit-summary-counts">
+              <span className="pro">{pros.length} pros</span>
+              <span className="con">{cons.length} cons</span>
+            </div>
+          </div>
+        ),
         body: (
           <div className="mm-orbit-body">
             <div className="mm-pc-grid">
               <div className="mm-col">
                 <div className="mm-col-h">pros</div>
-                <ul>{(t.pros || []).map((p, j) => <li key={j}>{p}</li>)}</ul>
+                <ul>{pros.map((p, j) => <li key={j}>{p}</li>)}</ul>
               </div>
               <div className="mm-col">
                 <div className="mm-col-h">cons</div>
-                <ul className="con">{(t.cons || []).map((p, j) => <li key={j}>{p}</li>)}</ul>
+                <ul className="con">{cons.map((p, j) => <li key={j}>{p}</li>)}</ul>
               </div>
             </div>
-            {t.reason && <div className="mm-reason"><span>why:</span> {t.reason}</div>}
+            {why && <div className="mm-reason"><span>why:</span> {why}</div>}
           </div>
         ),
-        copyText: `${t.name}\nPros: ${(t.pros || []).join(', ')}\nCons: ${(t.cons || []).join(', ')}\n${t.reason ? 'Why: ' + t.reason : ''}`,
+        copyText: `${t.name}\nPros: ${pros.join(', ')}\nCons: ${cons.join(', ')}\n${why ? 'Why: ' + why : ''}`,
       };
     });
   }
+
   // plan + fallback
-  return (data.phases || []).map((p, i) => ({
-    key: `plan-${i}`,
-    kind: 'plan',
-    label: p.title || `phase ${i + 1}`,
-    sub: `phase ${String(i + 1).padStart(2, '0')}`,
-    body: (
-      <div className="mm-orbit-body">
-        <ol>{(p.steps || []).map((s, j) => <li key={j}>{s}</li>)}</ol>
-      </div>
-    ),
-    copyText: `Phase ${i + 1}: ${p.title}\n${(p.steps || []).map((s, j) => `${j + 1}. ${s}`).join('\n')}`,
-  }));
+  return (data.phases || []).map((p, i) => {
+    const steps = p.steps || [];
+    return {
+      key: `plan-${i}`,
+      kind: 'plan',
+      label: p.title || `phase ${i + 1}`,
+      sub: `phase ${String(i + 1).padStart(2, '0')}`,
+      summaryBody: (
+        <div className="mm-orbit-summary">
+          {steps[0] && <div className="mm-orbit-summary-line"><span className="mm-orbit-summary-num">1.</span> {steps[0]}</div>}
+          {steps.length > 1 && <div className="mm-orbit-summary-more">+ {steps.length - 1} more</div>}
+        </div>
+      ),
+      body: (
+        <div className="mm-orbit-body">
+          <ol>{steps.map((s, j) => <li key={j}>{s}</li>)}</ol>
+        </div>
+      ),
+      copyText: `Phase ${i + 1}: ${p.title}\n${steps.map((s, j) => `${j + 1}. ${s}`).join('\n')}`,
+    };
+  });
 }
 
 // ─── Renderer map ───────────────────────────────────────────
