@@ -45,4 +45,15 @@ export interface Provider {
     history: import("./tools/types.js").ConversationPart[],
     opts?: CompleteOptions,
   ): Promise<string>;
+  /**
+   * Optional streaming chat entry point. Emits incremental tokens via
+   * `onToken` and resolves with the full assembled string at the end.
+   * Providers without true streaming should leave undefined; callers
+   * fall back to completeChat() + a single onToken at the end.
+   */
+  completeChatStream?(
+    history: import("./tools/types.js").ConversationPart[],
+    opts: CompleteOptions | undefined,
+    onToken: (text: string) => void,
+  ): Promise<string>;
 }

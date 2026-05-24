@@ -693,6 +693,49 @@ const RENDERERS = {
   plan: PlanView,
 };
 
+// Comprehensive categorization prompt used by the Cerebras pre-fetch
+// (action-repetitive role). Unlike the lightweight TEMPLATE_DEFS prompts
+// — which cap items + truncate strings for the orbital mini-cards —
+// THIS prompt explicitly tells the model to preserve every detail
+// from the assistant's reply. The result populates the FOCUSED-node
+// view (full content) and feeds the orbital summary cards via the
+// existing `deriveMindmapData` fallback / cached `data` field.
+function comprehensiveCategorizePrompt(template, prompt, answer) {
+  const schemas = {
+    research: `{"type":"research","summary":"<1-2 sentence overview>","sections":[
+  {"heading":"<short heading>","points":["<full point — keep every word the assistant included for this heading>"],"sources":[{"title":"<short>","url":"<url or 'general knowledge'>"}]}
+]}`,
+    code: `{"type":"code","summary":"<1-2 sentence overview>","files":[
+  {"name":"<filename>","language":"<lang>","snippet":"<full code block as written — escape newlines as \\n>","notes":["<each note exactly as written>"]}
+]}`,
+    compare: `{"type":"compare","summary":"<short overview>","ranking":[
+  {"name":"<>","rank":<1-based>,"score":<0-10 number>,"takeaway":"<full takeaway sentence>"}
+],"targets":[
+  {"name":"<must match a name in ranking>","pros":["<every pro the assistant listed for this target>"],"cons":["<every con>"],"reason":"<full reason for the rank>"}
+]}`,
+    plan: `{"type":"plan","summary":"<short overview>","phases":[
+  {"title":"<short>","steps":["<every step verbatim>"]}
+]}`,
+  };
+  const schema = schemas[template] || schemas.plan;
+  return `You are categorizing the assistant's reply below into a structured JSON shape so it can be visualized as a mindmap. PRESERVE ALL DETAIL — every bullet, every sentence, every code line the assistant wrote should appear in the JSON. Do not truncate. Do not paraphrase. Do not invent content the assistant did not include.
+
+Return ONLY valid JSON. No prose. No markdown fences.
+
+Schema (use as many sections / files / targets / phases as the reply naturally has):
+
+${schema}
+
+User's original prompt:
+${prompt}
+
+Assistant's reply (the source of truth — categorize THIS, do not answer the prompt yourself):
+
+<<<REPLY
+${answer}
+REPLY>>>`;
+}
+
 Object.assign(window, {
   TEMPLATE_DEFS,
   TEMPLATE_KEYS,
@@ -701,6 +744,7 @@ Object.assign(window, {
   CopyButton,
   RENDERERS,
   deriveMindmapData,
+  comprehensiveCategorizePrompt,
   ResearchView,
   CodeView,
   CompareView,

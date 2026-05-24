@@ -81,6 +81,21 @@ export interface ChatSessionOptions {
   charsPerToken?: number;
 }
 
+/**
+ * Lifecycle event fired by ChatSession.send() when a `onProgress` callback
+ * is provided. Used by the web UI's SSE endpoint to surface live status
+ * ("orchestrator deciding…", "reasoning thinking…", "synthesizing…") and
+ * stream tokens token-by-token as they arrive.
+ */
+export type ChatProgressEvent =
+  | { kind: "plan-start" }
+  | { kind: "plan"; plan: Plan }
+  | { kind: "role-start"; role: RoleName; phase: "direct" | "single" | "parallel" | "synthesis"; framing?: string }
+  | { kind: "role-end"; role: RoleName; ok: boolean; error?: string }
+  | { kind: "token"; text: string }
+  | { kind: "summarize-start" }
+  | { kind: "summarize-end"; folded: number };
+
 export interface SessionSnapshot {
   id: string;
   createdAt: number;
@@ -182,11 +197,20 @@ export class ChatSession {
    * Powerful mode: when enabled, `thinking: high` is merged into every
    * underlying call's opts. Non-Gemini providers ignore it.
    */
-  async send(userInput: string, opts?: CompleteOptions): Promise<SendResult> {
+  async send(
+    userInput: string,
+    opts?: CompleteOptions,
+    onProgress?: (evt: ChatProgressEvent) => void,
+  ): Promise<SendResult> {
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
       ...(this.powerful && { thinking: "high" as const }),
       ...opts,
+    };
+    const emit = (evt: ChatProgressEvent) => {
+      if (onProgress) {
+        try { onProgress(evt); } catch {/* ignore caller errors */}
+      }
     };
 
     // Auto-summarize older turns if we're about to exceed budget.
@@ -196,7 +220,9 @@ export class ChatSession {
         this.estimateTokens() + Math.ceil(userInput.length / this.charsPerToken);
       const projectedPct = (projected / this.tokenBudget) * 100;
       if (projectedPct >= this.autoSummarizeAtPct) {
+        emit({ kind: "summarize-start" });
         summarizedTurns = await this.summarizeOlderTurns(effectiveOpts);
+        emit({ kind: "summarize-end", folded: summarizedTurns });
       }
     }
 
@@ -207,10 +233,20 @@ export class ChatSession {
     let plan: Plan | undefined;
     try {
       if (!this.smartRouting) {
-        reply = await this.resolver.runRoleChat(this.role, this.history, effectiveOpts);
+        emit({ kind: "role-start", role: this.role, phase: "single" });
+        if (onProgress) {
+          reply = await this.resolver.runRoleChatStream(
+            this.role, this.history,
+            (text) => emit({ kind: "token", text }),
+            effectiveOpts,
+          );
+        } else {
+          reply = await this.resolver.runRoleChat(this.role, this.history, effectiveOpts);
+        }
+        emit({ kind: "role-end", role: this.role, ok: true });
         servedBy = [this.role];
       } else {
-        const planned = await this.planAndExecute(effectiveOpts);
+        const planned = await this.planAndExecute(effectiveOpts, emit);
         reply = planned.reply;
         servedBy = planned.servedBy;
         plan = planned.plan;
@@ -299,33 +335,78 @@ Output ONLY the summary, no preamble.`;
    * Smart-routing turn: ask orchestrator for a plan, then execute.
    * The plan preamble is injected into the planning call's history but never
    * persisted — chat history stays clean.
+   *
+   * When `emit` is provided, fires plan-start / plan / role-start / role-end
+   * / token events throughout the turn so the web UI can show real-time
+   * status. The FINAL reply-producing call is streamed (direct=plan,
+   * single=specialist, parallel=synthesis) so the assistant bubble fills
+   * in token-by-token. Intermediate calls (planning, parallel specialists
+   * whose output gets synthesized) are not streamed since their outputs
+   * are consumed internally.
    */
   private async planAndExecute(
     opts: CompleteOptions,
+    emit?: (evt: ChatProgressEvent) => void,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: Plan }> {
+    const fire = emit ?? (() => {});
     const orchHistory: ConversationPart[] = [
       { kind: "user_text", text: PLAN_PREAMBLE },
       { kind: "model_text", text: PLAN_ACK },
       ...this.history,
     ];
+    fire({ kind: "plan-start" });
     const planRaw = await this.resolver.runRoleChat(this.role, orchHistory, opts);
     const plan = parsePlan(planRaw);
+    fire({ kind: "plan", plan });
 
     if (plan.kind === "direct") {
+      // The orchestrator already has the answer in plan.answer; we still
+      // emit it through token events so the UI animates it in.
+      fire({ kind: "role-start", role: this.role, phase: "direct" });
+      if (emit) emit({ kind: "token", text: plan.answer });
+      fire({ kind: "role-end", role: this.role, ok: true });
       return { reply: plan.answer, servedBy: [this.role], plan };
     }
 
     if (plan.kind === "single") {
       const specialistHistory = this.historyWithFraming(plan.prompt);
-      const reply = await this.resolver.runRoleChat(plan.role, specialistHistory, opts);
+      fire({ kind: "role-start", role: plan.role, phase: "single", framing: plan.prompt });
+      let reply: string;
+      try {
+        if (emit) {
+          reply = await this.resolver.runRoleChatStream(
+            plan.role, specialistHistory,
+            (text) => emit({ kind: "token", text }),
+            opts,
+          );
+        } else {
+          reply = await this.resolver.runRoleChat(plan.role, specialistHistory, opts);
+        }
+      } catch (err) {
+        fire({ kind: "role-end", role: plan.role, ok: false, error: (err as Error).message });
+        throw err;
+      }
+      fire({ kind: "role-end", role: plan.role, ok: true });
       return { reply, servedBy: [plan.role], plan };
     }
 
     // parallel: dispatch each task with its own framing, then synthesize.
+    // Each task fires its own role-start/end. Intermediate outputs are
+    // not streamed because they feed into the synthesis call below.
     const settled = await Promise.allSettled(
-      plan.tasks.map((t) =>
-        this.resolver.runRoleChat(t.role, this.historyWithFraming(t.prompt), opts),
-      ),
+      plan.tasks.map(async (t) => {
+        fire({ kind: "role-start", role: t.role, phase: "parallel", framing: t.prompt });
+        try {
+          const out = await this.resolver.runRoleChat(
+            t.role, this.historyWithFraming(t.prompt), opts,
+          );
+          fire({ kind: "role-end", role: t.role, ok: true });
+          return out;
+        } catch (err) {
+          fire({ kind: "role-end", role: t.role, ok: false, error: (err as Error).message });
+          throw err;
+        }
+      }),
     );
     const perRole = plan.tasks.map((t, i) => {
       const res = settled[i]!;
@@ -336,6 +417,7 @@ Output ONLY the summary, no preamble.`;
 
     if (perRole.length === 1) {
       const only = perRole[0]!;
+      if (emit) emit({ kind: "token", text: only.output });
       return { reply: only.output, servedBy: [only.role], plan };
     }
 
@@ -350,7 +432,23 @@ Output ONLY the summary, no preamble.`;
           `\n\nIntegrate these into one coherent answer for the user. No preamble, no per-specialist labels.]`,
       },
     ];
-    const finalReply = await this.resolver.runRoleChat(this.role, synthesisHistory, opts);
+    fire({ kind: "role-start", role: this.role, phase: "synthesis" });
+    let finalReply: string;
+    try {
+      if (emit) {
+        finalReply = await this.resolver.runRoleChatStream(
+          this.role, synthesisHistory,
+          (text) => emit({ kind: "token", text }),
+          opts,
+        );
+      } else {
+        finalReply = await this.resolver.runRoleChat(this.role, synthesisHistory, opts);
+      }
+    } catch (err) {
+      fire({ kind: "role-end", role: this.role, ok: false, error: (err as Error).message });
+      throw err;
+    }
+    fire({ kind: "role-end", role: this.role, ok: true });
     return {
       reply: finalReply,
       servedBy: [...perRole.map((p) => p.role), this.role],

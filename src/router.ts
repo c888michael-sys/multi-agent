@@ -256,6 +256,66 @@ export class Router {
     }
   }
 
+  /**
+   * Streaming chat — same failover semantics as completeChat. Providers
+   * that implement completeChatStream() emit incremental tokens via
+   * onToken; ones that don't fall back to completeChat() + one final
+   * onToken call with the entire reply. Returns the full assembled
+   * string.
+   */
+  async completeChatStream(
+    history: ConversationPart[],
+    opts: CompleteOptions | undefined,
+    providerIds: ReadonlySet<string> | undefined,
+    attribution: CallAttribution | undefined,
+    onToken: (text: string) => void,
+  ): Promise<string> {
+    const attempts: { providerId: string; error: unknown }[] = [];
+    const startedAt = this.now();
+
+    while (true) {
+      for (let i = 0; i < this.pool.size(); i++) {
+        const pick = this.pool.pickAvailable(providerIds);
+        if (!pick) break;
+        const stream = pick.provider.completeChatStream?.bind(pick.provider);
+        const chat = pick.provider.completeChat?.bind(pick.provider);
+        if (!stream && !chat) continue;
+        try {
+          if (attribution) attribution.providerId = pick.provider.id;
+          let result: string;
+          if (stream) {
+            result = await stream(history, opts, onToken);
+          } else {
+            // Fallback: provider has no streaming — wait for the full
+            // reply, then emit it as one final token so callers don't
+            // need a separate code path.
+            result = await chat!(history, opts);
+            if (result) onToken(result);
+          }
+          this.pool.markSuccess(pick.index);
+          this.fireAfterCall();
+          return result;
+        } catch (err) {
+          if (pick.provider.isRateLimitError(err)) {
+            this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+            attempts.push({ providerId: pick.provider.id, error: err });
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
+      const earliest = this.pool.earliestAvailable();
+      const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
+      if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
+      await this.sleep(waitMs);
+    }
+  }
+
   /** Caller-visible state — call counts, cooldowns, remaining quota %. */
   snapshot() {
     return this.pool.snapshot();

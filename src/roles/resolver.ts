@@ -127,6 +127,23 @@ export class RoleResolver {
     );
   }
 
+  /**
+   * Streaming variant — same fallback logic as runRoleChat, but emits
+   * incremental tokens via onToken. Falls back to non-streaming
+   * completeChat + one final onToken when the chosen provider does
+   * not implement completeChatStream.
+   */
+  async runRoleChatStream(
+    name: RoleName,
+    history: ConversationPart[],
+    onToken: (text: string) => void,
+    callerOpts?: CompleteOptions,
+  ): Promise<string> {
+    return this.runWithStrategy<string>(name, callerOpts, (allowList, opts, attribution) =>
+      this.router.completeChatStream(history, opts, allowList, attribution, onToken),
+    );
+  }
+
   /** Roster summary used by the orchestrator when deciding routing. */
   rosterDescription(): string {
     const lines: string[] = [];

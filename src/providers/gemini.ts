@@ -95,6 +95,52 @@ export class GeminiProvider implements Provider {
     return appendSources(text, result.response);
   }
 
+  /**
+   * Streaming variant of completeChat. Iterates the SDK's stream and
+   * emits each chunk's text via onToken; returns the full assembled
+   * string at the end. Google Search grounding still appends a Sources
+   * footer once (not streamed).
+   */
+  async completeChatStream(
+    history: ConversationPart[],
+    opts: CompleteOptions | undefined,
+    onToken: (text: string) => void,
+  ): Promise<string> {
+    const generationConfig: Record<string, unknown> = {
+      ...(opts?.maxTokens !== undefined && { maxOutputTokens: opts.maxTokens }),
+      ...(opts?.temperature !== undefined && { temperature: opts.temperature }),
+      ...(opts?.thinking !== undefined && {
+        thinkingConfig: { thinkingLevel: opts.thinking },
+      }),
+    };
+    const modelArgs: Record<string, unknown> = {
+      model: this.model,
+      generationConfig,
+    };
+    if (opts?.useSearch) modelArgs.tools = [{ googleSearch: {} }];
+    const model = this.client.getGenerativeModel(modelArgs as never);
+    const contents = historyToGeminiContents(history);
+    // generateContentStream returns { stream, response } where stream is an
+    // async iterable of chunks. Each chunk.text() is the incremental delta.
+    const streamed = (await (model as never as {
+      generateContentStream: (req: unknown) => Promise<{
+        stream: AsyncIterable<{ text: () => string }>;
+        response: Promise<unknown>;
+      }>;
+    }).generateContentStream({ contents }));
+    let full = "";
+    for await (const chunk of streamed.stream) {
+      const piece = chunk.text();
+      if (piece) {
+        full += piece;
+        onToken(piece);
+      }
+    }
+    if (!opts?.useSearch) return full;
+    const finalResponse = await streamed.response;
+    return appendSources(full, finalResponse as never);
+  }
+
   async completeWithTools(
     history: ConversationPart[],
     tools: ToolDeclaration[],

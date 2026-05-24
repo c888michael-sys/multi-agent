@@ -19,6 +19,7 @@ import { extname, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
+import type { RoleName } from "../roles/types.js";
 import { ChatSession, listSessions } from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
 import { RoleOrchestrator } from "../agents/role-orchestrator.js";
@@ -103,15 +104,18 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/complete" && req.method === "POST") {
         const body = await readBody(req);
-        const parsed = safeJsonParse(body) as { prompt?: string } | null;
+        const parsed = safeJsonParse(body) as { prompt?: string; role?: string } | null;
         if (typeof parsed?.prompt !== "string" || !parsed.prompt.trim()) {
           sendJson(res, 400, { error: "prompt (non-empty string) required" });
           return;
         }
         try {
-          // Single-shot completion through the orchestration role. Routes to
-          // Gemini by default with full failover semantics.
-          const reply = await opts.resolver.runRole("orchestration", parsed.prompt);
+          // Single-shot completion through the requested role (default
+          // orchestration). The mindmap pre-fetch uses `action-repetitive`
+          // to drain Cerebras's 1M-tok/day budget for categorization
+          // work, keeping the orchestrator's Gemini quota for the chat.
+          const role = (parsed.role as RoleName) || ("orchestration" as RoleName);
+          const reply = await opts.resolver.runRole(role, parsed.prompt);
           sendJson(res, 200, { reply });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
@@ -164,6 +168,55 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
+        }
+        return;
+      }
+
+      // SSE streaming variant of /api/chat. Same request body, but the
+      // response is a text/event-stream that emits one event per
+      // ChatSession progress event (plan-start, plan, role-start,
+      // role-end, token, summarize-*) followed by a final `done` event
+      // carrying the SendResult shape. Each event is a `data: <json>\n\n`
+      // frame; events have no event name (default 'message').
+      if (pathname === "/api/chat-stream" && req.method === "POST") {
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { sessionId?: string; message?: string } | null;
+        if (!parsed?.sessionId || typeof parsed.message !== "string") {
+          sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        // Disable default Node compression for this response — interferes with
+        // streaming. (We don't enable compression elsewhere, but be explicit.)
+        res.setHeader("X-Accel-Buffering", "no");
+        // Flush headers eagerly so the browser sees the stream is alive.
+        res.write(`:\n\n`);
+        const writeEvent = (payload: unknown) => {
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        };
+        const session = createChatSession(opts, parsed.sessionId);
+        try {
+          const result = await session.send(parsed.message, undefined, (evt) => {
+            writeEvent(evt);
+          });
+          writeEvent({
+            kind: "done",
+            reply: result.reply,
+            servedBy: result.servedBy,
+            plan: result.plan?.kind,
+            summarizedTurns: result.summarizedTurns ?? 0,
+            tokenEstimate: result.tokenEstimate,
+            budgetPct: Math.round(result.budgetPct),
+            warning: result.warning ?? null,
+            turns: session.turnCount(),
+          });
+        } catch (err) {
+          writeEvent({ kind: "error", error: (err as Error).message });
+        } finally {
+          res.end();
         }
         return;
       }

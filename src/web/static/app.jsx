@@ -392,10 +392,16 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
 // that's the mindmap's job). Newest gets a subtle accent ring.
 function ChatTurn({ entry, accent, isNewest }) {
   const tpl = TEMPLATE_DEFS[entry.template];
-  const servedBy = entry.servedBy?.length ? entry.servedBy.join(' + ') : (tpl?.label || entry.template);
+  const streaming = !!entry.streaming;
+  // Status pill: while streaming, surface the live phase (plan / role /
+  // synth) so the user reads what's happening. Once the turn lands, fall
+  // back to servedBy or the template label.
+  const liveLabel = streaming
+    ? statusLabel(entry.status)
+    : (entry.servedBy?.length ? entry.servedBy.join(' + ') : (tpl?.label || entry.template));
   return (
     <div
-      className={'mm-turn' + (isNewest ? ' newest' : '')}
+      className={'mm-turn' + (isNewest ? ' newest' : '') + (streaming ? ' streaming' : '')}
       style={{ '--accent': accent }}
     >
       <div className="mm-turn-user">
@@ -405,13 +411,16 @@ function ChatTurn({ entry, accent, isNewest }) {
       <div className="mm-turn-ai">
         <span className="mm-turn-role">
           orchestrator
-          <span className="mm-turn-pill">
+          <span className={'mm-turn-pill' + (streaming ? ' live' : '')}>
             <span className="mm-template-dot" />
-            {servedBy}
+            {liveLabel}
           </span>
         </span>
         <div className="mm-turn-ai-bubble">
-          <MarkdownProse text={entry.text || ''} />
+          {entry.text
+            ? <MarkdownProse text={entry.text} />
+            : <span className="mm-turn-empty">{streaming ? 'preparing reply…' : ''}</span>}
+          {streaming && <span className="mm-turn-caret" aria-hidden="true" />}
           <div className="mm-turn-foot">
             <CopyButton getText={() => entry.text || ''} />
           </div>
@@ -419,6 +428,23 @@ function ChatTurn({ entry, accent, isNewest }) {
       </div>
     </div>
   );
+}
+
+// Translate a ChatProgressEvent shape into a short pill label.
+function statusLabel(status) {
+  if (!status) return 'routing…';
+  const ph = status.phase || status.kind;
+  if (ph === 'plan-start') return 'orchestrator planning…';
+  if (ph === 'plan') return `plan: ${status.plan?.kind || '?'}`;
+  if (ph === 'role-start') {
+    if (status.phase === 'synthesis') return 'synthesizing…';
+    if (status.phase === 'direct') return 'orchestrator answering…';
+    return `${status.role || 'agent'}: thinking…`;
+  }
+  if (ph === 'role-end') return `${status.role || 'agent'}: done`;
+  if (ph === 'summarize-start') return 'summarizing older turns…';
+  if (ph === 'summarize-end') return `summarized ${status.folded || 0} turn(s)`;
+  return 'thinking…';
 }
 
 function InlineMarkdown({ text }) {
@@ -1231,30 +1257,81 @@ function IdleView({ draft, setDraft, submit }) {
   );
 }
 
-function LoadingView({ prompt }) {
-  const [step, setStep] = React.useState(0);
-  React.useEffect(() => {
-    const id = setInterval(() => setStep((s) => (s + 1) % (MM_AGENTS.length + 1)), 500);
-    return () => clearInterval(id);
-  }, []);
+// LoadingView — reflects the REAL live status from the streaming
+// ChatSession run when available. Falls back to a gentle ambient
+// cycle when no live data exists (e.g. legacy non-streaming code path).
+// Each agent row's state is driven by the SSE events:
+//   plan-start          → orchestrator is "deciding…"
+//   role-start single   → that specialist is "thinking…"
+//   role-start parallel → multiple specialists "thinking…" concurrently
+//   role-start synth    → orchestrator is "synthesizing…"
+//   role-end            → marks the agent as "done"
+function LoadingView({ prompt, liveStatus, summarize }) {
+  // Map the latest status event to a per-agent state map.
+  const agentState = React.useMemo(() => {
+    const map = Object.fromEntries(MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }]));
+    if (!liveStatus) return map;
+    const { phase, role, kind, ok, plan } = liveStatus;
+    const ph = phase || kind;
+    if (ph === 'plan-start') {
+      // Orchestrator is choosing roles
+      map['orchestration'] = { state: 'engaged', label: 'planning…' };
+    } else if (ph === 'plan') {
+      // Plan settled — annotate which specialists will run
+      map['orchestration'] = { state: 'engaged', label: `plan: ${plan?.kind || '?'}` };
+      if (plan?.kind === 'single' && plan.role) {
+        map[plan.role] = { state: 'queued', label: 'queued' };
+      } else if (plan?.kind === 'parallel' && Array.isArray(plan.tasks)) {
+        for (const t of plan.tasks) {
+          if (map[t.role]) map[t.role] = { state: 'queued', label: 'queued' };
+        }
+      }
+    } else if (ph === 'role-start' && role) {
+      if (map[role]) {
+        if (liveStatus.phase === 'synthesis') {
+          map[role] = { state: 'engaged', label: 'synthesizing…' };
+        } else if (liveStatus.phase === 'direct') {
+          map[role] = { state: 'engaged', label: 'answering directly…' };
+        } else {
+          map[role] = { state: 'engaged', label: 'thinking…' };
+        }
+      }
+    } else if (ph === 'role-end' && role) {
+      if (map[role]) map[role] = { state: ok === false ? 'failed' : 'done', label: ok === false ? 'failed' : '✓ done' };
+    }
+    return map;
+  }, [liveStatus]);
+
+  const fallbackHint = !liveStatus ? 'routing…' : (
+    summarize?.folded
+      ? `auto-summarized ${summarize.folded} older turn(s)`
+      : (liveStatus.kind === 'plan-start' ? 'orchestrator planning'
+        : liveStatus.kind === 'role-start' ? 'specialist working'
+        : liveStatus.kind === 'role-end' ? 'integrating' : 'thinking')
+  );
+
   return (
     <div className="mm-phase mm-phase-loading">
       <div className="mm-prompt-card">
         <div className="mm-prompt-head">
           <span className="mm-prompt-tag">your prompt</span>
-          <span className="mm-routing-pill">routing…</span>
+          <span className="mm-routing-pill">{fallbackHint}</span>
         </div>
         <div className="mm-prompt-body">{prompt}</div>
       </div>
       <div className="mm-dispatch">
-        {MM_AGENTS.map((a, i) => (
-          <div key={a.id} className={'mm-dispatch-row ' + (i < step ? 'on' : '')}
-            style={{ '--c': a.color }}>
-            <span className="orb" />
-            <span className="nm">{a.name}</span>
-            <span className="st">{i < step ? 'engaged' : 'queued'}</span>
-          </div>
-        ))}
+        {MM_AGENTS.map((a) => {
+          const s = agentState[a.id] || { state: 'queued', label: 'queued' };
+          return (
+            <div key={a.id}
+              className={'mm-dispatch-row mm-dispatch-' + s.state}
+              style={{ '--c': a.color }}>
+              <span className="orb" />
+              <span className="nm">{a.name}</span>
+              <span className="st">{s.label}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -1266,7 +1343,7 @@ function LoadingView({ prompt }) {
 // of the scroll area and operates on the NEWEST turn (the one the
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
-  draft, setDraft, submit, responses, expand, reset, phase,
+  draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -1282,12 +1359,20 @@ function ResponseStackView({
   const listRef = React.useRef(null);
   const bottomRef = React.useRef(null);
   const lastIdRef = React.useRef(null);
+  // Trigger when newest id changes (new completed turn) OR when a live
+  // turn is streaming so the partial bubble keeps sticking to the bottom
+  // as tokens arrive. The auto-scroll only happens if the user is
+  // already near the bottom — otherwise they may be reading older turns.
+  const partialLen = liveTurn?.partial?.length || 0;
   React.useEffect(() => {
     const list = listRef.current;
     const bottom = bottomRef.current;
     if (!list || !bottom) return;
-    if (lastIdRef.current === newest?.id && !imploding) return;
+    const idChanged = lastIdRef.current !== newest?.id;
+    if (!idChanged && !imploding && !liveTurn) return;
     lastIdRef.current = newest?.id;
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 200;
+    if (!idChanged && !imploding && !nearBottom) return;
     const doScroll = () => {
       try {
         bottom.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -1296,7 +1381,7 @@ function ResponseStackView({
       }
     };
     requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(doScroll, 80)));
-  }, [newest?.id, imploding, responses.length]);
+  }, [newest?.id, imploding, responses.length, partialLen, liveTurn?.status?.kind]);
 
   return (
     <div
@@ -1335,9 +1420,28 @@ function ResponseStackView({
               key={entry.id}
               entry={entry}
               accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
-              isNewest={i === responses.length - 1}
+              isNewest={i === responses.length - 1 && !liveTurn}
             />
           ))}
+          {/* In-flight turn: shows the user prompt + the partial AI bubble
+              as tokens stream in. When the turn finishes, the parent moves
+              it into `responses` and clears liveTurn so this re-renders as
+              a normal ChatTurn. */}
+          {liveTurn && (
+            <ChatTurn
+              key="__live__"
+              entry={{
+                id: '__live__',
+                prompt: liveTurn.prompt,
+                template: 'plan',
+                text: liveTurn.partial || '',
+                streaming: true,
+                status: liveTurn.status,
+              }}
+              accent={accent}
+              isNewest={true}
+            />
+          )}
           {/* Scroll anchor — scrollIntoView target so smooth-scroll
               survives heavy-render newest turns. */}
           <div ref={bottomRef} className="mm-chat-anchor" aria-hidden="true" />
@@ -1701,6 +1805,11 @@ function HeroMindmap() {
   const [sessionId, setSessionId] = React.useState(() => loadSessionId());
   const stageRef = React.useRef(null);
   const [stageRect, setStageRect] = React.useState({ w: 0, h: 0 });
+  // Live streaming state: while a turn is in flight, hold partial text +
+  // the most recent progress event so the loading view + an in-progress
+  // chat bubble can render in real time.
+  // Shape: { prompt, partial, status: { phase: 'plan'|'role'|..., role?, framing?, plan? }, summarize?: { folded } }
+  const [liveTurn, setLiveTurn] = React.useState(null);
   // Mobile sidebar drawer (the desktop sidebar is hidden by media query).
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
@@ -1722,26 +1831,14 @@ function HeroMindmap() {
   const newest = responses[responses.length - 1] || null;
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
 
-  // Shared HTTP helper for the same smart-routing multi-turn path used by
-  // the CLI chat REPL. This keeps main chat and mindmap follow-ups in one
-  // persistent conversation.
-  const chatApi = async (message) => {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message }),
-    });
-    if (!res.ok) throw new Error(`/api/chat ${res.status}`);
-    const json = await res.json();
-    if (typeof json.reply !== 'string') throw new Error('bad response shape');
-    return json;
-  };
-
-  // Submit a new chat turn. Sends the user's RAW prompt to the
-  // orchestrator (no template-JSON wrapping) so the chat shows the
-  // natural prose answer — exactly like Claude/ChatGPT. The
-  // structured per-category breakdown is fetched lazily on burst
-  // (see expand() below) so the chat phase costs one API call.
+  // Streaming chat submit. POSTs to /api/chat-stream and consumes the
+  // server-sent events one at a time:
+  //   - plan-start / plan / role-start / role-end / summarize-*: update
+  //     the live status surface (LoadingView and the in-flight chat bubble)
+  //   - token: append text to the partial reply so the bubble fills in
+  //     real-time, like Claude/ChatGPT
+  //   - done: finalize the turn into the responses array
+  //   - error: append a placeholder error turn so the user sees the failure
   const submit = async () => {
     const q = draft.trim();
     if (!q) return;
@@ -1749,46 +1846,136 @@ function HeroMindmap() {
     setCurrentPrompt(q);
     setDraft('');
     setPhase('loading');
+    setLiveTurn({ prompt: q, partial: '', status: { phase: 'plan-start' } });
+
+    let partial = '';
+    let lastStatus = { phase: 'plan-start' };
+    let summarizedTurns = 0;
+    let doneEvent = null;
+    let errorMsg = null;
 
     try {
-      const [reply] = await Promise.all([
-        chatApi(q),
-        new Promise((r) => setTimeout(r, 1200)),
-      ]);
-      const entry = {
-        id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-        prompt: q,
-        template,
-        text: reply.reply.trim(),
-        servedBy: reply.servedBy || [],
-        plan: reply.plan || null,
-        tokenEstimate: reply.tokenEstimate || 0,
-        tokenBudget: 100000,
-        budgetPct: reply.budgetPct || 0,
-        turns: reply.turns || 0,
-        warning: reply.warning || null,
-        data: null,            // lazy-loaded on burst
-        dataLoading: false,
-      };
-      const next = [...responses, entry];
-      setResponses(next);
-      savePersistedStack(next);
-      setPhase('response');
+      const res = await fetch('/api/chat-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, message: q }),
+      });
+      if (!res.ok || !res.body) throw new Error(`/api/chat-stream ${res.status}`);
+
+      // Parse SSE frames as bytes stream in. Each frame is `data: <json>\n\n`.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (!frame.startsWith('data:')) continue;
+          const json = frame.slice(5).trim();
+          if (!json) continue;
+          let evt;
+          try { evt = JSON.parse(json); } catch { continue; }
+          // Phase moves to 'response' the moment the first token arrives;
+          // until then we stay in 'loading' so the LoadingView shows the
+          // live agent status rectangles.
+          if (evt.kind === 'token') {
+            partial += evt.text;
+            // First token → flip to response phase so the partial bubble shows.
+            if (phaseRef.current === 'loading') {
+              phaseRef.current = 'response';
+              setPhase('response');
+            }
+            setLiveTurn((prev) => prev ? { ...prev, partial } : prev);
+          } else if (evt.kind === 'plan-start' || evt.kind === 'plan'
+                  || evt.kind === 'role-start' || evt.kind === 'role-end'
+                  || evt.kind === 'summarize-start' || evt.kind === 'summarize-end') {
+            lastStatus = { phase: evt.kind, ...evt };
+            if (evt.kind === 'summarize-end') summarizedTurns = evt.folded || 0;
+            setLiveTurn((prev) => prev ? { ...prev, status: lastStatus } : prev);
+          } else if (evt.kind === 'done') {
+            doneEvent = evt;
+          } else if (evt.kind === 'error') {
+            errorMsg = evt.error || 'request failed';
+          }
+        }
+      }
     } catch (e) {
-      const entry = {
-        id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-        prompt: q,
-        template,
-        text: `(error: ${e.message || 'request failed'})`,
-        data: null,
-        dataLoading: false,
-      };
-      const next = [...responses, entry];
-      setResponses(next);
-      savePersistedStack(next);
-      setPhase('response');
+      errorMsg = e.message || 'request failed';
+    }
+
+    // Finalize the turn into the responses array.
+    const finalText = doneEvent?.reply || partial || (errorMsg ? `(error: ${errorMsg})` : '');
+    const entry = {
+      id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      prompt: q,
+      template,
+      text: finalText.trim(),
+      servedBy: doneEvent?.servedBy || [],
+      plan: doneEvent?.plan || lastStatus?.plan?.kind || null,
+      tokenEstimate: doneEvent?.tokenEstimate || 0,
+      tokenBudget: 100000,
+      budgetPct: doneEvent?.budgetPct || 0,
+      turns: doneEvent?.turns || 0,
+      warning: doneEvent?.warning || null,
+      summarizedTurns: summarizedTurns || doneEvent?.summarizedTurns || 0,
+      data: null,            // lazy-loaded on burst (Cerebras prefetch)
+      dataLoading: false,
+    };
+    const next = [...responses, entry];
+    setResponses(next);
+    savePersistedStack(next);
+    setLiveTurn(null);
+    setPhase('response');
+
+    // Background mindmap pre-fetch via Cerebras (action-repetitive role,
+    // 1M tokens/day quota) — categorize the chat answer into the
+    // template's structured shape with NO detail omitted. Stored on the
+    // entry's `data` field so a later BURST is instant. Falls back
+    // silently if it fails; expand() will then derive locally.
+    if (entry.text && !entry.text.startsWith('(error')) {
+      prefetchMindmapData(entry).catch(() => {});
     }
   };
+
+  // Track phase in a ref so the SSE event handler can read the latest
+  // value without React closure staleness on the in-flight call.
+  const phaseRef = React.useRef(phase);
+  React.useEffect(() => { phaseRef.current = phase; }, [phase]);
+
+  // Ask Cerebras (action-repetitive role) to categorize the entry's
+  // markdown answer into the matching template JSON, preserving every
+  // detail. Updates state in-place. No-op if the entry already has
+  // data or if the request fails.
+  const prefetchMindmapData = React.useCallback(async (entry) => {
+    if (!entry || entry.data) return;
+    // Mark loading so the UI could show a tiny indicator if it wanted.
+    setResponses((cur) => cur.map((e) => e.id === entry.id ? { ...e, dataLoading: true } : e));
+    const prompt = comprehensiveCategorizePrompt(entry.template, entry.prompt, entry.text);
+    let parsed = null;
+    try {
+      const res = await fetch('/api/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, role: 'action-repetitive' }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const cleaned = String(json.reply || '').replace(/```json|```/g, '').trim();
+        try { parsed = JSON.parse(cleaned); } catch { parsed = null; }
+      }
+    } catch {/* swallow — fall through to null */}
+    setResponses((cur) => {
+      const next = cur.map((e) =>
+        e.id === entry.id ? { ...e, dataLoading: false, data: parsed || e.data } : e
+      );
+      savePersistedStack(next);
+      return next;
+    });
+  }, []);
 
   // The catalyst sequence: bar slides -> tokens collide -> B shatters ->
   // fountain settles. Mindmap categories are derived locally from the
@@ -1870,12 +2057,16 @@ function HeroMindmap() {
           <IdleView draft={draft} setDraft={setDraft} submit={submit} />
         )}
         {phase === 'loading' && (
-          <LoadingView prompt={currentPrompt} />
+          <LoadingView prompt={currentPrompt}
+            liveStatus={liveTurn?.status}
+            summarize={liveTurn?.summarize}
+          />
         )}
         {(phase === 'response' || phase === 'collapsing' || phase === 'imploding') && (
           <ResponseStackView
             draft={draft} setDraft={setDraft} submit={submit}
             responses={responses} expand={expand} reset={reset} phase={phase}
+            liveTurn={liveTurn}
           />
         )}
         {phase === 'collapsing' && (

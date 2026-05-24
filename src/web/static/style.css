@@ -2535,3 +2535,67 @@
    still exist in the file but the JSX no longer mounts these classes.
    Listed here for clarity and so a future revert is easy to spot. */
 .mm-stack-older, .mm-stack-newest { display: none !important; }
+
+/* ══════════════════════════════════════════════════════
+   STREAMING-CHAT visuals
+   - blinking caret at the end of the partial AI bubble
+   - live status pill above the bubble cycles a pulse
+   - LoadingView agent rows reflect real state
+   ══════════════════════════════════════════════════════ */
+.mm-turn.streaming .mm-turn-ai-bubble {
+  border-color: color-mix(in oklch, var(--accent) 35%, var(--mm-line-strong));
+  box-shadow: 0 0 36px color-mix(in oklch, var(--accent) 14%, transparent);
+}
+.mm-turn-empty {
+  color: var(--mm-fg-faint);
+  font-style: italic;
+  font-size: 13px;
+}
+.mm-turn-caret {
+  display: inline-block;
+  width: 7px; height: 14px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: mmCaretBlink 1.05s steps(2) infinite;
+}
+@keyframes mmCaretBlink { 50% { opacity: 0; } }
+.mm-turn-pill.live {
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--mm-line));
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+  color: var(--mm-fg);
+}
+.mm-turn-pill.live .mm-template-dot {
+  animation: mmDotPulse 1.4s ease-in-out infinite;
+}
+@keyframes mmDotPulse {
+  0%, 100% { box-shadow: 0 0 4px var(--accent); opacity: 0.7; }
+  50%      { box-shadow: 0 0 10px var(--accent); opacity: 1; }
+}
+
+/* Live LoadingView dispatch rows — replace the abstract cycle with
+   real state styling. */
+.mm-dispatch-row.mm-dispatch-engaged {
+  border-color: color-mix(in oklch, var(--c, var(--accent)) 45%, var(--mm-line-strong));
+  background: color-mix(in oklch, var(--c, var(--accent)) 8%, transparent);
+}
+.mm-dispatch-row.mm-dispatch-engaged .orb {
+  animation: mmDispatchPulse 1.1s ease-in-out infinite;
+}
+@keyframes mmDispatchPulse {
+  0%, 100% { transform: scale(1);    opacity: 0.7; }
+  50%      { transform: scale(1.45); opacity: 1; box-shadow: 0 0 10px var(--c); }
+}
+.mm-dispatch-row.mm-dispatch-done {
+  opacity: 0.72;
+  border-color: color-mix(in oklch, var(--c, var(--accent)) 25%, var(--mm-line));
+}
+.mm-dispatch-row.mm-dispatch-done .orb {
+  background: color-mix(in oklch, var(--c, var(--accent)) 50%, transparent);
+}
+.mm-dispatch-row.mm-dispatch-failed {
+  opacity: 0.55;
+  border-color: color-mix(in oklch, oklch(0.65 0.18 22) 35%, var(--mm-line));
+}
+.mm-dispatch-row.mm-dispatch-failed .st { color: oklch(0.78 0.15 22); }
