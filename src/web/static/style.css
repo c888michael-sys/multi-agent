@@ -737,9 +737,173 @@
   flex: 1; min-width: 0;
 }
 .mm-stacked-body {
-  font-size: 13.5px; line-height: 1.55;
+  font-size: 13.5px; line-height: 1.6;
   color: var(--mm-fg);
   text-wrap: pretty;
+}
+
+/* The newest card now scrolls if the full markdown reply is tall — we
+   don't want a single B to push everything else out of view. */
+.mm-stacked-response.newest .mm-stacked-body {
+  max-height: 56vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.15) transparent;
+  padding-right: 6px;
+}
+.mm-stacked-response.newest .mm-stacked-body::-webkit-scrollbar { width: 6px; }
+.mm-stacked-response.newest .mm-stacked-body::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.15); border-radius: 6px;
+}
+/* Older cards collapse to a teaser height — keeps the stack scannable. */
+.mm-stacked-response.older .mm-stacked-body {
+  max-height: 60px;
+  overflow: hidden;
+  position: relative;
+  mask-image: linear-gradient(180deg, rgba(0,0,0,1) 60%, rgba(0,0,0,0) 100%);
+  -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,1) 60%, rgba(0,0,0,0) 100%);
+}
+
+/* ── Markdown renderer ──────────────────────────────────
+   Lightweight prose styling for orchestrator replies. Cool palette,
+   tabular numerics where they help, restrained accent on headings.
+   ──────────────────────────────────────────────────────── */
+.mm-md { color: var(--mm-fg); }
+.mm-md > :first-child { margin-top: 0; }
+.mm-md > :last-child { margin-bottom: 0; }
+
+.mm-md-h {
+  font-family: var(--mm-font-display);
+  font-variation-settings: "opsz" 32, "wght" 500;
+  letter-spacing: -0.015em;
+  color: var(--mm-fg);
+  margin: 18px 0 8px;
+  line-height: 1.2;
+}
+.mm-md-h1 { font-size: 22px; font-variation-settings: "opsz" 48, "wght" 500; }
+.mm-md-h2 {
+  font-size: 16px;
+  padding-bottom: 4px;
+  border-bottom: 0.5px solid var(--mm-line);
+}
+.mm-md-h3 { font-size: 14px; color: var(--mm-fg-dim);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  font-family: var(--mm-font-mono);
+  font-weight: 500;
+}
+.mm-md-h4, .mm-md-h5, .mm-md-h6 {
+  font-size: 13px;
+  color: var(--mm-fg-dim);
+  font-family: var(--mm-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mm-md-p {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--mm-fg);
+}
+.mm-md-p:last-child { margin-bottom: 0; }
+
+.mm-md-ul, .mm-md-ol {
+  margin: 4px 0 12px;
+  padding-left: 22px;
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.mm-md-ul li::marker {
+  color: var(--accent);
+  font-size: 0.85em;
+}
+.mm-md-ol li::marker {
+  font-family: var(--mm-font-mono);
+  font-size: 11px;
+  color: var(--mm-fg-faint);
+}
+
+.mm-md-q {
+  margin: 8px 0 12px;
+  padding: 4px 12px;
+  border-left: 2px solid var(--accent-soft);
+  color: var(--mm-fg-dim);
+  font-style: italic;
+  background: oklch(1 0 0 / 0.015);
+}
+
+.mm-md strong {
+  font-weight: 600;
+  color: var(--mm-fg);
+}
+.mm-md em { color: var(--mm-fg); font-style: italic; }
+.mm-md a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 0.5px dashed var(--accent-soft);
+}
+.mm-md a:hover { border-bottom-style: solid; }
+
+.mm-md code {
+  font-family: var(--mm-font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: oklch(1 0 0 / 0.04);
+  border: 0.5px solid var(--mm-line);
+  color: var(--mm-fg);
+}
+
+.mm-md-pre {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  background: oklch(0 0 0 / 0.3);
+  border: 0.5px solid var(--mm-line);
+  border-radius: 4px;
+  font-family: var(--mm-font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--mm-fg);
+  overflow-x: auto;
+  white-space: pre;
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.15) transparent;
+}
+.mm-md-pre code {
+  background: none; border: 0; padding: 0;
+  font-size: inherit;
+}
+
+/* In an orbital node, the markdown preview is smaller / tighter. */
+.mm-orbit-body .mm-md-p { font-size: 11.5px; margin-bottom: 6px; }
+.mm-orbit-body .mm-md-ul,
+.mm-orbit-body .mm-md-ol { font-size: 11.5px; padding-left: 18px; gap: 3px; margin-bottom: 6px; }
+.mm-orbit-body .mm-md-h { margin: 8px 0 4px; font-size: 12px; }
+.mm-orbit-body .mm-md-pre { font-size: 10px; padding: 6px 8px; max-height: 80px; }
+.mm-orbit-body-fallback {
+  font-size: 11.5px;
+  color: var(--mm-fg-dim);
+  white-space: pre-wrap;
+}
+
+/* Plan pill — small mono badge on the response card showing the
+   orchestrator's plan (direct / single / parallel). */
+.mm-stacked-plan {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: oklch(1 0 0 / 0.025);
+  border: 0.5px solid var(--mm-line);
+  font-family: var(--mm-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mm-fg-faint);
+}
+.mm-stacked-plan-dot {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--accent);
 }
 .mm-stacked-foot {
   display: flex; justify-content: flex-end; align-items: center;

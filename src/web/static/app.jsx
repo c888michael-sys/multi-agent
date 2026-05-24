@@ -284,23 +284,24 @@ function Sidebar({ phase, latestResponse }) {
           {phase === 'loading' && (
             <>
               <div style={{ color: 'var(--accent)' }}>› dispatching to agents…</div>
-              <div className="dim">routing[{latestResponse?.template || 'auto'}]</div>
+              <div className="dim">orchestrator.plan</div>
             </>
           )}
           {phase === 'response' && (
             <>
               <div style={{ color: 'oklch(0.85 0.10 195)' }}>› synthesized</div>
-              <div className="dim">template={latestResponse?.template}</div>
+              <div className="dim">plan={latestResponse?.plan || '—'}</div>
             </>
           )}
           {(phase === 'mindmap' || phase === 'collapsing' || phase === 'imploding') && (
             <>
-              <div style={{ color: 'var(--accent)' }}>› burst expanded</div>
-              <div className="dim">sections={
-                (latestResponse?.data?.sections?.length
-                  || latestResponse?.data?.files?.length
-                  || latestResponse?.data?.targets?.length
-                  || latestResponse?.data?.phases?.length) || 0
+              <div style={{ color: 'var(--accent)' }}>› mindmap.open</div>
+              <div className="dim">categories={
+                latestResponse
+                  ? (typeof extractCategoriesFromMarkdown === 'function'
+                      ? extractCategoriesFromMarkdown(latestResponse.markdown || '').length
+                      : 0)
+                  : 0
               }</div>
             </>
           )}
@@ -353,29 +354,199 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
   );
 }
 
+// ─── Tiny markdown renderer ──────────────────────────────────
+// No build step + no external library, so we ship a minimal markdown
+// parser that handles the patterns the orchestrator actually produces:
+// `# / ## / ###` headings, paragraphs, `- / * / 1.` lists, > blockquotes,
+// fenced code blocks ```lang ... ```, inline `code`, **bold**, *italic*,
+// and [link](url). Anything more exotic falls through as plain text.
+//
+// Two entry points:
+//   <Markdown text={md} />       — full rendering
+//   parseMarkdownBlocks(md)      — structured blocks for the orbital
+//                                   mindmap's category extraction
+function parseMarkdownBlocks(md) {
+  const lines = (md || '').replace(/\r\n?/g, '\n').split('\n');
+  const blocks = [];
+  let i = 0;
+  let paraBuf = [];
+  const flushPara = () => {
+    if (paraBuf.length) {
+      blocks.push({ type: 'para', text: paraBuf.join(' ') });
+      paraBuf = [];
+    }
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    // Fenced code block
+    if (/^```/.test(line)) {
+      flushPara();
+      const lang = line.slice(3).trim();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        buf.push(lines[i]); i++;
+      }
+      blocks.push({ type: 'code', lang, text: buf.join('\n') });
+      i++; // skip closing fence
+      continue;
+    }
+    // Heading
+    const h = line.match(/^(#{1,6})\s+(.*\S)\s*$/);
+    if (h) {
+      flushPara();
+      blocks.push({ type: 'heading', level: h[1].length, text: h[2] });
+      i++;
+      continue;
+    }
+    // Blockquote — collect consecutive `> ` lines
+    if (/^>\s?/.test(line)) {
+      flushPara();
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^>\s?/, '')); i++;
+      }
+      blocks.push({ type: 'quote', text: buf.join(' ') });
+      continue;
+    }
+    // List — collect consecutive list items (any of -, *, +, N.)
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+      flushPara();
+      const items = [];
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+        const t = lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, '');
+        items.push(t);
+        i++;
+        // Continuation lines indented under the item — append.
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+          items[items.length - 1] += ' ' + lines[i].trim();
+          i++;
+        }
+      }
+      blocks.push({ type: ordered ? 'ol' : 'ul', items });
+      continue;
+    }
+    // Blank line — paragraph break
+    if (!line.trim()) {
+      flushPara();
+      i++;
+      continue;
+    }
+    // Paragraph line — accumulate
+    paraBuf.push(line.trim());
+    i++;
+  }
+  flushPara();
+  return blocks;
+}
+
+function renderInline(text, keyPrefix = '') {
+  // Tokenize for `code`, **bold** / __bold__, *italic* / _italic_,
+  // [link](url) — in that order so code spans aren't reparsed for emphasis.
+  // The double-marker forms (** and __) come before the single-marker
+  // forms (* and _) so they match greedily.
+  const out = [];
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\n]+\*|_[^_\n]+_)|(\[[^\]]+\]\([^)]+\))/g;
+  let last = 0;
+  let m;
+  let k = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1]) {
+      out.push(<code key={`${keyPrefix}c${k++}`}>{m[1].slice(1, -1)}</code>);
+    } else if (m[2]) {
+      out.push(<strong key={`${keyPrefix}b${k++}`}>{m[2].slice(2, -2)}</strong>);
+    } else if (m[3]) {
+      out.push(<em key={`${keyPrefix}i${k++}`}>{m[3].slice(1, -1)}</em>);
+    } else if (m[4]) {
+      const lm = m[4].match(/\[([^\]]+)\]\(([^)]+)\)/);
+      out.push(
+        <a key={`${keyPrefix}a${k++}`} href={lm[2]} target="_blank" rel="noreferrer">{lm[1]}</a>
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function Markdown({ text }) {
+  const blocks = React.useMemo(() => parseMarkdownBlocks(text), [text]);
+  return (
+    <div className="mm-md">
+      {blocks.map((b, i) => {
+        if (b.type === 'heading') {
+          const Tag = `h${Math.min(6, b.level)}`;
+          return React.createElement(
+            Tag,
+            { key: i, className: `mm-md-h mm-md-h${b.level}` },
+            renderInline(b.text, `h${i}-`)
+          );
+        }
+        if (b.type === 'para') {
+          return <p key={i} className="mm-md-p">{renderInline(b.text, `p${i}-`)}</p>;
+        }
+        if (b.type === 'ul') {
+          return (
+            <ul key={i} className="mm-md-ul">
+              {b.items.map((it, j) => (
+                <li key={j}>{renderInline(it, `li${i}-${j}-`)}</li>
+              ))}
+            </ul>
+          );
+        }
+        if (b.type === 'ol') {
+          return (
+            <ol key={i} className="mm-md-ol">
+              {b.items.map((it, j) => (
+                <li key={j}>{renderInline(it, `li${i}-${j}-`)}</li>
+              ))}
+            </ol>
+          );
+        }
+        if (b.type === 'quote') {
+          return <blockquote key={i} className="mm-md-q">{renderInline(b.text, `q${i}-`)}</blockquote>;
+        }
+        if (b.type === 'code') {
+          return (
+            <pre key={i} className="mm-md-pre"><code>{b.text}</code></pre>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
 // ─── Response card (stacked above A) ───────────────────────
 // Each B card carries its own prompt as a faint header line so the user can
 // scan the thread at a glance. Newest gets `data-newest`, which the CSS uses
 // to scale it up slightly and brighten the accent — a subtle "you're looking
-// at the latest result" cue.
-function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
-  const tpl = TEMPLATE_DEFS[entry.template];
+// at the latest result" cue. The body renders the full markdown returned
+// by the orchestrator — never concised. The mindmap is the place to
+// categorize visually; this card shows you everything the agents wrote.
+function StackedResponse({ entry, isNewest, isOlder, stackIndex }) {
   return (
     <div
       className={'mm-stacked-response' + (isNewest ? ' newest' : '') + (isOlder ? ' older' : '')}
       data-newest={isNewest ? 'true' : 'false'}
-      style={{ '--accent': accent, '--stack-i': stackIndex }}
+      style={{ '--stack-i': stackIndex }}
     >
       <div className="mm-stacked-meta">
         <span className="mm-stacked-prompt">› {entry.prompt}</span>
-        <span className="mm-template-pill">
-          <span className="mm-template-dot" />
-          {tpl?.label || entry.template}
-        </span>
+        {entry.plan && (
+          <span className="mm-stacked-plan">
+            <span className="mm-stacked-plan-dot" />
+            {entry.plan}
+          </span>
+        )}
       </div>
-      <div className="mm-stacked-body">{entry.text}</div>
+      <div className="mm-stacked-body">
+        <Markdown text={entry.markdown || ''} />
+      </div>
       <div className="mm-stacked-foot">
-        <CopyButton getText={() => formatResponseText(entry)} />
+        <CopyButton getText={() => entry.markdown || ''} />
       </div>
     </div>
   );
@@ -610,12 +781,12 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
     return Math.max(0, Math.min(1, (t - w.start) / w.dur));
   };
 
-  // The categories the newest response will explode into. We extract them
-  // ahead of time so each particle can wear its own label + preview
-  // during the fountain — particles aren't abstract dots, they're
-  // miniature versions of the eventual nodes.
+  // The categories the newest response will explode into — derived from
+  // the orchestrator's markdown by splitting on H2/H3 headings (or
+  // chunking paragraphs if there are none). Each particle wears its own
+  // label + preview during the fountain.
   const nodes = React.useMemo(
-    () => (newest ? extractNodes(newest.template, newest.data) : []),
+    () => (newest ? extractCategoriesFromMarkdown(newest.markdown || '') : []),
     [newest]
   );
   const n = nodes.length;
@@ -899,19 +1070,13 @@ function IdleView({ draft, setDraft, submit }) {
           Many <em>minds,</em> one conversation.
         </h1>
         <p className="mm-sub">
-          Describe what you need — research, code, comparison, plan — and the orchestrator
-          routes it across five specialized agents.
+          One orchestrator routes your prompt across five specialized agents —
+          plan, dispatch, synthesize. The full reply lands as formatted
+          markdown; pull the bar handle to expand it into a visual mindmap.
         </p>
       </div>
       <div className="mm-composer-wrap">
         <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus />
-      </div>
-      <div className="mm-template-row">
-        {TEMPLATE_KEYS.map((k) => (
-          <span key={k} className="mm-template-hint" style={{ '--c': TEMPLATE_DEFS[k].accent }}>
-            <i /> {TEMPLATE_DEFS[k].label}
-          </span>
-        ))}
       </div>
     </div>
   );
@@ -958,8 +1123,6 @@ function LoadingView({ prompt }) {
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase,
 }) {
-  const newest = responses[responses.length - 1];
-  const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || '#f5a25b') : '#f5a25b';
   // Render order top→bottom matches DOM order: hint, oldest…newest, composer.
   // Oldest goes first in DOM (top); newest goes last (just above composer).
   const ordered = responses; // already oldest→newest
@@ -988,7 +1151,6 @@ function ResponseStackView({
         (collapsing ? ' collapsing' : '') +
         (entering ? ' entering' : '')
       }
-      style={{ '--accent': accent }}
     >
       <div className="mm-stack-wrap" style={{ '--stack-size': ordered.length }}>
         <div className="mm-stack-hint-slot">
@@ -1025,7 +1187,6 @@ function ResponseStackView({
                 <StackedResponse
                   key={entry.id}
                   entry={entry}
-                  accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
                   isNewest={false}
                   isOlder={true}
                   stackIndex={olderEntries.length - i}
@@ -1039,7 +1200,6 @@ function ResponseStackView({
               <StackedResponse
                 key={newestEntry.id}
                 entry={newestEntry}
-                accent={TEMPLATE_DEFS[newestEntry.template]?.accent || accent}
                 isNewest={true}
                 isOlder={false}
                 stackIndex={0}
@@ -1153,18 +1313,16 @@ function OrbitalMindmap({
   const newest = responses[responses.length - 1];
   const stageRef = React.useRef(null);
   const nodes = React.useMemo(
-    () => (newest ? extractNodes(newest.template, newest.data) : []),
+    () => (newest ? extractCategoriesFromMarkdown(newest.markdown || '') : []),
     [newest]
   );
   const { positions, size } = useOrbitalPositions(nodes, stageRef);
 
   if (!newest) return null;
-  const accent = TEMPLATE_DEFS[newest.template]?.accent || '#f5a25b';
   const imploding = phase === 'imploding';
 
   return (
-    <div className={'mm-phase mm-phase-orbital' + (imploding ? ' imploding' : '')}
-      style={{ '--accent': accent }}>
+    <div className={'mm-phase mm-phase-orbital' + (imploding ? ' imploding' : '')}>
       <div className="mm-thread-strip">
         <button className="mm-collapse" onClick={collapse} title="Collapse back to thread">
           <svg viewBox="0 0 16 10" fill="none">
@@ -1175,13 +1333,13 @@ function OrbitalMindmap({
         <div className="mm-thread-content">
           <span className="mm-thread-prompt">{newest.prompt}</span>
           <span className="mm-thread-arrow">→</span>
-          <span className="mm-thread-template" style={{ '--c': accent }}>
-            <i />{TEMPLATE_DEFS[newest.template]?.label || newest.template}
+          <span className="mm-thread-template">
+            <i />{nodes.length} {nodes.length === 1 ? 'category' : 'categories'}
           </span>
         </div>
         <div className="mm-thread-actions">
           <span className="mm-thread-counter">{responses.length} in thread</span>
-          <CopyButton getText={() => formatResponseText(newest)} />
+          <CopyButton getText={() => newest.markdown || ''} />
           <button className="mm-thread-reset" onClick={reset} title="New thread">
             <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4">
               <path d="M2.5 6a3.5 3.5 0 1 1 1.1 2.5" />
@@ -1211,38 +1369,12 @@ function OrbitalMindmap({
   );
 }
 
-// ─── shared helper (used by stacked response + thread strip) ─
-function formatResponseText(entry) {
-  if (!entry) return '';
-  const { template, data, text } = entry;
-  let out = (text || '') + '\n\n';
-  if (template === 'research') {
-    for (const sec of (data && data.sections) || []) {
-      out += `## ${sec.heading}\n${(sec.points || []).map((p) => `- ${p}`).join('\n')}\n`;
-      if (sec.sources?.length) out += `Sources:\n${sec.sources.map((s) => `- ${s.title} (${s.url})`).join('\n')}\n`;
-      out += '\n';
-    }
-  } else if (template === 'code') {
-    for (const f of (data && data.files) || []) {
-      out += `### ${f.name} (${f.language})\n\`\`\`\n${f.snippet}\n\`\`\`\n${(f.notes || []).map((n) => `- ${n}`).join('\n')}\n\n`;
-    }
-  } else if (template === 'compare') {
-    out += 'Ranking:\n';
-    for (const r of (data && data.ranking) || []) out += `${r.rank}. ${r.name} — ${r.score}/10 — ${r.takeaway}\n`;
-    out += '\n';
-    for (const t of (data && data.targets) || []) {
-      out += `### ${t.name}\nPros: ${(t.pros || []).join(', ')}\nCons: ${(t.cons || []).join(', ')}\nReason: ${t.reason}\n\n`;
-    }
-  } else if (template === 'plan') {
-    for (const ph of (data && data.phases) || []) {
-      out += `### ${ph.title}\n${(ph.steps || []).map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\n`;
-    }
-  }
-  return out.trim();
-}
-
 // ─── App ───────────────────────────────────────────────────
-const STACK_LS_KEY = 'lattice.responseStack.v2';
+// v3: response stack now holds full markdown from the orchestrator (no
+// JSON schema). v2 entries (template/data/text) are silently dropped on
+// load because the rendering logic changed.
+const STACK_LS_KEY = 'lattice.responseStack.v3';
+
 const IMPLODE_DURATION_MS = 440;
 
 function loadPersistedStack() {
@@ -1253,15 +1385,15 @@ function loadPersistedStack() {
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((e) =>
       e && typeof e.id === 'string' && typeof e.prompt === 'string' &&
-      e.response && TEMPLATE_DEFS[e.response.template]
-    ).map((e) => ({ id: e.id, prompt: e.prompt, ...e.response }));
+      typeof e.markdown === 'string'
+    );
   } catch { return []; }
 }
 function savePersistedStack(responses) {
   try {
     const slim = responses.map((r) => ({
-      id: r.id, prompt: r.prompt,
-      response: { template: r.template, text: r.text, data: r.data },
+      id: r.id, prompt: r.prompt, markdown: r.markdown,
+      servedBy: r.servedBy || null, plan: r.plan || null,
     }));
     localStorage.setItem(STACK_LS_KEY, JSON.stringify(slim));
   } catch {}
@@ -1295,58 +1427,65 @@ function HeroMindmap() {
   }, []);
 
   const newest = responses[responses.length - 1] || null;
-  const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
+  const accent = 'var(--accent)';
+
+  // One persistent ChatSession per browser tab — same orchestrator-driven
+  // smart routing the CLI's `task` / `chat` commands use. Responses come
+  // back as full natural markdown (no JSON schema). The mindmap takes
+  // that markdown and categorizes it visually, but the response itself is
+  // never concised — what you see in B is what the orchestrator wrote.
+  const sessionId = React.useMemo(() => {
+    const KEY = 'lattice.sessionId.v1';
+    let sid = null;
+    try { sid = localStorage.getItem(KEY); } catch {}
+    if (!sid) {
+      sid = 'web_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+      try { localStorage.setItem(KEY, sid); } catch {}
+    }
+    return sid;
+  }, []);
 
   const submit = async () => {
     const q = draft.trim();
     if (!q) return;
-    const template = detectTemplate(q);
     setCurrentPrompt(q);
     setDraft('');
     setPhase('loading');
 
+    const makeEntry = (markdown, meta = {}) => ({
+      id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      prompt: q,
+      markdown,
+      ...meta,
+    });
+
     try {
-      const sys = TEMPLATE_DEFS[template].prompt(q);
-      const completeApi = async (prompt) => {
-        const res = await fetch('/api/complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
-        });
-        if (!res.ok) throw new Error(`/api/complete ${res.status}`);
-        const json = await res.json();
-        if (typeof json.reply !== 'string') throw new Error('bad response shape');
-        return json.reply;
-      };
-      const [reply] = await Promise.all([
-        completeApi(sys),
-        new Promise((r) => setTimeout(r, 1600)),
-      ]);
-      let parsed;
-      try {
-        const cleaned = reply.replace(/```json|```/g, '').trim();
-        parsed = JSON.parse(cleaned);
-      } catch (e) {
-        parsed = FALLBACK_DATA[template];
-      }
-      const text = typeof parsed.summary === 'string'
-        ? parsed.summary
-        : 'Synthesized response. Pull down to expand into a detailed mindmap.';
-      const entry = {
-        id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-        prompt: q,
-        template, text, data: parsed,
-      };
+      // /api/chat → smart-routed orchestrator response (direct / single /
+      // parallel plan, with fanout + synthesis). Same code path as CLI's
+      // `task` command. Reply is natural markdown.
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, message: q }),
+      });
+      if (!res.ok) throw new Error(`/api/chat ${res.status}`);
+      const json = await res.json();
+      if (typeof json.reply !== 'string') throw new Error('bad response shape');
+      const markdown = json.reply.trim();
+      const entry = makeEntry(markdown, {
+        servedBy: json.servedBy || null,
+        plan: json.plan || null,
+      });
       const next = [...responses, entry];
       setResponses(next);
       savePersistedStack(next);
       setPhase('response');
     } catch (e) {
-      const entry = {
-        id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-        prompt: q,
-        template, text: 'Synthesized response.', data: FALLBACK_DATA[template],
-      };
+      // Soft fallback so the UI doesn't get stuck on transient failures.
+      const entry = makeEntry(
+        `_Couldn't reach the orchestrator._\n\n**Error:** ${e?.message || 'unknown'}\n\nCheck that your \`.env\` has a real \`GEMINI_KEY_1\` (or another provider key) and try again.`,
+        { servedBy: null, plan: null }
+      );
       const next = [...responses, entry];
       setResponses(next);
       savePersistedStack(next);
@@ -1376,6 +1515,10 @@ function HeroMindmap() {
     setDraft('');
     setResponses([]);
     clearPersistedStack();
+    // Also wipe the server-side chat session so the next thread starts
+    // with no prior context. Fire-and-forget — UI doesn't wait on it.
+    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/clear`, { method: 'POST' })
+      .catch(() => {});
   };
 
   return (
@@ -1442,3 +1585,7 @@ function HeroMindmap() {
 }
 
 window.HeroMindmap = HeroMindmap;
+// Exposed so templates.jsx's MarkdownPreview can use the same renderer
+// without a module system. (Order doesn't matter — templates.jsx looks
+// it up at call time, not import time.)
+window.Markdown = Markdown;
