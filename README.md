@@ -150,7 +150,7 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 4: serious mode (`--serious` / `--thinking=<level>`) — Gemini 3.x extended reasoning
 - [x] Stage 4: backoff-and-retry when all providers cooled (default cap: 60s wait per call)
 - [x] Stage 4: parallel dispatch stagger (300ms default) so 3 agents don't hit the per-minute window in the same wall-clock ms
-- [ ] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits
+- [x] Stage 4: calibrate `estimatedDailyBudget` from real AI Studio limits (gemini 1500/day, groq 1000/day, openrouter 50/day, cerebras 1440/day, mistral 500/day; per-prefix defaults in `src/config.ts` `DEFAULT_BUDGETS`; wired via `loadAllProviderConfigsFromEnv()` so the sidebar's per-role quota bars and the conservation-policy mode flip both read real numbers)
 - [x] Stage 4: persistent usage state across CLI invocations (`~/.multi-agent/state.json`, daily UTC rollover)
 - [x] Stage 4: web browsing via Google Search grounding (`--search`, free up to 5000 grounded prompts/mo)
 - [x] Stage 4: local file tools (`--tools`: read_file, write_file, list_dir, path-confined to `--workdir`)

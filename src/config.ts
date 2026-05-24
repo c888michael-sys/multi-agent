@@ -5,6 +5,36 @@ import { OpenRouterProvider } from "./providers/openrouter.js";
 import { CerebrasProvider } from "./providers/cerebras.js";
 import { MistralProvider } from "./providers/mistral.js";
 import type { Provider } from "./provider.js";
+import type { ProviderConfig } from "./pool.js";
+
+/**
+ * Per-provider best-guess daily request budgets used to populate the
+ * sidebar's quota bars. These are conservative estimates of free-tier
+ * limits as of mid-2026 — actual quotas vary by account class and
+ * occasionally by Google/OpenRouter policy changes. Override per-deploy
+ * by passing `estimatedDailyBudget` explicitly when constructing
+ * a provider config.
+ *
+ * Sources:
+ *   gemini: ~1500 RPD per project on Studio free tier
+ *   groq:   ~1000 RPD account-wide on free tier
+ *   openrouter: ~50 RPD shared across all free models
+ *   cerebras: ~1440 RPD (1 RPM rate cap × 24h, the soft daily cap)
+ *   mistral: 500 RPD placeholder (Experiment plan is token-based, no
+ *            documented hard RPD limit; this just keeps the gauge useful)
+ */
+const DEFAULT_BUDGETS: Record<string, number> = {
+  gemini: 1500,
+  groq: 1000,
+  openrouter: 50,
+  cerebras: 1440,
+  mistral: 500,
+};
+
+function budgetFor(providerId: string): number {
+  const prefix = providerId.split(":")[0] ?? "";
+  return DEFAULT_BUDGETS[prefix] ?? 500;
+}
 
 /**
  * Discover all GEMINI_KEY_N env vars and build a provider per non-empty entry.
@@ -113,4 +143,16 @@ export function loadAllProvidersFromEnv(): Provider[] {
     ...loadCerebrasProvidersFromEnv(),
     ...loadMistralProvidersFromEnv(),
   ];
+}
+
+/**
+ * Same as loadAllProvidersFromEnv but wraps each provider in a
+ * ProviderConfig that carries `estimatedDailyBudget` so the pool can
+ * compute remainingPct for the sidebar's quota gauges.
+ */
+export function loadAllProviderConfigsFromEnv(): ProviderConfig[] {
+  return loadAllProvidersFromEnv().map((provider) => ({
+    provider,
+    estimatedDailyBudget: budgetFor(provider.id),
+  }));
 }

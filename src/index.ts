@@ -30,6 +30,7 @@ export {
   loadCerebrasProvidersFromEnv,
   loadMistralProvidersFromEnv,
   loadAllProvidersFromEnv,
+  loadAllProviderConfigsFromEnv,
 } from "./config.js";
 export {
   FileStateStore,

@@ -22,6 +22,7 @@ import {
   Agent,
   Controller,
   loadAllProvidersFromEnv,
+  loadAllProviderConfigsFromEnv,
   formatUsageReport,
   attachConservationPolicy,
   FileStateStore,
@@ -73,16 +74,17 @@ const VALID_ROLES: RoleName[] = [
 const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
 
 function buildRouter(): Router {
-  const providers = loadAllProvidersFromEnv();
-  if (providers.length === 0) {
+  const configs = loadAllProviderConfigsFromEnv();
+  if (configs.length === 0) {
     console.error(
       "No provider keys configured. Set at least GEMINI_KEY_1 in .env (see .env.example).",
     );
     process.exit(1);
   }
-  const router = new Router(providers, { stateStore: new FileStateStore() });
-  // Wire ConservationPolicy to auto-tick after every successful call. No-op
-  // until any provider has an estimatedDailyBudget set (see Stage 4 polish).
+  const router = new Router(configs, { stateStore: new FileStateStore() });
+  // ConservationPolicy auto-ticks after every successful call. With
+  // ProviderConfig budgets now wired, this drives the sidebar's quota
+  // gauges and the round-robin → serial mode flip in real time.
   attachConservationPolicy(router);
   return router;
 }
