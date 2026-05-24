@@ -10,7 +10,7 @@ const TEMPLATE_KEYS = ['research', 'code', 'compare', 'plan'];
 const TEMPLATE_DEFS = {
   research: {
     label: 'Research',
-    accent: '#7aa2ff',
+    accent: 'oklch(0.82 0.14 230)',
     detect: (p) =>
       /\b(research|find|sources?|study|history|what is|why|how does|explain|origin|background|definition)\b/i.test(p),
     prompt: (q) =>
@@ -24,7 +24,7 @@ User: ${q}`,
   },
   code: {
     label: 'Code',
-    accent: '#6bd6a8',
+    accent: 'oklch(0.85 0.10 195)',
     detect: (p) =>
       /\b(code|implement|build a|function|class|refactor|cli|api|module|component|script)\b/i.test(p),
     prompt: (q) =>
@@ -38,7 +38,7 @@ User: ${q}`,
   },
   compare: {
     label: 'Compare',
-    accent: '#c08bff',
+    accent: 'oklch(0.78 0.10 280)',
     detect: (p) =>
       /\b(compare|vs\.?|versus|best|differences? between|rank|which is better|tradeoffs?)\b/i.test(p),
     prompt: (q) =>
@@ -54,7 +54,7 @@ User: ${q}`,
   },
   plan: {
     label: 'Plan',
-    accent: '#f5a25b',
+    accent: 'oklch(0.86 0.08 215)',
     detect: () => true, // fallback
     prompt: (q) =>
       `Answer this user request as a PLAN. Return ONLY valid JSON, no prose. Schema:

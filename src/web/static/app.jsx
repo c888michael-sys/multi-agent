@@ -1,25 +1,32 @@
-// hero-mindmap.jsx — Lattice dynamic chat with burst-to-mindmap flow.
+// app.jsx — Lattice multi-agent UI.
 //
 // Phases:
 //   idle        → big composer centered, hero text above
 //   loading     → prompt locks in, agents "think"
-//   response    → composer (A) pinned at bottom; response cards (B…) stack
-//                 above A, newest just above A (older ones pushed up); a hint
-//                 sits at the very top of the stack — pull / click to expand.
-//   collapsing  → responses + composer converge toward a central singularity
-//                 (the "big bang" pre-bang); transient (~520ms).
-//   mindmap     → cards burst out from the central singularity into the
-//                 sorted template grid; each card gently floats once settled.
-//   imploding   → reverse of mindmap → response (cards converge to center,
-//                 then the stack re-materializes); transient (~440ms).
+//   response    → composer A pinned at bottom; B's stack above; bar handle
+//                 at top of canvas. Newest B sits at the vertical center.
+//   collapsing  → orchestrated catalyst sequence (~1900 ms total):
+//                 stage 1: bar slides DOWN to collision point (~420 ms)
+//                 stage 2: tokens A (right) + B (left) fly horizontally
+//                          inward and collide at center (~500 ms)
+//                 stage 3: A locks; B shatters into N particle dots (250 ms)
+//                 stage 4: particles arc downward in a gravity-driven
+//                          fountain, scaling up with white vector trails;
+//                          settle as the full-size category nodes (~880 ms)
+//   mindmap     → A as active composer at center; category nodes positioned
+//                 in the BOTTOM HALF (fan layout) connected back to A by
+//                 dashed accent lines; nodes drift gently.
+//   imploding   → reverse implode (~440 ms) then back to response.
 
-// Mapped to the system's real role roster (default-registry.ts).
+// Agent roster colors — single cool palette so the constellation reads as
+// "instrument panel" not "rainbow LEDs". Differentiation comes from hue
+// shifts within a narrow blue-cyan band.
 const MM_AGENTS = [
-  { id: 'orchestration',     name: 'Orchestrator', color: '#f5a25b', quota: 128000 },
-  { id: 'perception',        name: 'Perception',   color: '#7aa2ff', quota: 128000 },
-  { id: 'reasoning',         name: 'Reasoning',    color: '#c08bff', quota: 128000 },
-  { id: 'action-code',       name: 'Coder',        color: '#6bd6a8', quota: 128000 },
-  { id: 'action-structural', name: 'Structural',   color: '#ff8aa0', quota: 128000 },
+  { id: 'orchestration',     name: 'Orchestrator', color: 'oklch(0.82 0.14 230)', quota: 128000 },
+  { id: 'perception',        name: 'Perception',   color: 'oklch(0.85 0.10 215)', quota: 128000 },
+  { id: 'reasoning',         name: 'Reasoning',    color: 'oklch(0.80 0.08 260)', quota: 128000 },
+  { id: 'action-code',       name: 'Coder',        color: 'oklch(0.86 0.08 195)', quota: 128000 },
+  { id: 'action-structural', name: 'Structural',   color: 'oklch(0.78 0.06 240)', quota: 128000 },
 ];
 
 // ─── Cursor-attracted particle constellation overlay ─────────
@@ -45,7 +52,8 @@ function ConstellationOverlay() {
     const W = () => canvas.getBoundingClientRect().width;
     const H = () => canvas.getBoundingClientRect().height;
 
-    const parts = Array.from({ length: 64 }, () => ({
+    // Fewer, quieter particles — quantum lab, not nightclub.
+    const parts = Array.from({ length: 40 }, () => ({
       x: Math.random() * W(),
       y: Math.random() * H(),
       vx: (Math.random() - 0.5) * 0.15,
@@ -92,14 +100,14 @@ function ConstellationOverlay() {
         const sp = Math.hypot(p.vx, p.vy);
         if (sp > 0.6) { p.vx *= 0.6 / sp; p.vy *= 0.6 / sp; }
 
-        const pulse = 0.55 + 0.45 * Math.sin(t * 0.03 + p.phase);
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.025 + p.phase);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.r * pulse, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(245,243,239,${0.55 * pulse})`;
+        ctx.fillStyle = `rgba(244,244,244,${0.32 * pulse})`;
         ctx.fill();
       }
 
-      const link = 130;
+      const link = 140;
       for (let i = 0; i < parts.length; i++) {
         for (let j = i + 1; j < parts.length; j++) {
           const a = parts[i], b = parts[j];
@@ -107,15 +115,16 @@ function ConstellationOverlay() {
           const d2 = dx * dx + dy * dy;
           if (d2 < link * link) {
             const d = Math.sqrt(d2);
-            const op = (1 - d / link) * 0.18;
+            const op = (1 - d / link) * 0.10;
             let boost = 0;
             if (ma) {
               const mxm = (a.x + b.x) / 2 - mx;
               const mym = (a.y + b.y) / 2 - my;
               const md = Math.hypot(mxm, mym);
-              if (md < 220) boost = (1 - md / 220) * 0.5;
+              if (md < 240) boost = (1 - md / 240) * 0.45;
             }
-            ctx.strokeStyle = `rgba(245,162,91,${op + boost * 0.35})`;
+            // Cool ice-blue lines, refined opacity.
+            ctx.strokeStyle = `rgba(125,180,255,${op + boost * 0.28})`;
             ctx.lineWidth = 0.5 + boost * 0.5;
             ctx.beginPath();
             ctx.moveTo(a.x, a.y);
@@ -126,11 +135,11 @@ function ConstellationOverlay() {
       }
 
       if (ma) {
-        const r1 = 80 + Math.sin(t * 0.04) * 6;
+        const r1 = 90 + Math.sin(t * 0.04) * 6;
         const grad = ctx.createRadialGradient(mx, my, 0, mx, my, r1);
-        grad.addColorStop(0, 'rgba(245,162,91,0.18)');
-        grad.addColorStop(0.5, 'rgba(245,162,91,0.05)');
-        grad.addColorStop(1, 'rgba(245,162,91,0)');
+        grad.addColorStop(0, 'rgba(125,180,255,0.14)');
+        grad.addColorStop(0.5, 'rgba(125,180,255,0.04)');
+        grad.addColorStop(1, 'rgba(125,180,255,0)');
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(mx, my, r1, 0, Math.PI * 2);
@@ -274,19 +283,19 @@ function Sidebar({ phase, latestResponse }) {
           <div>13:42:11 all agents ready</div>
           {phase === 'loading' && (
             <>
-              <div style={{ color: 'oklch(0.78 0.16 52)' }}>› dispatching to agents…</div>
+              <div style={{ color: 'var(--accent)' }}>› dispatching to agents…</div>
               <div className="dim">routing[{latestResponse?.template || 'auto'}]</div>
             </>
           )}
           {phase === 'response' && (
             <>
-              <div style={{ color: 'oklch(0.72 0.18 145)' }}>› synthesized</div>
+              <div style={{ color: 'oklch(0.85 0.10 195)' }}>› synthesized</div>
               <div className="dim">template={latestResponse?.template}</div>
             </>
           )}
           {(phase === 'mindmap' || phase === 'collapsing' || phase === 'imploding') && (
             <>
-              <div style={{ color: 'oklch(0.74 0.17 52)' }}>› burst expanded</div>
+              <div style={{ color: 'var(--accent)' }}>› burst expanded</div>
               <div className="dim">sections={
                 (latestResponse?.data?.sections?.length
                   || latestResponse?.data?.files?.length
@@ -296,7 +305,7 @@ function Sidebar({ phase, latestResponse }) {
             </>
           )}
           {phase === 'idle' && (
-            <div style={{ color: 'oklch(0.78 0.16 52)' }}>› awaiting prompt</div>
+            <div style={{ color: 'var(--accent)' }}>› awaiting prompt</div>
           )}
         </div>
       </div>
@@ -372,15 +381,18 @@ function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
   );
 }
 
-// ─── Hint bar (top of the stack — pull down / click to burst) ───
-function HintBar({ onExpand, disabled }) {
+// ─── Bar handle — the catalyst at the top of the canvas ───────
+// A small subtle white pill that the user hovers/clicks/pulls. Trigger
+// fires `onExpand()` which kicks off the bar-slide → collide → fountain
+// choreography (orchestrated in `HeroMindmap`'s timeline).
+function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
   const [dragY, setDragY] = React.useState(0);
   const startY = React.useRef(0);
   const dragging = React.useRef(false);
   const fired = React.useRef(false);
 
   const onPointerDown = (e) => {
-    if (disabled) return;
+    if (disabled || sliding) return;
     dragging.current = true;
     fired.current = false;
     startY.current = e.clientY;
@@ -389,8 +401,8 @@ function HintBar({ onExpand, disabled }) {
   const onPointerMove = (e) => {
     if (!dragging.current || fired.current) return;
     const dy = Math.max(0, e.clientY - startY.current);
-    setDragY(Math.min(140, dy));
-    if (dy > 70) {
+    setDragY(Math.min(80, dy));
+    if (dy > 48) {
       fired.current = true;
       dragging.current = false;
       setDragY(0);
@@ -402,35 +414,256 @@ function HintBar({ onExpand, disabled }) {
     setDragY(0);
   };
 
-  const progress = Math.min(1, dragY / 70);
+  const progress = Math.min(1, dragY / 48);
 
   return (
     <button
-      className={'mm-hint-bar' + (disabled ? ' disabled' : '')}
-      onClick={disabled ? undefined : onExpand}
+      className={
+        'mm-bar-handle' +
+        (disabled ? ' disabled' : '') +
+        (sliding ? ' sliding' : '')
+      }
+      onClick={disabled || sliding ? undefined : onExpand}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      style={{ transform: `translateY(${dragY}px)` }}
-      aria-label="Pull down to expand into mindmap"
+      style={{
+        transform: sliding ? undefined : `translateY(${dragY}px)`,
+        '--bar-slide-distance': slideDistance ? `${slideDistance}px` : '30vh',
+      }}
+      aria-label="Initiate"
     >
-      <span className="mm-hint-rail" />
-      <span className="mm-hint-glyph">
-        <i /><i /><i />
-      </span>
-      <span className="mm-hint-text">
-        {progress > 0.5 ? 'release // big bang' : 'pull or tap // expand the mindmap'}
-      </span>
-      <span className="mm-hint-arrow">
-        <svg viewBox="0 0 16 10" fill="none">
-          <path d="M2 2l6 6 6-6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </span>
-      <span className="mm-hint-progress">
-        <span className="mm-hint-progress-fill" style={{ width: progress * 100 + '%' }} />
-      </span>
+      {!sliding && dragY > 0 && (
+        <span className="mm-bar-progress">
+          <span className="mm-bar-progress-fill" style={{ width: progress * 100 + '%' }} />
+        </span>
+      )}
     </button>
+  );
+}
+
+// ─── Catalyst overlay (collide + shatter + fountain) ─────────
+// Renders during the 'collapsing' phase, on top of the response stack.
+// Drives the choreography:
+//   stage 1 (0–420 ms): bar slides DOWN (handled by BarHandle.sliding)
+//   stage 2 (420–920 ms): tokens fly in horizontally and collide
+//   stage 3 (920–1170 ms): impact flash; A locks; B shatters into dots
+//   stage 4 (1170–1900 ms): particles fountain downward with white
+//                          vector trails, scaling up as they descend
+// Parent transitions phase → 'mindmap' at t≈1900ms.
+
+const COLLAPSE_TIMELINE = {
+  barSlide:      { start:    0, dur:  420 },
+  tokensFly:     { start:  420, dur:  500 },  // tokens enter & travel
+  impact:        { start:  920, dur:   90 },  // collision flash
+  shatter:       { start: 1010, dur:  160 },  // particles spawn at center
+  fountain:      { start: 1170, dur:  730 },  // arc to final positions
+  total: 1900,
+};
+
+// Particle count derived from the newest response's category count.
+function getParticleCount(newest) {
+  if (!newest || !newest.data) return 4;
+  const d = newest.data;
+  const n = (d.sections?.length || d.files?.length || d.targets?.length || d.phases?.length || 4);
+  return Math.max(3, Math.min(n, 7));
+}
+
+function CatalystOverlay({ newest, slideDistance, stageRect }) {
+  const [t, setT] = React.useState(0);
+  React.useEffect(() => {
+    const start = performance.now();
+    let raf;
+    const tick = () => {
+      const elapsed = performance.now() - start;
+      setT(elapsed);
+      if (elapsed < COLLAPSE_TIMELINE.total + 100) {
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const inWindow = (key) => {
+    const w = COLLAPSE_TIMELINE[key];
+    return t >= w.start && t <= w.start + w.dur;
+  };
+  const after = (key) => t >= COLLAPSE_TIMELINE[key].start + COLLAPSE_TIMELINE[key].dur;
+  const progress = (key) => {
+    const w = COLLAPSE_TIMELINE[key];
+    return Math.max(0, Math.min(1, (t - w.start) / w.dur));
+  };
+
+  // Tokens fly in from off-canvas; B enters from LEFT, A from RIGHT.
+  // They accelerate (ease-in) toward the collision point at the bar's
+  // landing spot (which is the center horizontally, slideDistance below
+  // the bar's start position).
+  const tokensP = progress('tokensFly');
+  // Ease-in cubic — slow start, fast finish.
+  const tokensEased = tokensP * tokensP * tokensP;
+  const tokensVisible = t >= COLLAPSE_TIMELINE.tokensFly.start && !after('shatter');
+  const tokenAX = `calc(50% + ${(1 - tokensEased) * 50}vw)`;
+  const tokenBX = `calc(50% - ${(1 - tokensEased) * 50}vw)`;
+
+  // Impact flash — short, bright bloom at the collision point.
+  const flashVisible = inWindow('impact') || (t > COLLAPSE_TIMELINE.impact.start && t < COLLAPSE_TIMELINE.impact.start + 250);
+  const flashP = (t - COLLAPSE_TIMELINE.impact.start) / 200;
+  const flashOpacity = Math.max(0, 1 - flashP) * (flashP > 0 ? 1 : 0);
+
+  // Particle layout — N nodes' final positions. We use the same fan
+  // layout the mindmap uses post-settle (bottom-half) so particles
+  // arrive exactly where the nodes will live.
+  const n = getParticleCount(newest);
+  const particleFinals = React.useMemo(() => {
+    if (!stageRect || !stageRect.w) return [];
+    const cx = stageRect.w / 2;
+    const cy = stageRect.h / 2;
+    const NODE_W = 220;
+    const NODE_H = 200;
+    const EDGE_PAD = 14;
+    const maxR_x = cx - NODE_W / 2 - EDGE_PAD;
+    const maxR_y = stageRect.h - cy - NODE_H / 2 - EDGE_PAD;  // bottom-only
+    const baseR = Math.max(220, Math.min(maxR_x, maxR_y * 1.2, 340));
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const angle = ((i + 1) / (n + 1)) * Math.PI;  // 0..π = bottom half
+      const r = baseR + (i % 2 === 0 ? 0 : -28);  // alternating depth for organic feel
+      const fx = Math.cos(angle) * r;
+      const fy = Math.sin(angle) * r;
+      // Bezier mid-point: pulled toward bottom-center for the fountain arc.
+      const midX = fx * 0.4;
+      const midY = fy * 0.55 + 60;
+      out.push({ fx, fy, midX, midY, angle });
+    }
+    return out;
+  }, [n, stageRect?.w, stageRect?.h]);
+
+  const fountainP = progress('fountain');
+  // Ease-out — fast launch, soft cushion.
+  const fountainEased = 1 - Math.pow(1 - fountainP, 2.6);
+
+  return (
+    <div className="mm-catalyst-overlay" aria-hidden="true">
+      {/* Tokens fly in from the sides */}
+      {tokensVisible && (
+        <>
+          <div
+            className="mm-collide-token mm-token-b"
+            style={{
+              left: tokenBX,
+              top: `calc(50% + 0px)`,
+              opacity: tokensP > 0.05 ? 1 : 0,
+            }}
+          />
+          <div
+            className="mm-collide-token mm-token-a"
+            style={{
+              left: tokenAX,
+              top: `calc(50% + 0px)`,
+              opacity: tokensP > 0.05 ? 1 : 0,
+            }}
+          />
+        </>
+      )}
+
+      {/* Impact flash */}
+      {flashVisible && (
+        <div
+          className="mm-impact-flash"
+          style={{ opacity: flashOpacity }}
+        />
+      )}
+
+      {/* A anchor — appears at center after impact and STAYS visible
+          through fountain (it's the permanent anchor). */}
+      {t >= COLLAPSE_TIMELINE.impact.start && (
+        <div className="mm-collide-token mm-token-a mm-anchor-a"
+          style={{ left: '50%', top: '50%', opacity: 1 }}
+        />
+      )}
+
+      {/* Fountain — SVG trail paths + particle dots/cards */}
+      {t >= COLLAPSE_TIMELINE.shatter.start && stageRect && particleFinals.length > 0 && (
+        <svg
+          className="mm-fountain-svg"
+          width={stageRect.w} height={stageRect.h}
+          viewBox={`0 0 ${stageRect.w} ${stageRect.h}`}
+        >
+          {particleFinals.map((p, i) => {
+            const cx0 = stageRect.w / 2;
+            const cy0 = stageRect.h / 2;
+            // Quadratic bezier from center to final, via the arc midpoint.
+            const startX = cx0;
+            const startY = cy0;
+            const midX = cx0 + p.midX;
+            const midY = cy0 + p.midY;
+            const endX = cx0 + p.fx;
+            const endY = cy0 + p.fy;
+            // We morph the path's "current end" by interpolating along the
+            // bezier with fountainEased (handled in the renderer below).
+            // For trails: render the path with stroke-dasharray animated.
+            const path = `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`;
+            // Trail visible during fountain, fading at the end.
+            const trailOpacity = fountainP < 0.05 ? 0 : (fountainP < 0.8 ? 0.85 : (1 - (fountainP - 0.8) / 0.2) * 0.85);
+            return (
+              <path
+                key={i}
+                d={path}
+                fill="none"
+                stroke="oklch(1 0 0 / 0.9)"
+                strokeWidth="1"
+                strokeLinecap="round"
+                strokeDasharray="600"
+                strokeDashoffset={(1 - fountainEased) * 600}
+                style={{ opacity: trailOpacity }}
+              />
+            );
+          })}
+        </svg>
+      )}
+
+      {/* Particle dots / morphing nodes */}
+      {t >= COLLAPSE_TIMELINE.shatter.start && stageRect && particleFinals.length > 0 &&
+        particleFinals.map((p, i) => {
+          const cx0 = stageRect.w / 2;
+          const cy0 = stageRect.h / 2;
+          // Bezier point at parameter u (fountainEased).
+          const u = fountainEased;
+          const omu = 1 - u;
+          const px = omu * omu * cx0 + 2 * omu * u * (cx0 + p.midX) + u * u * (cx0 + p.fx);
+          const py = omu * omu * cy0 + 2 * omu * u * (cy0 + p.midY) + u * u * (cy0 + p.fy);
+          // Scale: tiny at start (during shatter), growing during fountain
+          // to roughly node-sized at the end.
+          const shatterP = progress('shatter');
+          const scale = 0.18 + (0.82 * u);
+          const radius = 6 + 18 * u;  // dot grows
+          // During shatter (pre-fountain) particles cluster near center
+          // with small jitter; once fountain starts they begin to move.
+          const inShatter = t < COLLAPSE_TIMELINE.fountain.start;
+          // Clustering offset for shatter phase
+          const cluster = Math.PI * 2 * (i / n);
+          const cr = inShatter ? 16 + shatterP * 22 : 0;
+          const cx = inShatter ? cx0 + Math.cos(cluster) * cr : px;
+          const cy = inShatter ? cy0 + Math.sin(cluster) * cr * 0.6 : py;
+          // Opacity: full during shatter and fountain; fade slightly at the very end before nodes render
+          const opacity = fountainP > 0.92 ? Math.max(0, 1 - (fountainP - 0.92) / 0.08) : 1;
+          return (
+            <div
+              key={i}
+              className="mm-particle"
+              style={{
+                left: cx, top: cy,
+                width: radius * 2, height: radius * 2,
+                opacity,
+                transform: `translate(-50%, -50%) scale(${scale.toFixed(3)})`,
+              }}
+            />
+          );
+        })
+      }
+    </div>
   );
 }
 
@@ -545,7 +778,12 @@ function ResponseStackView({
     >
       <div className="mm-stack-wrap" style={{ '--stack-size': ordered.length }}>
         <div className="mm-stack-hint-slot">
-          <HintBar onExpand={expand} disabled={collapsing || imploding || ordered.length === 0} />
+          <BarHandle
+            onExpand={expand}
+            disabled={imploding || ordered.length === 0}
+            sliding={collapsing}
+            slideDistance={null /* CSS variable default */}
+          />
         </div>
         <div className="mm-stack-list">
           {/* Tools row — anchored at the top of the list area, OUTSIDE the
@@ -669,10 +907,14 @@ function useOrbitalPositions(nodes, stageRef) {
     };
 
     const pos = nodes.map((node, i) => {
-      const baseAngle = (i / n) * Math.PI * 2;
-      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / n) * 0.6;
-      const radiusJitter = (rand(i, 2) - 0.5) * 60;
-      const angle = baseAngle + angleJitter - Math.PI / 2; // start at top
+      // Fan layout — bottom half only. Angles span 0..π in screen coords
+      // (right semicircle), which is the visual bottom half because the
+      // y-axis grows downward.  We sub-divide (n+1) evenly so the first
+      // and last node aren't pinned at the exact 3 / 9 o'clock points.
+      const baseAngle = ((i + 1) / (n + 1)) * Math.PI;
+      const angleJitter = (rand(i, 1) - 0.5) * (Math.PI / (n + 1)) * 0.6;
+      const radiusJitter = (rand(i, 2) - 0.5) * 50;
+      const angle = baseAngle + angleJitter; // 0..π
       const radius = baseR + radiusJitter;
       let x = cx + Math.cos(angle) * radius;
       let y = cy + Math.sin(angle) * radius;
@@ -905,7 +1147,6 @@ function formatResponseText(entry) {
 
 // ─── App ───────────────────────────────────────────────────
 const STACK_LS_KEY = 'lattice.responseStack.v2';
-const COLLAPSE_DURATION_MS = 520;
 const IMPLODE_DURATION_MS = 440;
 
 function loadPersistedStack() {
@@ -939,9 +1180,23 @@ function HeroMindmap() {
   const [draft, setDraft] = React.useState('');
   const [currentPrompt, setCurrentPrompt] = React.useState('');
   const [responses, setResponses] = React.useState(initialStack);
+  const stageRef = React.useRef(null);
+  const [stageRect, setStageRect] = React.useState({ w: 0, h: 0 });
+
+  React.useEffect(() => {
+    if (!stageRef.current) return;
+    const update = () => {
+      const r = stageRef.current.getBoundingClientRect();
+      setStageRect({ w: r.width, h: r.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(stageRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   const newest = responses[responses.length - 1] || null;
-  const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || '#f5a25b') : '#f5a25b';
+  const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
 
   const submit = async () => {
     const q = draft.trim();
@@ -1000,14 +1255,15 @@ function HeroMindmap() {
     }
   };
 
-  // Big-bang expand. We flip to 'collapsing' first; the response view's
-  // .collapsing styles animate the stack toward center. After the animation
-  // settles we switch to 'mindmap' so the burst stage mounts and its cards
-  // animate outward from center.
+  // The catalyst sequence: bar slides → tokens collide → B shatters →
+  // fountain settles. The CatalystOverlay drives the visuals from a single
+  // animation timeline (`COLLAPSE_TIMELINE`). At the end (~1900 ms) we
+  // switch to the mindmap phase where the settled nodes mount as real
+  // OrbitalNode components in a fan layout.
   const expand = () => {
     if (phase !== 'response') return;
     setPhase('collapsing');
-    setTimeout(() => setPhase('mindmap'), COLLAPSE_DURATION_MS);
+    setTimeout(() => setPhase('mindmap'), COLLAPSE_TIMELINE.total);
   };
   // Reverse: implode the burst, then re-materialize the stack.
   const collapse = () => {
@@ -1049,7 +1305,12 @@ function HeroMindmap() {
 
       <Sidebar phase={phase} latestResponse={newest} />
 
-      <div className="mm-stage" data-phase={phase} style={{ '--accent': accent }}>
+      <div
+        ref={stageRef}
+        className="mm-stage"
+        data-phase={phase}
+        style={{ '--accent': accent }}
+      >
         {phase === 'idle' && (
           <IdleView draft={draft} setDraft={setDraft} submit={submit} />
         )}
@@ -1060,6 +1321,13 @@ function HeroMindmap() {
           <ResponseStackView
             draft={draft} setDraft={setDraft} submit={submit}
             responses={responses} expand={expand} reset={reset} phase={phase}
+          />
+        )}
+        {phase === 'collapsing' && (
+          <CatalystOverlay
+            newest={newest}
+            stageRect={stageRect}
+            slideDistance={stageRect.h ? stageRect.h * 0.36 : 200}
           />
         )}
         {phase === 'mindmap' && (

@@ -1,15 +1,37 @@
-/* hero-mindmap.css — all styles for the dynamic mindmap flow. */
+/* lattice.css — Quantum-lab visual system for the multi-agent web UI.
+   Cool dark slate, single ice-blue accent, instrument-panel monospace
+   chrome, refined display grotesque. */
 
 :root {
-  --mm-bg: #0a0a0c;
-  --mm-fg: #f5f3ef;
-  --mm-fg-dim: rgba(245,243,239,0.6);
-  --mm-fg-faint: rgba(245,243,239,0.4);
-  --mm-line: rgba(245,243,239,0.08);
-  --mm-line-strong: rgba(245,243,239,0.16);
-  --mm-card-bg: rgba(15,14,18,0.85);
-  --accent: #f5a25b;
-  --mm-sidebar-w: 300px;
+  /* Surfaces */
+  --mm-bg:           oklch(0.125 0.012 245);
+  --mm-bg-deeper:    oklch(0.09  0.012 245);
+  --mm-card-bg:      oklch(0.17  0.014 245 / 0.62);
+  --mm-card-elev:    oklch(0.20  0.016 245 / 0.78);
+
+  /* Text */
+  --mm-fg:           oklch(0.97  0.003 245);
+  --mm-fg-dim:       oklch(0.72  0.005 245);
+  --mm-fg-faint:     oklch(0.48  0.008 245);
+
+  /* Hairlines */
+  --mm-line:         oklch(1 0 0 / 0.06);
+  --mm-line-strong:  oklch(1 0 0 / 0.14);
+
+  /* Accent — single ice-blue. Used VERY sparingly so it always reads as
+     "active" or "energized". */
+  --accent:          oklch(0.82 0.14 230);
+  --accent-soft:     oklch(0.82 0.14 230 / 0.5);
+  --accent-faint:    oklch(0.82 0.14 230 / 0.18);
+
+  /* Type families */
+  --mm-font-display: 'Bricolage Grotesque', 'Geist', system-ui, sans-serif;
+  --mm-font-body:    'Geist', system-ui, sans-serif;
+  --mm-font-mono:    'Geist Mono', ui-monospace, monospace;
+
+  /* Layout */
+  --mm-sidebar-w: 280px;
+  --mm-nav-h:     56px;
 }
 
 .mm-root, .mm-root * { box-sizing: border-box; }
@@ -18,85 +40,122 @@
   background: var(--mm-bg);
   color: var(--mm-fg);
   position: relative;
-  /* `clip` is stricter than `hidden` — disallows programmatic scrolling too.
-     We rely on this because focusing the bottom-pinned composer would
-     otherwise call scrollIntoView, push the root, and pull the hint bar off
-     the top of the viewport. */
+  /* `clip` is stricter than `hidden` — disallows programmatic scrolling too. */
   overflow: clip;
-  font-family: 'Geist', system-ui, sans-serif;
+  font-family: var(--mm-font-body);
+  font-feature-settings: 'ss01', 'cv01';
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
 }
 
-.mono { font-family: 'Geist Mono', ui-monospace, monospace; }
+.mono { font-family: var(--mm-font-mono); }
 
-/* ── Background layers ───────────────────────────────── */
-.mm-aurora { position: absolute; inset: -15%; filter: blur(80px) saturate(140%);
-  opacity: 0.45; pointer-events: none; transition: filter 0.6s ease; }
+/* ── Background atmospherics ─────────────────────────────
+   A single ultra-soft cool gradient mesh and a precise grid
+   underlay — the look of a high-end CAD plane, not a club. */
+.mm-aurora {
+  position: absolute; inset: -10%;
+  pointer-events: none; opacity: 0.85;
+  filter: blur(100px);
+}
 .mm-aurora::before, .mm-aurora::after {
-  content: ''; position: absolute; border-radius: 50%; mix-blend-mode: screen;
+  content: ''; position: absolute; border-radius: 50%;
+  mix-blend-mode: screen;
 }
 .mm-aurora::before {
-  width: 45%; height: 65%; left: 20%; top: 5%;
-  background: radial-gradient(circle, color-mix(in oklch, var(--accent) 90%, transparent) 0%, transparent 60%);
-  animation: mmdrift 28s ease-in-out infinite;
+  width: 55%; height: 70%; left: 22%; top: -5%;
+  background: radial-gradient(circle,
+    oklch(0.5 0.06 235 / 0.7) 0%,
+    transparent 65%);
+  animation: mmdrift 38s ease-in-out infinite;
 }
 .mm-aurora::after {
-  width: 40%; height: 55%; right: -5%; top: 35%;
-  background: radial-gradient(circle, oklch(0.74 0.17 320) 0%, transparent 60%);
-  animation: mmdrift 34s ease-in-out infinite reverse;
+  width: 45%; height: 55%; right: -5%; top: 35%;
+  background: radial-gradient(circle,
+    oklch(0.45 0.05 215 / 0.55) 0%,
+    transparent 60%);
+  animation: mmdrift 46s ease-in-out infinite reverse;
 }
 @keyframes mmdrift {
   0%,100% { transform: translate(0,0) scale(1); }
-  50% { transform: translate(6%,-4%) scale(1.12); }
+  50%     { transform: translate(4%,-3%) scale(1.08); }
 }
 
-.mm-scan { position: absolute; inset: 0; pointer-events: none;
-  background: repeating-linear-gradient(0deg, rgba(255,255,255,0.02), rgba(255,255,255,0.02) 1px, transparent 1px, transparent 3px);
-  mix-blend-mode: overlay; opacity: 0.4; }
-.mm-vignette { position: absolute; inset: 0; pointer-events: none;
-  background: radial-gradient(ellipse at 60% 50%, transparent 20%, rgba(10,10,12,0.85) 92%); }
+/* Fine 32-px grid underlay — a quiet schematic backdrop. */
+.mm-scan {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, oklch(1 0 0 / 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(1 0 0 / 0.025) 1px, transparent 1px);
+  background-size: 64px 64px;
+  background-position: 50% 50%;
+  mask-image: radial-gradient(ellipse at 60% 50%, rgba(0,0,0,1) 0%, rgba(0,0,0,0) 80%);
+  -webkit-mask-image: radial-gradient(ellipse at 60% 50%, rgba(0,0,0,1) 0%, rgba(0,0,0,0) 80%);
+  opacity: 0.7;
+}
+.mm-vignette {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at 60% 45%, transparent 30%, var(--mm-bg-deeper) 95%);
+}
 
 .mm-canvas { position: absolute; inset: 0; z-index: 1; }
 
 /* ── Nav ─────────────────────────────────────────────── */
 .mm-nav {
   position: absolute; top: 0; left: 0; right: 0;
+  height: var(--mm-nav-h);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 22px 32px; z-index: 5;
-  font-family: 'Geist Mono', monospace; font-size: 12px;
+  padding: 0 32px; z-index: 5;
+  font-family: var(--mm-font-mono); font-size: 11px;
   color: var(--mm-fg-dim);
+  border-bottom: 0.5px solid var(--mm-line);
+  background: linear-gradient(180deg,
+    oklch(0.12 0.012 245 / 0.5),
+    oklch(0.12 0.012 245 / 0));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 .mm-brand {
-  display: flex; align-items: center; gap: 10px;
-  font-family: 'Geist', sans-serif; font-size: 15px; font-weight: 500;
-  color: var(--mm-fg); letter-spacing: -0.01em;
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--mm-font-display);
+  font-size: 14px; font-weight: 500;
+  font-variation-settings: "opsz" 14, "wght" 500;
+  color: var(--mm-fg); letter-spacing: -0.015em;
 }
-.mm-brand svg { width: 22px; height: 22px; }
+.mm-brand svg { width: 18px; height: 18px; color: var(--accent); }
+
 .mm-status {
-  display: inline-flex; align-items: center; gap: 7px;
-  font-size: 11px; padding: 5px 10px;
-  border: 0.5px solid var(--mm-line); border-radius: 999px;
-  background: rgba(255,255,255,0.015);
-  letter-spacing: 0.05em;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 10px; padding: 5px 10px;
+  border: 0.5px solid var(--mm-line); border-radius: 4px;
+  background: oklch(1 0 0 / 0.018);
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums;
 }
 .mm-status i {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: oklch(0.72 0.18 145);
-  box-shadow: 0 0 8px oklch(0.72 0.18 145 / 0.7);
-  animation: mmpulse 2s ease-in-out infinite;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-soft);
+  animation: mmpulse 2.4s ease-in-out infinite;
 }
-@keyframes mmpulse { 50% { opacity: 0.4; } }
+@keyframes mmpulse { 50% { opacity: 0.35; } }
 
 /* ── Sidebar ─────────────────────────────────────────── */
 .mm-sidebar {
   position: absolute; left: 0; top: 0; bottom: 0;
   width: var(--mm-sidebar-w); z-index: 4;
-  padding: 90px 22px 22px;
+  padding: calc(var(--mm-nav-h) + 24px) 24px 24px;
   border-right: 0.5px solid var(--mm-line);
-  background: linear-gradient(180deg, rgba(15,14,18,0.7), rgba(10,10,12,0.6));
+  background:
+    linear-gradient(180deg,
+      oklch(0.13 0.012 245 / 0.65),
+      oklch(0.10 0.012 245 / 0.55));
   backdrop-filter: blur(16px);
-  display: flex; flex-direction: column; gap: 22px;
-  font-family: 'Geist Mono', monospace;
+  -webkit-backdrop-filter: blur(16px);
+  display: flex; flex-direction: column; gap: 24px;
+  font-family: var(--mm-font-mono);
   overflow: hidden;
 }
 .mm-section { display: flex; flex-direction: column; gap: 10px; }
@@ -117,10 +176,13 @@
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--c); box-shadow: 0 0 8px var(--c);
 }
-.mm-agent-row .ext { color: rgba(245,243,239,0.35); }
-.mm-agent-row .stat { font-size: 11px; color: oklch(0.72 0.18 145); }
+.mm-agent-row .ext { color: var(--mm-fg-faint); opacity: 0.5; }
+.mm-agent-row .stat {
+  font-size: 10px; color: var(--mm-fg-dim);
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
 .mm-agent-row.active .stat {
-  color: oklch(0.78 0.16 52);
+  color: var(--accent);
   animation: mmblink 1.4s steps(2) infinite;
 }
 @keyframes mmblink { 50% { opacity: 0.45; } }
@@ -128,19 +190,34 @@
 .mm-gauge {
   padding: 12px 14px 14px;
   border: 0.5px solid var(--mm-line-strong);
-  border-radius: 12px; background: rgba(255,255,255,0.018);
+  border-radius: 4px;
+  background: oklch(1 0 0 / 0.018);
 }
 .mm-gauge-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-.mm-gauge-num { font-size: 20px; font-weight: 500; color: var(--mm-fg);
-  letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.mm-gauge-of { font-size: 11px; color: var(--mm-fg-faint); letter-spacing: 0.04em; margin-left: 4px; }
-.mm-gauge-pct { font-size: 11px; color: oklch(0.78 0.16 52); letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
-.mm-gauge-bar { height: 6px; border-radius: 999px; background: rgba(245,243,239,0.06);
-  overflow: hidden; position: relative; }
-.mm-gauge-fill { height: 100%;
-  background: linear-gradient(90deg, oklch(0.78 0.16 52), oklch(0.78 0.16 22));
+.mm-gauge-num {
+  font-family: var(--mm-font-display);
+  font-variation-settings: "opsz" 24, "wght" 400;
+  font-size: 22px; font-weight: 400; color: var(--mm-fg);
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+}
+.mm-gauge-of { font-size: 10px; color: var(--mm-fg-faint); letter-spacing: 0.06em; margin-left: 6px; text-transform: uppercase; }
+.mm-gauge-pct {
+  font-size: 10px; color: var(--accent);
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+}
+.mm-gauge-bar {
+  height: 3px; border-radius: 999px;
+  background: oklch(1 0 0 / 0.06);
+  overflow: hidden; position: relative;
+}
+.mm-gauge-fill {
+  height: 100%;
+  background: var(--accent);
   border-radius: inherit;
-  box-shadow: 0 0 12px oklch(0.78 0.16 52 / 0.6);
+  box-shadow: 0 0 8px var(--accent-soft);
   transition: width 0.7s cubic-bezier(0.2,0.7,0.2,1);
   position: relative;
 }
@@ -170,9 +247,11 @@
 
 /* ── Stage ───────────────────────────────────────────── */
 .mm-stage {
-  position: absolute; left: var(--mm-sidebar-w); top: 64px; right: 0; bottom: 0;
+  position: absolute;
+  left: var(--mm-sidebar-w); top: var(--mm-nav-h);
+  right: 0; bottom: 0;
   z-index: 2;
-  padding: 24px 40px 32px;
+  padding: 32px 48px 36px;
   overflow: hidden;
 }
 .mm-phase {
@@ -182,123 +261,167 @@
 }
 
 /* ── Idle (hero) ─────────────────────────────────────── */
-.mm-phase-idle { justify-content: center; gap: 28px; padding-bottom: 60px; }
-.mm-hero { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
+.mm-phase-idle { justify-content: center; gap: 36px; padding-bottom: 60px; }
+.mm-hero {
+  display: flex; flex-direction: column; align-items: center; gap: 20px;
+  text-align: center;
+}
 .mm-eyebrow {
-  font-family: 'Geist Mono', monospace; font-size: 12px;
-  display: inline-flex; gap: 8px; align-items: center;
-  padding: 6px 12px; border-radius: 999px;
-  border: 0.5px solid var(--mm-line-strong);
-  background: rgba(255,255,255,0.015);
+  font-family: var(--mm-font-mono); font-size: 10.5px;
+  display: inline-flex; gap: 10px; align-items: center;
+  padding: 6px 12px; border-radius: 4px;
+  border: 0.5px solid var(--mm-line);
+  background: oklch(1 0 0 / 0.018);
   color: var(--mm-fg-dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
 }
 .mm-eyebrow .mm-prefix { color: var(--accent); font-weight: 500; }
 .mm-eyebrow .dim { color: var(--mm-fg-faint); }
 .mm-eyebrow .sep { width: 1px; height: 10px; background: var(--mm-line-strong); margin: 0 2px; }
-.mm-eyebrow .ok-dot { width: 6px; height: 6px; border-radius: 50%;
-  background: oklch(0.72 0.18 145); box-shadow: 0 0 8px oklch(0.72 0.18 145 / 0.7);
-  animation: mmpulse 2s ease-in-out infinite; }
-.mm-eyebrow .caret { width: 6px; height: 12px; background: var(--accent);
-  animation: mmcaret 1.05s steps(2) infinite; }
+.mm-eyebrow .ok-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent-soft);
+  animation: mmpulse 2.4s ease-in-out infinite;
+}
+.mm-eyebrow .caret {
+  width: 5px; height: 10px; background: var(--accent);
+  animation: mmcaret 1.05s steps(2) infinite;
+}
 @keyframes mmcaret { 50% { opacity: 0; } }
 
 .mm-h1 {
-  font-size: 56px; font-weight: 500; line-height: 1; letter-spacing: -0.04em;
-  margin: 4px 0 0; max-width: 18ch; color: var(--mm-fg);
+  font-family: var(--mm-font-display);
+  font-variation-settings: "opsz" 96, "wght" 400;
+  font-size: clamp(40px, 6.4vw, 76px);
+  font-weight: 400; line-height: 0.96;
+  letter-spacing: -0.045em;
+  margin: 0;
+  max-width: 16ch;
+  color: var(--mm-fg);
+  text-wrap: balance;
 }
 .mm-h1 em {
-  font-family: 'Instrument Serif', serif; font-style: italic; font-weight: 400;
-  background: linear-gradient(120deg, var(--mm-fg) 0%, var(--accent) 45%, oklch(0.74 0.17 320) 70%, var(--mm-fg) 100%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: mmshimmer 9s ease-in-out infinite;
+  font-style: normal;
+  /* Italic axis on Bricolage gives a beautifully cool oblique. */
+  font-variation-settings: "opsz" 96, "wght" 400, "ital" 1;
+  font-feature-settings: 'ss01';
+  color: var(--accent);
+  /* No gradient shimmer — too "AI aesthetic". A static accent feels more
+     deliberate, like a wordmark in a brand book. */
 }
-@keyframes mmshimmer { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
 
-.mm-sub { font-size: 15px; line-height: 1.55; color: var(--mm-fg-dim);
-  max-width: 52ch; margin: 0; }
+.mm-sub {
+  font-size: 14.5px; line-height: 1.55;
+  color: var(--mm-fg-dim);
+  max-width: 50ch; margin: 0;
+  text-wrap: pretty;
+}
 
-.mm-composer-wrap { width: 100%; max-width: 560px; }
-.mm-template-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.mm-composer-wrap { width: 100%; max-width: 580px; }
+.mm-template-row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
 .mm-template-hint {
-  display: inline-flex; gap: 6px; align-items: center;
-  padding: 5px 10px; border-radius: 999px;
-  font-family: 'Geist Mono', monospace; font-size: 10.5px;
-  letter-spacing: 0.06em; text-transform: uppercase;
+  display: inline-flex; gap: 8px; align-items: center;
+  padding: 5px 10px; border-radius: 3px;
+  font-family: var(--mm-font-mono); font-size: 9.5px;
+  letter-spacing: 0.16em; text-transform: uppercase;
   border: 0.5px solid var(--mm-line);
-  background: rgba(255,255,255,0.015);
+  background: oklch(1 0 0 / 0.018);
   color: var(--mm-fg-faint);
 }
 .mm-template-hint i {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--c);
-  box-shadow: 0 0 6px var(--c);
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 5px var(--c);
 }
 
-/* ── Composer (shared) ───────────────────────────────── */
+/* ── Composer (shared) ─────────────────────────────────
+   No vibrant gradient frame anymore. Hairline border, subtle
+   inner glow when focused, monospace chrome on the prefix bar. */
 .mm-composer {
-  padding: 1px; border-radius: 18px;
-  background: linear-gradient(135deg, rgba(245,162,91,0.55), rgba(245,243,239,0.06) 50%, rgba(192,139,255,0.5));
-  box-shadow: 0 24px 80px -10px rgba(245,162,91,0.3), 0 8px 24px rgba(0,0,0,0.5);
-  transition: transform 0.5s cubic-bezier(0.2,0.7,0.2,1), box-shadow 0.5s ease;
+  padding: 0; border-radius: 8px;
+  background: var(--mm-card-elev);
+  border: 0.5px solid var(--mm-line-strong);
+  box-shadow:
+    0 0 0 0 oklch(0 0 0 / 0),
+    0 12px 36px -16px oklch(0 0 0 / 0.5);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.5s cubic-bezier(0.2,0.7,0.2,1);
 }
-.mm-composer.compact {
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  transform: scale(0.92);
+.mm-composer:focus-within {
+  border-color: var(--accent-soft);
+  box-shadow:
+    0 0 0 4px var(--accent-faint),
+    0 12px 36px -16px oklch(0 0 0 / 0.6);
 }
 .mm-composer-in {
-  background: rgba(12,11,14,0.92);
-  border-radius: 17px;
-  padding: 14px 14px 12px;
-  display: flex; flex-direction: column; gap: 10px;
+  background: transparent;
+  border-radius: 8px;
+  padding: 12px 14px 10px;
+  display: flex; flex-direction: column; gap: 8px;
 }
 .mm-composer-prefix {
-  font-family: 'Geist Mono', monospace; font-size: 10px;
+  font-family: var(--mm-font-mono); font-size: 9.5px;
   color: var(--mm-fg-faint);
-  letter-spacing: 0.06em;
-  display: flex; justify-content: space-between;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  display: flex; justify-content: space-between; align-items: center;
 }
 .mm-composer-prefix .live {
-  color: oklch(0.72 0.18 145);
-  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--accent);
+  display: inline-flex; align-items: center; gap: 6px;
 }
 .mm-composer-prefix .live::before {
-  content: ''; width: 5px; height: 5px; border-radius: 50%;
+  content: ''; width: 4px; height: 4px; border-radius: 50%;
   background: currentColor; box-shadow: 0 0 5px currentColor;
 }
 .mm-composer textarea {
   width: 100%;
   background: transparent; border: 0; outline: 0; resize: none;
   color: var(--mm-fg);
-  font-family: 'Geist', sans-serif;
-  font-size: 15px; line-height: 1.5;
-  padding: 4px 2px;
-  min-height: 30px;
+  font-family: var(--mm-font-body);
+  font-size: 14.5px; line-height: 1.5;
+  padding: 2px 2px;
+  min-height: 28px;
+  font-feature-settings: 'ss01';
 }
-.mm-composer textarea::placeholder { color: var(--mm-fg-faint); }
+.mm-composer textarea::placeholder {
+  color: var(--mm-fg-faint);
+  font-style: normal;
+}
 .mm-composer-bar {
   display: flex; justify-content: space-between; align-items: center;
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 0.5px solid var(--mm-line);
 }
 .mm-model {
-  font-family: 'Geist Mono', monospace; font-size: 10.5px;
+  font-family: var(--mm-font-mono); font-size: 9.5px;
   color: var(--mm-fg-dim);
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 .mm-model i {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 5px; height: 5px; border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 6px color-mix(in oklch, var(--accent) 70%, transparent);
+  box-shadow: 0 0 6px var(--accent-soft);
 }
 .mm-send {
-  width: 32px; height: 32px; border-radius: 10px; border: 0;
-  background: var(--accent); color: #0a0a0c;
+  width: 32px; height: 32px; border-radius: 6px; border: 0;
+  background: var(--accent); color: var(--mm-bg-deeper);
   display: inline-flex; align-items: center; justify-content: center;
-  cursor: pointer; transition: transform 0.15s ease, opacity 0.15s ease;
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.2s ease;
+  box-shadow: 0 0 0 0 var(--accent-soft);
 }
-.mm-send:hover:not(:disabled) { transform: scale(1.06); }
-.mm-send:disabled { opacity: 0.4; cursor: not-allowed; }
-.mm-send svg { width: 15px; height: 15px; }
+.mm-send:hover:not(:disabled) {
+  transform: scale(1.04);
+  box-shadow: 0 0 18px var(--accent-soft);
+}
+.mm-send:disabled { opacity: 0.35; cursor: not-allowed; }
+.mm-send svg { width: 14px; height: 14px; }
 
 /* ── Prompt + Response cards ─────────────────────────── */
 .mm-prompt-card, .mm-response-card {
@@ -418,12 +541,12 @@
 /* ── Loading dispatch ────────────────────────────────── */
 .mm-phase-loading { justify-content: center; gap: 18px; }
 .mm-routing-pill {
-  font-family: 'Geist Mono', monospace; font-size: 10.5px;
-  color: oklch(0.78 0.16 52);
-  padding: 3px 8px; border-radius: 999px;
-  background: oklch(0.78 0.16 52 / 0.1);
-  border: 0.5px solid oklch(0.78 0.16 52 / 0.3);
-  letter-spacing: 0.08em; text-transform: uppercase;
+  font-family: var(--mm-font-mono); font-size: 10px;
+  color: var(--accent);
+  padding: 3px 8px; border-radius: 4px;
+  background: var(--accent-faint);
+  border: 0.5px solid var(--accent-soft);
+  letter-spacing: 0.14em; text-transform: uppercase;
   animation: mmblink 1.2s steps(2) infinite;
 }
 .mm-dispatch { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 360px; }
@@ -552,16 +675,17 @@
 }
 .mm-stack-composer-slot .mm-composer { width: 100%; max-width: 640px; }
 
-/* B card — flatter, terminal-feel. No left rail. Tighter padding. Prompt
-   echo is a faint mono one-liner above the body. */
+/* B card — instrument-panel readout. Cool surface, hairline border,
+   accent-tinted strip on the newest, generous tabular numerics. */
 .mm-stacked-response {
   position: relative;
   width: 100%; max-width: 640px;
-  border-radius: 10px;
-  background: rgba(15, 14, 18, 0.72);
+  border-radius: 6px;
+  background: var(--mm-card-bg);
   border: 0.5px solid var(--mm-line-strong);
-  padding: 9px 12px 9px 12px;
-  backdrop-filter: blur(12px);
+  padding: 10px 14px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   opacity: 1;
   transform-origin: bottom center;
   transition:
@@ -569,158 +693,236 @@
     transform 0.42s cubic-bezier(0.2, 0.7, 0.2, 1),
     border-color 0.3s ease,
     filter 0.3s ease;
-  animation: mmStackedIn 0.46s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation: mmStackedIn 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 @keyframes mmStackedIn {
-  0%   { opacity: 0; transform: translateY(48px) scale(0.86); }
+  0%   { opacity: 0; transform: translateY(48px) scale(0.88); }
   60%  { opacity: 1; }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 .mm-stacked-response.older {
-  opacity: 0.5;
-  filter: saturate(0.55);
-  transform: scale(0.95);
+  opacity: 0.45;
+  filter: saturate(0.4) brightness(0.85);
+  transform: scale(0.96);
 }
 .mm-stacked-response.older:hover {
-  opacity: 0.82;
-  filter: saturate(0.95);
-  transform: scale(0.98);
+  opacity: 0.85;
+  filter: saturate(0.85) brightness(0.98);
 }
 .mm-stacked-response.newest {
-  border-color: color-mix(in oklch, var(--accent) 26%, var(--mm-line-strong));
+  border-color: var(--accent-soft);
   box-shadow:
-    0 18px 40px -22px color-mix(in oklch, var(--accent) 30%, transparent),
-    0 4px 14px rgba(0, 0, 0, 0.35);
+    0 0 0 1px var(--accent-faint),
+    0 16px 40px -20px oklch(0 0 0 / 0.6);
+}
+/* Subtle accent rule on the newest — a fine line at top, like a chart
+   readout heading. */
+.mm-stacked-response.newest::before {
+  content: '';
+  position: absolute; top: -0.5px; left: 12px; right: 12px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent, var(--accent), transparent);
+  opacity: 0.7;
 }
 .mm-stacked-meta {
-  display: flex; justify-content: space-between; align-items: center; gap: 10px;
-  margin-bottom: 4px;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-bottom: 6px;
 }
 .mm-stacked-prompt {
-  font-family: 'Geist Mono', monospace;
-  font-size: 10px; letter-spacing: 0.02em;
+  font-family: var(--mm-font-mono);
+  font-size: 10px; letter-spacing: 0.06em;
   color: var(--mm-fg-faint);
+  text-transform: uppercase;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   flex: 1; min-width: 0;
 }
 .mm-stacked-body {
-  font-size: 13.5px; line-height: 1.5;
+  font-size: 13.5px; line-height: 1.55;
   color: var(--mm-fg);
   text-wrap: pretty;
 }
 .mm-stacked-foot {
   display: flex; justify-content: flex-end; align-items: center;
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 0.5px dashed var(--mm-line);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--mm-line);
 }
 .mm-stacked-foot .mm-copy {
-  /* Smaller copy chip to match the tighter card */
-  padding: 2px 6px;
+  padding: 2px 8px;
   font-size: 9.5px;
-  border-radius: 6px;
-}
-
-/* ── Hint bar (sits at top of stack) ─────────────────── */
-.mm-hint-bar {
-  position: relative;
-  display: inline-flex; align-items: center; gap: 10px;
-  padding: 7px 16px 8px;
-  border-radius: 999px;
-  background: rgba(15, 14, 18, 0.6);
-  border: 0.5px solid var(--mm-line-strong);
-  color: var(--mm-fg-faint);
-  font-family: 'Geist Mono', monospace;
-  font-size: 10.5px;
+  border-radius: 3px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+/* ── Bar handle — the catalyst. ──────────────────────────
+   Small subtle white pill at top of canvas. Hover expands and
+   illuminates. Click or pull-down triggers the choreography. */
+.mm-bar-handle {
+  position: relative;
+  width: 56px; height: 5px;
+  border-radius: 999px;
+  border: 0;
+  padding: 0;
+  background: oklch(1 0 0 / 0.42);
   cursor: grab;
-  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease,
-    box-shadow 0.2s ease, transform 0.18s ease;
+  transition:
+    width 240ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    background 240ms ease,
+    box-shadow 240ms ease,
+    transform 240ms ease;
   touch-action: none;
-  backdrop-filter: blur(10px);
-  user-select: none;
 }
-.mm-hint-bar:hover:not(.disabled) {
-  color: var(--mm-fg-dim);
-  border-color: color-mix(in oklch, var(--accent) 40%, var(--mm-line-strong));
-  background: color-mix(in oklch, var(--accent) 6%, rgba(15, 14, 18, 0.6));
-  box-shadow: 0 0 24px -6px color-mix(in oklch, var(--accent) 30%, transparent);
+.mm-bar-handle::before {
+  /* Subtle outer halo on hover only */
+  content: '';
+  position: absolute; inset: -4px;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0;
+  filter: blur(10px);
+  transition: opacity 240ms ease;
+  z-index: -1;
 }
-.mm-hint-bar:active:not(.disabled) { cursor: grabbing; }
-.mm-hint-bar.disabled { opacity: 0.4; cursor: default; }
-.mm-hint-rail {
-  width: 28px; height: 2px; border-radius: 999px;
-  background: color-mix(in oklch, var(--accent) 55%, transparent);
-  box-shadow: 0 0 6px color-mix(in oklch, var(--accent) 55%, transparent);
+.mm-bar-handle:hover:not(.disabled) {
+  width: 88px;
+  background: oklch(1 0 0 / 0.92);
+  box-shadow: 0 0 18px oklch(1 0 0 / 0.18);
 }
-.mm-hint-glyph { display: inline-flex; gap: 3px; }
-.mm-hint-glyph i {
-  width: 3.5px; height: 3.5px; border-radius: 50%;
-  background: currentColor;
-  opacity: 0.7;
-  animation: mmHintPulse 1.6s ease-in-out infinite;
+.mm-bar-handle:hover::before { opacity: 0.32; }
+.mm-bar-handle:active:not(.disabled) { cursor: grabbing; }
+.mm-bar-handle.disabled { opacity: 0.25; cursor: default; }
+
+/* Pull progress — a thin line that grows beneath the bar during drag. */
+.mm-bar-progress {
+  position: absolute;
+  top: 12px; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 1px;
+  background: oklch(1 0 0 / 0.05);
+  border-radius: 999px; overflow: hidden;
 }
-.mm-hint-glyph i:nth-child(2) { animation-delay: 0.15s; }
-.mm-hint-glyph i:nth-child(3) { animation-delay: 0.3s; }
-@keyframes mmHintPulse {
-  0%, 100% { opacity: 0.35; transform: translateY(0); }
-  50%      { opacity: 1;    transform: translateY(2px); }
-}
-.mm-hint-arrow { display: inline-flex; }
-.mm-hint-arrow svg { width: 12px; height: 8px; }
-.mm-hint-progress {
-  position: absolute; left: 12px; right: 12px; bottom: 2px;
-  height: 1.5px; border-radius: 999px;
-  background: rgba(245, 243, 239, 0.04);
-  overflow: hidden;
-}
-.mm-hint-progress-fill {
+.mm-bar-progress-fill {
   height: 100%;
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent);
-  transition: width 0.1s linear;
+  transition: width 0.08s linear;
 }
 
-/* ── Big bang collapse — pre-burst singularity ───────── */
-/* When phase === 'collapsing', the whole stack converges toward the visual
-   center of the stage. The composer rises to center too. All responses
-   shrink/fade as they translate. The hint bar pulls in and brightens. */
-.mm-phase-response.collapsing {
+/* The bar-slide animation that fires when the user triggers expansion.
+   The handle glides down the Y axis toward the collision point. */
+.mm-bar-handle.sliding {
+  animation: mmBarSlide 420ms cubic-bezier(0.45, 0, 0.3, 1) forwards;
   pointer-events: none;
 }
-.mm-phase-response.collapsing .mm-stack-wrap {
-  animation: mmCollapseWrap 520ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+@keyframes mmBarSlide {
+  0% {
+    transform: translateY(0);
+    background: oklch(1 0 0 / 0.92);
+  }
+  85% {
+    transform: translateY(var(--bar-slide-distance, 30vh));
+    background: var(--accent);
+    width: 120px;
+    box-shadow: 0 0 24px var(--accent-soft);
+  }
+  100% {
+    transform: translateY(var(--bar-slide-distance, 30vh)) scaleX(0.15);
+    background: var(--accent);
+    width: 120px;
+    opacity: 0;
+  }
 }
-@keyframes mmCollapseWrap {
-  to { transform: scale(0.985); }
+
+/* ── Catalyst sequence — bar slide → collide → shatter → fountain ───
+   The bar handle's own slide animation lives in .mm-bar-handle.sliding.
+   Here we handle the existing stack fading out as the bar departs. */
+.mm-phase-response.collapsing { pointer-events: none; }
+.mm-phase-response.collapsing .mm-stack-list,
+.mm-phase-response.collapsing .mm-stack-composer-slot,
+.mm-phase-response.collapsing .mm-stack-tools-row {
+  animation: mmStackFadeOut 360ms ease forwards;
 }
-.mm-phase-response.collapsing .mm-stack-composer-slot {
-  animation: mmCollapseComposer 520ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
+@keyframes mmStackFadeOut {
+  to { opacity: 0; transform: scale(0.98); filter: blur(2px); }
 }
-@keyframes mmCollapseComposer {
-  0%   { transform: translateY(0) scale(1); }
-  55%  { transform: translateY(-22vh) scale(0.94); filter: brightness(1.15); }
-  100% { transform: translateY(-22vh) scale(0.4); opacity: 0; filter: brightness(1.4); }
+
+/* The overlay surface that hosts tokens, flash, particles, and trails. */
+.mm-catalyst-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
 }
-.mm-phase-response.collapsing .mm-stack-list .mm-stacked-response {
-  animation: mmCollapseCard 520ms cubic-bezier(0.55, 0, 0.4, 1) forwards;
-  /* Cards further from the singularity collapse with a touch more travel. */
-  animation-delay: calc(var(--stack-i, 0) * 18ms);
+
+/* Tokens — abstract A (square, accent) and B (circle, white) tokens that
+   fly horizontally inward at the bar's destination height. */
+.mm-collide-token {
+  position: absolute;
+  width: 36px; height: 36px;
+  transform: translate(-50%, -50%);
+  transition: opacity 100ms ease;
+  will-change: left, top, transform;
 }
-@keyframes mmCollapseCard {
-  0%   { transform: scale(1) translateY(0); opacity: 1; filter: blur(0); }
-  55%  { transform: scale(0.7) translateY(-6vh); opacity: 0.6; filter: blur(1px); }
-  100% { transform: scale(0.18) translateY(-2vh); opacity: 0; filter: blur(3px); }
+.mm-token-a {
+  background: var(--accent);
+  border-radius: 4px;
+  box-shadow:
+    0 0 18px var(--accent-soft),
+    0 0 0 1px oklch(1 0 0 / 0.05) inset;
 }
-.mm-phase-response.collapsing .mm-stack-hint-slot {
-  animation: mmCollapseHint 360ms ease-in forwards;
+.mm-token-b {
+  background: oklch(1 0 0 / 0.96);
+  border-radius: 50%;
+  box-shadow: 0 0 18px oklch(1 0 0 / 0.6);
 }
-@keyframes mmCollapseHint {
-  to { transform: translateY(-8px) scale(0.85); opacity: 0; }
+/* A as the post-collision anchor — slightly larger to read as "core". */
+.mm-anchor-a {
+  width: 56px; height: 56px;
+  border-radius: 8px;
+  animation: mmAnchorLand 220ms cubic-bezier(0.16, 0.7, 0.2, 1) both;
 }
-.mm-phase-response.collapsing .mm-stack-tools {
-  animation: mmCollapseHint 320ms ease-in forwards;
+@keyframes mmAnchorLand {
+  0%   { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+  60%  { opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+/* Impact flash — bright radial bloom on collision. */
+.mm-impact-flash {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 320px; height: 320px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    oklch(1 0 0 / 0.45) 0%,
+    var(--accent-soft) 30%,
+    transparent 65%);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+/* Particles — initial state is small white dots; they grow as they arc
+   downward. The CSS treats them as squares so they read as "embryonic
+   nodes" not rain droplets. */
+.mm-particle {
+  position: absolute;
+  border-radius: 3px;
+  background: oklch(1 0 0 / 0.95);
+  box-shadow:
+    0 0 12px oklch(1 0 0 / 0.5),
+    0 0 0 1px var(--accent-soft) inset;
+  will-change: left, top, transform, width, height;
+}
+
+/* Fountain trail SVG layer. The path's dash offset is animated by JS so
+   it reads as "drawing" along the trajectory. */
+.mm-fountain-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* ── Re-materialize on return from mindmap ──────────── */
