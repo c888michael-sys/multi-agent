@@ -8,10 +8,11 @@
  * them in tests would just rewrap on every UI change.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { startWebServer } from "../src/web/server.js";
+import type { ConversationPart } from "../src/tools/types.js";
 
 // ── Test doubles ─────────────────────────────────────────────────────────
 type Snap = {
@@ -36,6 +37,8 @@ function makeResolver(handler: (name: string, prompt: string) => Promise<string>
   // resolver's rosterDescription() for RoleOrchestrator planning.
   return {
     runRole: (name: string, prompt: string) => handler(name, prompt),
+    runRoleChat: (name: string, history: ConversationPart[]) =>
+      handler(name, JSON.stringify(history)),
     rosterDescription: () =>
       [
         "- orchestration: planning and synthesis",
@@ -66,12 +69,18 @@ function pickPort(): number {
 
 describe("web server", () => {
   let handles: Array<{ close: () => void }> = [];
+  let sessionDir: string;
+
+  beforeEach(() => {
+    sessionDir = mkdtempSync(join(tmpdir(), "multi-agent-web-sessions-"));
+  });
 
   afterEach(() => {
     for (const h of handles) {
       try { h.close(); } catch {/* ignore */}
     }
     handles = [];
+    rmSync(sessionDir, { recursive: true, force: true });
   });
 
   function spawn(opts: { snap?: Snap[]; handler?: (name: string, prompt: string) => Promise<string> } = {}) {
@@ -81,7 +90,7 @@ describe("web server", () => {
       { id: "groq:llama-70b", cooldownUntil: 0, successCount: 1, rateLimitCount: 0 },
     ]);
     const resolver = makeResolver(opts.handler ?? (async (_n, p) => `reply:${p}`));
-    const handle = startWebServer({ router, resolver, port });
+    const handle = startWebServer({ router, resolver, port, sessionStorageDir: sessionDir });
     handles.push(handle);
     return { handle, port, url: `http://localhost:${port}` };
   }
@@ -142,8 +151,26 @@ describe("web server", () => {
     expect(j.roles.orchestration.providerId).toBe("gemini:1");
     expect(j.roles.orchestration.successCount).toBe(3);
     expect(j.roles["action-structural"].providerId).toBe("groq:llama-70b");
-    // Reasoning isn't registered in the snapshot, so the role surfaces as { registered: false }
-    expect(j.roles.reasoning.registered).toBe(false);
+    // Reasoning's OpenRouter primary is absent, but Gemini is a registered fallback.
+    expect(j.roles.reasoning.providerId).toBe("gemini:1");
+    expect(j.roles.reasoning.fallback).toBe(true);
+  });
+
+  it("/api/usage.json marks a role temporarily unavailable when all candidates are cooling", async () => {
+    const future = Date.now() + 60_000;
+    const { url } = spawn({
+      snap: [
+        { id: "openrouter:deepseek-v4", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
+        { id: "gemini:1", cooldownUntil: future, successCount: 3, rateLimitCount: 1, remainingPct: 75 },
+        { id: "gemini:2", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
+        { id: "gemini:3", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
+      ],
+    });
+    const r = await fetch(`${url}/api/usage.json`);
+    expect(r.status).toBe(200);
+    const j: any = await r.json();
+    expect(j.roles.reasoning.status).toBe("temporarily-unavailable");
+    expect(j.roles.reasoning.cooling).toBe(true);
   });
 
   it("/api/complete 400s without prompt", async () => {
@@ -227,6 +254,45 @@ describe("web server", () => {
     expect(j.plan).toBe("single");
     expect(calls[0]!.name).toBe("orchestration");
     expect(calls[1]).toEqual({ name: "action-structural", prompt: "expand: hello world" });
+  });
+
+  it("/api/chat keeps conversation context across browser turns", async () => {
+    const histories: ConversationPart[][] = [];
+    const { url } = spawn({
+      handler: async (_name, prompt) => {
+        const history = JSON.parse(prompt) as ConversationPart[];
+        histories.push(history);
+        const lastUser = [...history].reverse().find((p) => p.kind === "user_text") as
+          | { text: string }
+          | undefined;
+        return JSON.stringify({
+          kind: "direct",
+          answer: lastUser?.text.includes("again")
+            ? "the previous topic was Apollo"
+            : "Apollo noted",
+        });
+      },
+    });
+
+    const first = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "browser-thread", message: "remember Apollo" }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "browser-thread", message: "what was that again?" }),
+    });
+    expect(second.status).toBe(200);
+    const j: any = await second.json();
+    expect(j.reply).toBe("the previous topic was Apollo");
+
+    const secondHistory = histories[1]!;
+    expect(secondHistory.some((p) => p.kind === "user_text" && p.text === "remember Apollo")).toBe(true);
+    expect(secondHistory.some((p) => p.kind === "model_text" && p.text === "Apollo noted")).toBe(true);
   });
 
   it("CORS preflight returns 204 when cors is enabled", async () => {

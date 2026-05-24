@@ -211,12 +211,23 @@ function markdownSections(text) {
   const raw = String(text || '').replace(/\r\n/g, '\n').trim();
   const headingRe = /^(#{1,4})\s+(.+)$/gm;
   const hits = [...raw.matchAll(headingRe)];
-  if (hits.length > 0) {
+  if (hits.length > 1) {
     return hits.slice(0, 6).map((m, i) => {
       const start = (m.index || 0) + m[0].length;
       const end = i + 1 < hits.length ? (hits[i + 1].index || raw.length) : raw.length;
       return { heading: cleanHeading(m[2]), body: raw.slice(start, end).trim() };
     }).filter((s) => s.heading || s.body);
+  }
+
+  const labelledSource = hits.length === 1
+    ? raw.slice((hits[0].index || 0) + hits[0][0].length).trim()
+    : raw;
+  const labelled = labelledSections(labelledSource);
+  if (labelled.length >= 2) return labelled.slice(0, 6);
+
+  if (hits.length === 1) {
+    const start = (hits[0].index || 0) + hits[0][0].length;
+    return [{ heading: cleanHeading(hits[0][2]), body: raw.slice(start).trim() }];
   }
 
   const chunks = raw
@@ -231,6 +242,37 @@ function markdownSections(text) {
     }));
   }
   return [{ heading: 'Overview', body: raw || 'No response text available.' }];
+}
+
+function labelledSections(raw) {
+  const lines = String(raw || '').split('\n');
+  const out = [];
+  let current = null;
+  const labelRe = /^\s*(?:(?:[-*]|\d+[.)])\s+)?(?:\*\*)?([^:*#\n]{3,70}?)(?:\*\*)?\s*(?::| - | — | – )\s*(.*)$/;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = trimmed.match(labelRe);
+    const label = m ? cleanHeading(m[1]) : '';
+    const rest = m ? (m[2] || '').trim() : '';
+    const looksLikeLabel = Boolean(
+      m &&
+      label.length >= 3 &&
+      label.length <= 64 &&
+      !/[.!?]$/.test(label) &&
+      !/^(http|https|note|source)$/i.test(label)
+    );
+
+    if (looksLikeLabel) {
+      if (current) out.push(current);
+      current = { heading: label, body: rest };
+    } else if (current) {
+      current.body = `${current.body}\n${trimmed}`.trim();
+    }
+  }
+  if (current) out.push(current);
+  return out.filter((s) => s.heading && s.body);
 }
 
 function firstCleanLine(text) {
@@ -249,6 +291,8 @@ function cleanHeading(text) {
 function cleanText(text) {
   return String(text || '')
     .replace(/```[\s\S]*?```/g, '')
+    .replace(/\$\$([\s\S]*?)\$\$/g, '$1')
+    .replace(/\$([^$\n]+)\$/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/^\s*(?:[-*]|\d+[.)])\s+/gm, '')
@@ -328,7 +372,8 @@ function sectionForIndex(sections, i) {
 function clampItems(items, min, max, fallback) {
   const clipped = (items || []).filter(Boolean).slice(0, max);
   if (clipped.length >= min) return clipped;
-  return [...clipped, ...(fallback || [])].slice(0, Math.max(min, clipped.length));
+  if (clipped.length > 0) return clipped;
+  return (fallback || []).slice(0, min);
 }
 
 // Polar helper

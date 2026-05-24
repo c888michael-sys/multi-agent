@@ -171,6 +171,9 @@
 }
 .mm-lbl::before { content: '// '; opacity: 0.5; }
 .mm-lbl > i { font-style: normal; color: var(--mm-fg-dim); font-size: 10px; letter-spacing: 0.05em; }
+.mm-lbl-sub {
+  margin-top: 4px;
+}
 
 .mm-agent-row {
   display: grid; grid-template-columns: 12px 1fr auto;
@@ -182,13 +185,33 @@
   background: var(--c); box-shadow: 0 0 8px var(--c);
 }
 .mm-agent-row .ext { color: var(--mm-fg-faint); opacity: 0.5; }
-.mm-agent-row .stat {
+.mm-agent-row .stat,
+.mm-agent-row .stat-live {
   font-size: 10px; color: var(--mm-fg-dim);
   letter-spacing: 0.1em; text-transform: uppercase;
 }
-.mm-agent-row.active .stat {
+.mm-agent-row.active .stat,
+.mm-agent-row.active .stat-live {
   color: var(--accent);
   animation: mmblink 1.4s steps(2) infinite;
+}
+.mm-agent-row .stat {
+  display: none;
+}
+.mm-agent-row .stat::after {
+  font-size: 10px;
+}
+.mm-agent-row.status-ready .stat::after { content: 'ready'; }
+.mm-agent-row.status-fallback-ready .stat::after { content: 'fallback ready'; }
+.mm-agent-row.status-unavailable .stat::after { content: 'unavailable'; }
+.mm-agent-row.status-temp-unavailable .stat::after { content: 'temp unavailable'; }
+.mm-agent-row.active .stat::after { content: 'routing...'; }
+.mm-agent-row.unavailable {
+  opacity: 0.62;
+}
+.mm-agent-row.unavailable .dot {
+  background: var(--mm-fg-faint);
+  box-shadow: none;
 }
 @keyframes mmblink { 50% { opacity: 0.45; } }
 
@@ -242,6 +265,13 @@
   border-radius: inherit; transition: width 0.7s cubic-bezier(0.2,0.7,0.2,1); }
 .mm-bar-row .num { text-align: right; font-variant-numeric: tabular-nums;
   color: rgba(245,243,239,0.7); }
+.mm-bar-row.unknown .fill {
+  width: 0 !important;
+  box-shadow: none;
+}
+.mm-bar-row.unknown .num {
+  color: var(--mm-fg-faint);
+}
 
 .mm-log { font-size: 10.5px; line-height: 1.7; color: rgba(245,243,239,0.42); }
 .mm-log .dim { color: rgba(245,243,239,0.32); }
@@ -949,6 +979,48 @@
 /* Tokens — small labeled text boxes. B says "OUTPUT" (the response that's
    about to shatter); A says "MINDMAP" (the anchor / aggregator). They fly
    in horizontally at the bar's destination height and collide at center. */
+.mm-catalyst-field {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  animation: mmCatalystField 1180ms ease-out 420ms both;
+}
+.mm-catalyst-field::before {
+  content: '';
+  width: min(62vw, 680px);
+  height: min(62vw, 680px);
+  border-radius: 50%;
+  border: 0.5px solid color-mix(in oklch, var(--accent) 32%, transparent);
+  background:
+    linear-gradient(90deg, transparent 49.8%, color-mix(in oklch, var(--accent) 24%, transparent) 50%, transparent 50.2%),
+    linear-gradient(0deg, transparent 49.8%, color-mix(in oklch, var(--accent) 24%, transparent) 50%, transparent 50.2%);
+  box-shadow:
+    0 0 42px color-mix(in oklch, var(--accent) 12%, transparent),
+    inset 0 0 42px color-mix(in oklch, var(--accent) 8%, transparent);
+}
+.mm-catalyst-field span {
+  position: absolute;
+  width: min(22vw, 230px);
+  height: min(22vw, 230px);
+  border-radius: 50%;
+  border: 0.5px solid color-mix(in oklch, var(--mm-fg) 18%, transparent);
+  animation: mmCatalystRing 760ms cubic-bezier(0.16, 0.7, 0.2, 1) both;
+}
+.mm-catalyst-field span:nth-child(2) { animation-delay: 120ms; }
+.mm-catalyst-field span:nth-child(3) { animation-delay: 240ms; }
+@keyframes mmCatalystField {
+  0% { opacity: 0; transform: scale(0.94); filter: blur(3px); }
+  28% { opacity: 1; filter: blur(0); }
+  100% { opacity: 0; transform: scale(1.06); filter: blur(2px); }
+}
+@keyframes mmCatalystRing {
+  0% { opacity: 0; transform: scale(0.25); }
+  35% { opacity: 0.65; }
+  100% { opacity: 0; transform: scale(2.7); }
+}
+
 .mm-collide-token {
   position: absolute;
   transform: translate(-50%, -50%);
@@ -2317,6 +2389,12 @@
   border-radius: 4px;
   background: oklch(1 0 0 / 0.055);
   color: var(--accent);
+}
+.mm-turn-prose mjx-container {
+  color: var(--mm-fg);
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
 }
 .mm-turn-prose pre {
   margin: 10px 0 12px;

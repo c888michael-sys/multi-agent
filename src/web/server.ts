@@ -22,6 +22,7 @@ import type { RoleResolver } from "../roles/resolver.js";
 import { ChatSession, listSessions } from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
 import { RoleOrchestrator } from "../agents/role-orchestrator.js";
+import { DEFAULT_ROLES } from "../roles/default-registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
@@ -46,6 +47,8 @@ export interface ServerOptions {
   port?: number;
   /** When true, allow cross-origin requests (browsers from other origins). Default false. */
   cors?: boolean;
+  /** Override chat-session storage directory. Used by tests; default is ~/.multi-agent/sessions. */
+  sessionStorageDir?: string;
 }
 
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
@@ -75,32 +78,10 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/usage.json" && req.method === "GET") {
         // Machine-readable counterpart for the web sidebar's live gauges.
-        // Maps each sidebar role to its primary provider's snapshot row so
-        // the UI doesn't have to know the role-registry layout.
+        // Resolve each role through the configured candidate order so missing
+        // primaries and cooled providers show honestly.
         const snap = opts.router.snapshot();
-        const byId = Object.fromEntries(snap.map((p) => [p.id, p]));
-        // The 5 roles the sidebar surfaces (matches MM_AGENTS in app.jsx).
-        // Each role's *primary* candidate id — see roles/default-registry.ts.
-        const roleToPrimaryId: Record<string, string> = {
-          "orchestration": "gemini:1",
-          "perception": "gemini:1",
-          "reasoning": "openrouter:deepseek-v4",
-          "action-code": "mistral:codestral",
-          "action-structural": "groq:llama-70b",
-        };
-        const roles: Record<string, unknown> = {};
-        for (const [role, primaryId] of Object.entries(roleToPrimaryId)) {
-          const p = byId[primaryId];
-          roles[role] = p
-            ? {
-                providerId: p.id,
-                successCount: p.successCount,
-                rateLimitCount: p.rateLimitCount,
-                remainingPct: p.remainingPct ?? null,
-                cooling: p.cooldownUntil > Date.now(),
-              }
-            : { providerId: primaryId, registered: false };
-        }
+        const roles = roleUsageSnapshot(snap);
         sendJson(res, 200, {
           mode: opts.router.getMode(),
           providers: snap.map((p) => ({
@@ -116,7 +97,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/sessions" && req.method === "GET") {
-        sendJson(res, 200, { sessions: listSessions() });
+        sendJson(res, 200, { sessions: listSessions(opts.sessionStorageDir) });
         return;
       }
 
@@ -168,7 +149,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
           return;
         }
-        const session = new ChatSession({ resolver: opts.resolver, id: parsed.sessionId });
+        const session = createChatSession(opts, parsed.sessionId);
         try {
           const result = await session.send(parsed.message);
           sendJson(res, 200, {
@@ -190,7 +171,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       const clearMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/clear$/);
       if (clearMatch && req.method === "POST") {
         const id = decodeURIComponent(clearMatch[1]!);
-        const session = new ChatSession({ resolver: opts.resolver, id });
+        const session = createChatSession(opts, id);
         session.clear();
         sendJson(res, 200, { cleared: id });
         return;
@@ -199,7 +180,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
       if (sessionMatch && req.method === "GET") {
         const id = decodeURIComponent(sessionMatch[1]!);
-        const session = new ChatSession({ resolver: opts.resolver, id });
+        const session = createChatSession(opts, id);
         sendJson(res, 200, {
           id,
           turns: session.turnCount(),
@@ -270,4 +251,60 @@ function sendText(res: ServerResponse, status: number, body: string): void {
   res.statusCode = status;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end(body);
+}
+
+type ProviderSnapshot = ReturnType<Router["snapshot"]>[number];
+
+function roleUsageSnapshot(snap: ProviderSnapshot[]): Record<string, unknown> {
+  const byId = new Map(snap.map((p) => [p.id, p]));
+  const now = Date.now();
+  const roles: Record<string, unknown> = {};
+
+  for (const role of DEFAULT_ROLES) {
+    const primaryId = role.candidates[0]?.providerId ?? "";
+    const registered = role.candidates
+      .map((c) => byId.get(c.providerId))
+      .filter((p): p is ProviderSnapshot => Boolean(p));
+    const ready = registered.find((p) => p.cooldownUntil <= now);
+    const picked = ready ?? registered[0];
+
+    if (!picked) {
+      roles[role.name] = {
+        providerId: primaryId,
+        primaryProviderId: primaryId,
+        registered: false,
+        status: "unavailable",
+      };
+      continue;
+    }
+
+    const cooling = !ready;
+    roles[role.name] = {
+      providerId: picked.id,
+      primaryProviderId: primaryId,
+      registered: true,
+      status: cooling ? "temporarily-unavailable" : "ready",
+      fallback: picked.id !== primaryId,
+      successCount: picked.successCount,
+      rateLimitCount: picked.rateLimitCount,
+      remainingPct: picked.remainingPct ?? null,
+      cooldownUntil: picked.cooldownUntil,
+      cooling,
+      candidates: registered.map((p) => ({
+        providerId: p.id,
+        cooling: p.cooldownUntil > now,
+        remainingPct: p.remainingPct ?? null,
+      })),
+    };
+  }
+
+  return roles;
+}
+
+function createChatSession(opts: ServerOptions, id: string): ChatSession {
+  return new ChatSession({
+    resolver: opts.resolver,
+    id,
+    ...(opts.sessionStorageDir && { storagePath: join(opts.sessionStorageDir, `${id}.json`) }),
+  });
 }

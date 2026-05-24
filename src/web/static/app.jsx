@@ -190,23 +190,23 @@ function Sidebar({ phase, latestResponse, open }) {
     fetch('/api/usage.json').then((r) => r.ok && r.json().then(setUsage)).catch(() => {});
   }, [phase]);
 
-  const used = React.useMemo(() => {
+  const contextUsed = latestResponse?.tokenEstimate || 0;
+  const contextBudget = latestResponse?.tokenBudget || 100000;
+  const contextPct = latestResponse?.budgetPct ?? Math.min(100, (contextUsed / contextBudget) * 100);
+
+  const quotaUsed = React.useMemo(() => {
     const map = Object.fromEntries(MM_AGENTS.map((a) => [a.id, 0]));
     const roles = usage.roles || {};
     for (const a of MM_AGENTS) {
       const r = roles[a.id];
-      if (!r || r.registered === false) continue;
-      map[a.id] = (r.successCount || 0) * 1000;
-    }
-    if (phase === 'loading') {
-      for (const a of MM_AGENTS) map[a.id] += 800 + Math.random() * 800;
+      if (r && typeof r.remainingPct === 'number') {
+        map[a.id] = Math.max(0, 100 - r.remainingPct);
+      }
     }
     return map;
-  }, [usage, phase]);
+  }, [usage]);
 
-  const totalQuota = MM_AGENTS.reduce((s, a) => s + a.quota, 0);
-
-  const [disp, setDisp] = React.useState(used);
+  const [disp, setDisp] = React.useState(quotaUsed);
   React.useEffect(() => {
     const start = { ...disp };
     const t0 = performance.now();
@@ -215,8 +215,8 @@ function Sidebar({ phase, latestResponse, open }) {
       const p = Math.min(1, (performance.now() - t0) / 700);
       const eased = 1 - Math.pow(1 - p, 3);
       const next = {};
-      for (const k of Object.keys(used)) {
-        next[k] = Math.round(start[k] + (used[k] - start[k]) * eased);
+      for (const k of Object.keys(quotaUsed)) {
+        next[k] = Math.round(start[k] + (quotaUsed[k] - start[k]) * eased);
       }
       setDisp(next);
       if (p < 1) raf = requestAnimationFrame(tick);
@@ -224,25 +224,37 @@ function Sidebar({ phase, latestResponse, open }) {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [used]);
-
-  const dispTotal = Object.values(disp).reduce((s, v) => s + v, 0);
-  const dispPct = (dispTotal / totalQuota) * 100;
+  }, [quotaUsed]);
 
   return (
     <aside className={'mm-sidebar' + (open ? ' open' : '')}>
       <div className="mm-section">
-        <div className="mm-lbl">agents <i>{phase === 'loading' ? '5 thinking' : '5 ready'}</i></div>
+        <div className="mm-lbl">agents <i>{phase === 'loading' ? 'routing' : 'live status'}</i></div>
         {MM_AGENTS.map((a) => {
+          const role = (usage.roles || {})[a.id] || {};
           const isActive = phase === 'loading';
+          const status = role.status === 'temporarily-unavailable'
+            ? 'temp unavailable'
+            : role.status === 'unavailable' || role.registered === false
+              ? 'unavailable'
+              : role.fallback
+                ? 'fallback ready'
+                : 'ready';
           return (
             <div
               key={a.id}
-              className={'mm-agent-row' + (isActive ? ' active' : '')}
+              className={
+                'mm-agent-row' +
+                (isActive ? ' active' : '') +
+                (status.includes('unavailable') ? ' unavailable' : '') +
+                ' status-' + status.replace(/\s+/g, '-')
+              }
               style={{ '--c': a.color }}
+              title={role.providerId ? `${role.providerId}${role.fallback ? ' (fallback)' : ''}` : 'No provider registered'}
             >
               <span className="dot" />
               <span className="name">{a.name.toLowerCase()}<span className="ext">.agent</span></span>
+              <span className="stat-live">{isActive ? 'routing...' : status}</span>
               <span className="stat">{isActive ? 'thinking…' : '✓ ready'}</span>
             </div>
           );
@@ -250,35 +262,30 @@ function Sidebar({ phase, latestResponse, open }) {
       </div>
 
       <div className="mm-section">
-        <div className="mm-lbl">context <i>{dispPct.toFixed(0)}% used</i></div>
+        <div className="mm-lbl">context <i>{contextPct.toFixed(0)}% used</i></div>
         <div className="mm-gauge">
           <div className="mm-gauge-head">
             <div>
-              <span className="mm-gauge-num">{CompactNumber(dispTotal)}</span>
-              <span className="mm-gauge-of">/ {CompactNumber(totalQuota)} tokens</span>
+              <span className="mm-gauge-num">{CompactNumber(contextUsed)}</span>
+              <span className="mm-gauge-of">/ {CompactNumber(contextBudget)} context</span>
             </div>
-            <span className="mm-gauge-pct">{dispPct.toFixed(1)}%</span>
+            <span className="mm-gauge-pct">{contextPct.toFixed(1)}%</span>
           </div>
           <div className="mm-gauge-bar">
-            <div className="mm-gauge-fill" style={{ width: dispPct + '%' }} />
+            <div className="mm-gauge-fill" style={{ width: Math.min(100, contextPct) + '%' }} />
           </div>
         </div>
+        <div className="mm-lbl mm-lbl-sub">daily quota <i>provider budget</i></div>
         {MM_AGENTS.map((a) => {
-          const u = disp[a.id] || 0;
           const role = (usage.roles || {})[a.id];
-          // Prefer the live remainingPct from /api/usage.json when the
-          // provider declared an estimatedDailyBudget; fall back to the
-          // local synthetic count / quota when it doesn't.
           const hasReal = role && typeof role.remainingPct === 'number';
-          const usedPct = hasReal
-            ? Math.max(0, 100 - role.remainingPct)
-            : Math.min(100, (u / a.quota) * 100);
+          const usedPct = hasReal ? disp[a.id] || 0 : 0;
           return (
-            <div key={a.id} className="mm-bar-row" style={{ '--c': a.color }}>
+            <div key={a.id} className={'mm-bar-row' + (!hasReal ? ' unknown' : '')} style={{ '--c': a.color }}>
               <span className="label">{a.name.toLowerCase()}</span>
               <span className="bar"><span className="fill" style={{ width: usedPct + '%' }} /></span>
-              <span className="num" title={hasReal ? `${role.remainingPct.toFixed(0)}% of daily budget remaining` : `~${CompactNumber(u)} tokens (estimated)`}>
-                {usedPct.toFixed(0)}%
+              <span className="num" title={hasReal ? `${role.remainingPct.toFixed(0)}% of daily budget remaining` : 'No daily budget estimate from provider'}>
+                {hasReal ? `${usedPct.toFixed(0)}%` : 'n/a'}
               </span>
             </div>
           );
@@ -288,9 +295,9 @@ function Sidebar({ phase, latestResponse, open }) {
       <div className="mm-section">
         <div className="mm-lbl">stream</div>
         <div className="mm-log">
-          <div>13:42:08 orchestrator.boot</div>
-          <div>13:42:09 routing.online</div>
-          <div>13:42:11 all agents ready</div>
+          <div>session.turns={latestResponse?.turns || 0}</div>
+          <div>router.mode={usage.mode || 'unknown'}</div>
+          <div>served.by={(latestResponse?.servedBy || ['pending']).join('+')}</div>
           {phase === 'loading' && (
             <>
               <div style={{ color: 'var(--accent)' }}>› dispatching to agents…</div>
@@ -362,7 +369,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
           disabled={disabled}
         />
         <div className="mm-composer-bar">
-          <span className="mm-model"><i />orchestrator · 5 agents</span>
+          <span className="mm-model"><i />smart routing · 5 visible roles</span>
           <button className="mm-send" onClick={onSubmit} disabled={disabled || !value.trim()}>
             <svg viewBox="0 0 24 24" fill="none">
               <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -385,6 +392,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
 // that's the mindmap's job). Newest gets a subtle accent ring.
 function ChatTurn({ entry, accent, isNewest }) {
   const tpl = TEMPLATE_DEFS[entry.template];
+  const servedBy = entry.servedBy?.length ? entry.servedBy.join(' + ') : (tpl?.label || entry.template);
   return (
     <div
       className={'mm-turn' + (isNewest ? ' newest' : '')}
@@ -399,7 +407,7 @@ function ChatTurn({ entry, accent, isNewest }) {
           orchestrator
           <span className="mm-turn-pill">
             <span className="mm-template-dot" />
-            {tpl?.label || entry.template}
+            {servedBy}
           </span>
         </span>
         <div className="mm-turn-ai-bubble">
@@ -433,9 +441,16 @@ function InlineMarkdown({ text }) {
 }
 
 function MarkdownProse({ text }) {
+  const rootRef = React.useRef(null);
+  React.useEffect(() => {
+    const mj = window.MathJax;
+    if (mj?.typesetPromise && rootRef.current) {
+      mj.typesetPromise([rootRef.current]).catch(() => {});
+    }
+  }, [text]);
   const blocks = parseMarkdownBlocks(text || '');
   return (
-    <div className="mm-turn-prose">
+    <div className="mm-turn-prose" ref={rootRef}>
       {blocks.map((b, i) => {
         if (b.type === 'heading') {
           const Tag = `h${Math.min(4, Math.max(2, b.level))}`;
@@ -990,6 +1005,11 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
 
   return (
     <div className="mm-catalyst-overlay" aria-hidden="true">
+      <div className="mm-catalyst-field">
+        <span />
+        <span />
+        <span />
+      </div>
       {/* Tokens fly in — labeled text boxes. */}
       {tokensVisible && (
         <>
@@ -1603,7 +1623,25 @@ function formatResponseText(entry) {
 
 // ─── App ───────────────────────────────────────────────────
 const STACK_LS_KEY = 'lattice.responseStack.v2';
+const SESSION_LS_KEY = 'lattice.chatSessionId.v1';
 const IMPLODE_DURATION_MS = 440;
+
+function loadSessionId() {
+  try {
+    const existing = localStorage.getItem(SESSION_LS_KEY);
+    if (existing) return existing;
+    const created = 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    localStorage.setItem(SESSION_LS_KEY, created);
+    return created;
+  } catch {
+    return 'web-' + Date.now().toString(36);
+  }
+}
+function resetSessionId() {
+  const next = 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  try { localStorage.setItem(SESSION_LS_KEY, next); } catch {}
+  return next;
+}
 
 function loadPersistedStack() {
   try {
@@ -1621,7 +1659,18 @@ function savePersistedStack(responses) {
   try {
     const slim = responses.map((r) => ({
       id: r.id, prompt: r.prompt,
-      response: { template: r.template, text: r.text, data: r.data },
+      response: {
+        template: r.template,
+        text: r.text,
+        data: r.data,
+        servedBy: r.servedBy,
+        plan: r.plan,
+        tokenEstimate: r.tokenEstimate,
+        tokenBudget: r.tokenBudget,
+        budgetPct: r.budgetPct,
+        turns: r.turns,
+        warning: r.warning,
+      },
     }));
     localStorage.setItem(STACK_LS_KEY, JSON.stringify(slim));
   } catch {}
@@ -1636,6 +1685,7 @@ function HeroMindmap() {
   const [draft, setDraft] = React.useState('');
   const [currentPrompt, setCurrentPrompt] = React.useState('');
   const [responses, setResponses] = React.useState(initialStack);
+  const [sessionId, setSessionId] = React.useState(() => loadSessionId());
   const stageRef = React.useRef(null);
   const [stageRect, setStageRect] = React.useState({ w: 0, h: 0 });
   // Mobile sidebar drawer (the desktop sidebar is hidden by media query).
@@ -1659,18 +1709,19 @@ function HeroMindmap() {
   const newest = responses[responses.length - 1] || null;
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
 
-  // Shared HTTP helper for the same multi-agent orchestration path used
-  // by `npm run cli -- task ...`.
-  const taskApi = async (prompt) => {
-    const res = await fetch('/api/task', {
+  // Shared HTTP helper for the same smart-routing multi-turn path used by
+  // the CLI chat REPL. This keeps main chat and mindmap follow-ups in one
+  // persistent conversation.
+  const chatApi = async (message) => {
+    const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ sessionId, message }),
     });
-    if (!res.ok) throw new Error(`/api/task ${res.status}`);
+    if (!res.ok) throw new Error(`/api/chat ${res.status}`);
     const json = await res.json();
     if (typeof json.reply !== 'string') throw new Error('bad response shape');
-    return json.reply;
+    return json;
   };
 
   // Submit a new chat turn. Sends the user's RAW prompt to the
@@ -1688,14 +1739,21 @@ function HeroMindmap() {
 
     try {
       const [reply] = await Promise.all([
-        taskApi(q),
+        chatApi(q),
         new Promise((r) => setTimeout(r, 1200)),
       ]);
       const entry = {
         id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
         prompt: q,
         template,
-        text: reply.trim(),
+        text: reply.reply.trim(),
+        servedBy: reply.servedBy || [],
+        plan: reply.plan || null,
+        tokenEstimate: reply.tokenEstimate || 0,
+        tokenBudget: 100000,
+        budgetPct: reply.budgetPct || 0,
+        turns: reply.turns || 0,
+        warning: reply.warning || null,
         data: null,            // lazy-loaded on burst
         dataLoading: false,
       };
@@ -1744,6 +1802,10 @@ function HeroMindmap() {
     setTimeout(() => setPhase('response'), IMPLODE_DURATION_MS);
   };
   const reset = () => {
+    const oldSession = sessionId;
+    const nextSession = resetSessionId();
+    setSessionId(nextSession);
+    fetch(`/api/sessions/${encodeURIComponent(oldSession)}/clear`, { method: 'POST' }).catch(() => {});
     setPhase('idle');
     setCurrentPrompt('');
     setDraft('');
