@@ -32,9 +32,15 @@ function makeRouter(snap: Snap[], mode: "round-robin" | "serial" = "round-robin"
 }
 
 function makeResolver(handler: (name: string, prompt: string) => Promise<string>) {
-  // The server only uses runRole(name, prompt). Wrap a fake handler.
+  // The server uses runRole(name, prompt), and /api/task also needs the
+  // resolver's rosterDescription() for RoleOrchestrator planning.
   return {
     runRole: (name: string, prompt: string) => handler(name, prompt),
+    rosterDescription: () =>
+      [
+        "- orchestration: planning and synthesis",
+        "- action-structural: structured execution",
+      ].join("\n"),
   } as unknown as import("../src/roles/resolver.js").RoleResolver;
 }
 
@@ -193,6 +199,34 @@ describe("web server", () => {
     expect(r.status).toBe(500);
     const j: any = await r.json();
     expect(j.error).toBe("upstream blew up");
+  });
+
+  it("/api/task runs the RoleOrchestrator path used by the CLI task command", async () => {
+    const calls: Array<{ name: string; prompt: string }> = [];
+    const { url } = spawn({
+      handler: async (name, prompt) => {
+        calls.push({ name, prompt });
+        if (name === "orchestration" && prompt.includes("Output EXACTLY one JSON object")) {
+          return JSON.stringify({
+            kind: "single",
+            role: "action-structural",
+            prompt: "expand: hello world",
+          });
+        }
+        return "full task answer from specialist";
+      },
+    });
+    const r = await fetch(`${url}/api/task`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "hello world" }),
+    });
+    expect(r.status).toBe(200);
+    const j: any = await r.json();
+    expect(j.reply).toBe("full task answer from specialist");
+    expect(j.plan).toBe("single");
+    expect(calls[0]!.name).toBe("orchestration");
+    expect(calls[1]).toEqual({ name: "action-structural", prompt: "expand: hello world" });
   });
 
   it("CORS preflight returns 204 when cors is enabled", async () => {

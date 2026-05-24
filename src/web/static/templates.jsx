@@ -148,6 +148,189 @@ function CopyButton({ getText, tiny }) {
   );
 }
 
+function deriveMindmapData(template, prompt, answer) {
+  const sections = markdownSections(answer);
+  const summary = firstCleanLine(answer) || 'Categorized view of the response.';
+
+  if (template === 'code') {
+    const fences = extractCodeFences(answer);
+    const files = fences.length > 0
+      ? fences.slice(0, 6).map((f, i) => ({
+          name: f.name || `snippet-${i + 1}.${langExt(f.language)}`,
+          language: f.language || 'text',
+          snippet: f.code,
+          notes: [sectionForIndex(sections, i)?.heading || 'Code from the response'],
+        }))
+      : sections.map((s, i) => ({
+          name: slugName(s.heading || `part-${i + 1}`) + '.md',
+          language: 'markdown',
+          snippet: s.body.slice(0, 700),
+          notes: sectionPoints(s.body, 2),
+        }));
+    return { type: 'code', summary, files: clampItems(files, 2, 6, FALLBACK_DATA.code.files) };
+  }
+
+  if (template === 'compare') {
+    const names = comparisonNames(prompt, answer, sections);
+    const targets = names.map((name, i) => {
+      const sec = sections.find((s) => s.heading.toLowerCase().includes(name.toLowerCase())) || sections[i] || sections[0];
+      const pts = sectionPoints(sec?.body || answer, 5);
+      return {
+        name,
+        pros: pts.slice(0, Math.max(1, Math.ceil(pts.length / 2))),
+        cons: pts.slice(Math.max(1, Math.ceil(pts.length / 2)), 5),
+        reason: cleanText(sec?.heading && sec.heading !== name ? sec.heading : (pts[0] || `${name} discussed in the response.`)),
+      };
+    });
+    const ranking = targets.map((t, i) => ({
+      name: t.name,
+      rank: i + 1,
+      score: Math.max(6, 9 - i * 0.6),
+      takeaway: t.reason,
+    }));
+    return { type: 'compare', summary, ranking, targets };
+  }
+
+  if (template === 'research') {
+    const mapped = sections.map((s) => ({
+      heading: cleanHeading(s.heading),
+      points: sectionPoints(s.body, 4),
+      sources: extractSources(s.body),
+    }));
+    return { type: 'research', summary, sections: clampItems(mapped, 2, 6, FALLBACK_DATA.research.sections) };
+  }
+
+  const phases = sections.map((s) => ({
+    title: cleanHeading(s.heading),
+    steps: sectionPoints(s.body, 4),
+  }));
+  return { type: 'plan', summary, phases: clampItems(phases, 2, 6, FALLBACK_DATA.plan.phases) };
+}
+
+function markdownSections(text) {
+  const raw = String(text || '').replace(/\r\n/g, '\n').trim();
+  const headingRe = /^(#{1,4})\s+(.+)$/gm;
+  const hits = [...raw.matchAll(headingRe)];
+  if (hits.length > 0) {
+    return hits.slice(0, 6).map((m, i) => {
+      const start = (m.index || 0) + m[0].length;
+      const end = i + 1 < hits.length ? (hits[i + 1].index || raw.length) : raw.length;
+      return { heading: cleanHeading(m[2]), body: raw.slice(start, end).trim() };
+    }).filter((s) => s.heading || s.body);
+  }
+
+  const chunks = raw
+    .split(/\n{2,}/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  if (chunks.length >= 2) {
+    return chunks.map((body, i) => ({
+      heading: inferredHeading(body, i),
+      body,
+    }));
+  }
+  return [{ heading: 'Overview', body: raw || 'No response text available.' }];
+}
+
+function firstCleanLine(text) {
+  return cleanText(String(text || '').split('\n').find((l) => l.trim() && !/^[-*_]{3,}$/.test(l.trim())) || '').slice(0, 180);
+}
+
+function inferredHeading(body, i) {
+  const first = cleanText(body.split('\n')[0] || '');
+  return first.length > 4 && first.length <= 56 ? first : `Part ${i + 1}`;
+}
+
+function cleanHeading(text) {
+  return cleanText(text || 'Section').replace(/^\d+[.)]\s*/, '').slice(0, 64);
+}
+
+function cleanText(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/^\s*(?:[-*]|\d+[.)])\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sectionPoints(body, max) {
+  const lines = String(body || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !/^[-*_]{3,}$/.test(l) && !/^\|?\s*:?-{3,}/.test(l));
+  const bullets = lines
+    .filter((l) => /^\s*(?:[-*]|\d+[.)])\s+/.test(l))
+    .map(cleanText);
+  const source = bullets.length ? bullets : lines.flatMap((l) => cleanText(l).split(/(?<=[.!?])\s+/));
+  const pts = source.map(cleanText).filter((x) => x.length > 0 && x.length < 220);
+  return (pts.length ? pts : ['See the full response for details.']).slice(0, max);
+}
+
+function extractSources(body) {
+  const urls = [...String(body || '').matchAll(/https?:\/\/[^\s)]+/g)].slice(0, 3);
+  return urls.length
+    ? urls.map((m, i) => ({ title: `Source ${i + 1}`, url: m[0] }))
+    : [{ title: 'Main response', url: '#' }];
+}
+
+function comparisonNames(prompt, answer, sections) {
+  const tableLine = String(answer || '').split('\n').find((l) => l.includes('|') && /\|.*\|/.test(l));
+  if (tableLine) {
+    const cells = tableLine.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((x) => cleanText(x));
+    const names = cells.filter((x) => x && !/feature|criteria|category|metric/i.test(x));
+    if (names.length >= 2) return names.slice(0, 6);
+  }
+  const vs = String(prompt || '').match(/compare\s+(.+?)\s+(?:and|vs\.?|versus)\s+(.+)/i);
+  if (vs) {
+    const trimTarget = (x) =>
+      cleanText(x)
+        .replace(/\s+\b(?:for|in|as|with|using)\b.*$/i, '')
+        .replace(/\s+\b(?:briefly|shortly|concisely)\b.*$/i, '')
+        .trim();
+    return [trimTarget(vs[1]), trimTarget(vs[2])].filter(Boolean).slice(0, 6);
+  }
+  return sections.map((s) => cleanHeading(s.heading)).slice(0, 6);
+}
+
+function extractCodeFences(text) {
+  const out = [];
+  const re = /```(\w+)?\s*\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(String(text || ''))) !== null) {
+    out.push({ language: m[1] || 'text', code: (m[2] || '').trim() });
+  }
+  return out;
+}
+
+function langExt(lang) {
+  const l = String(lang || '').toLowerCase();
+  if (l.includes('typescript') || l === 'ts') return 'ts';
+  if (l.includes('javascript') || l === 'js') return 'js';
+  if (l.includes('python') || l === 'py') return 'py';
+  if (l.includes('json')) return 'json';
+  if (l.includes('html')) return 'html';
+  if (l.includes('css')) return 'css';
+  return 'txt';
+}
+
+function slugName(text) {
+  return cleanHeading(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'section';
+}
+
+function sectionForIndex(sections, i) {
+  return sections[i % Math.max(1, sections.length)];
+}
+
+function clampItems(items, min, max, fallback) {
+  const clipped = (items || []).filter(Boolean).slice(0, max);
+  if (clipped.length >= min) return clipped;
+  return [...clipped, ...(fallback || [])].slice(0, Math.max(min, clipped.length));
+}
+
 // Polar helper
 function polar(cx, cy, r, deg) {
   const rad = (deg * Math.PI) / 180;
@@ -472,6 +655,7 @@ Object.assign(window, {
   detectTemplate,
   CopyButton,
   RENDERERS,
+  deriveMindmapData,
   ResearchView,
   CodeView,
   CompareView,

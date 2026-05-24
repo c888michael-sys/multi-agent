@@ -403,7 +403,7 @@ function ChatTurn({ entry, accent, isNewest }) {
           </span>
         </span>
         <div className="mm-turn-ai-bubble">
-          <div className="mm-turn-prose">{entry.text}</div>
+          <MarkdownProse text={entry.text || ''} />
           <div className="mm-turn-foot">
             <CopyButton getText={() => entry.text || ''} />
           </div>
@@ -411,6 +411,126 @@ function ChatTurn({ entry, accent, isNewest }) {
       </div>
     </div>
   );
+}
+
+function InlineMarkdown({ text }) {
+  const parts = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const token = m[0];
+    if (token.startsWith('**')) {
+      parts.push(<strong key={parts.length}>{token.slice(2, -2)}</strong>);
+    } else {
+      parts.push(<code key={parts.length}>{token.slice(1, -1)}</code>);
+    }
+    last = re.lastIndex;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts.map((p, i) => typeof p === 'string' ? <React.Fragment key={i}>{p}</React.Fragment> : p)}</>;
+}
+
+function MarkdownProse({ text }) {
+  const blocks = parseMarkdownBlocks(text || '');
+  return (
+    <div className="mm-turn-prose">
+      {blocks.map((b, i) => {
+        if (b.type === 'heading') {
+          const Tag = `h${Math.min(4, Math.max(2, b.level))}`;
+          return <Tag key={i}><InlineMarkdown text={b.text} /></Tag>;
+        }
+        if (b.type === 'list') {
+          const Tag = b.ordered ? 'ol' : 'ul';
+          return <Tag key={i}>{b.items.map((x, j) => <li key={j}><InlineMarkdown text={x} /></li>)}</Tag>;
+        }
+        if (b.type === 'code') return <pre key={i}><code>{b.text}</code></pre>;
+        if (b.type === 'table') {
+          return (
+            <div key={i} className="mm-md-table-wrap">
+              <table>
+                <thead><tr>{b.headers.map((h, j) => <th key={j}><InlineMarkdown text={h} /></th>)}</tr></thead>
+                <tbody>{b.rows.map((row, r) => <tr key={r}>{row.map((c, j) => <td key={j}><InlineMarkdown text={c} /></td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          );
+        }
+        return <p key={i}><InlineMarkdown text={b.text} /></p>;
+      })}
+    </div>
+  );
+}
+
+function parseMarkdownBlocks(text) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const blocks = [];
+  let i = 0;
+  const isTableSep = (line) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+  const cells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((x) => x.trim());
+
+  while (i < lines.length) {
+    const line = lines[i] || '';
+    if (!line.trim()) { i++; continue; }
+
+    if (/^```/.test(line.trim())) {
+      const code = [];
+      i++;
+      while (i < lines.length && !/^```/.test((lines[i] || '').trim())) code.push(lines[i++]);
+      if (i < lines.length) i++;
+      blocks.push({ type: 'code', text: code.join('\n') });
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ type: 'heading', level: heading[1].length, text: heading[2].trim() });
+      i++;
+      continue;
+    }
+
+    if (i + 1 < lines.length && line.includes('|') && isTableSep(lines[i + 1] || '')) {
+      const headers = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && (lines[i] || '').includes('|') && (lines[i] || '').trim()) {
+        rows.push(cells(lines[i] || ''));
+        i++;
+      }
+      blocks.push({ type: 'table', headers, rows });
+      continue;
+    }
+
+    const bullet = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+    if (bullet) {
+      const ordered = /^\s*\d+\./.test(line);
+      const items = [];
+      while (i < lines.length) {
+        const m = (lines[i] || '').match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+        if (!m) break;
+        items.push(m[1].trim());
+        i++;
+      }
+      blocks.push({ type: 'list', ordered, items });
+      continue;
+    }
+
+    const para = [line.trim()];
+    i++;
+    while (
+      i < lines.length &&
+      (lines[i] || '').trim() &&
+      !/^(#{1,4})\s+/.test(lines[i] || '') &&
+      !/^\s*(?:[-*]|\d+\.)\s+/.test(lines[i] || '') &&
+      !/^```/.test((lines[i] || '').trim()) &&
+      !(i + 1 < lines.length && (lines[i] || '').includes('|') && isTableSep(lines[i + 1] || ''))
+    ) {
+      para.push((lines[i] || '').trim());
+      i++;
+    }
+    blocks.push({ type: 'paragraph', text: para.join(' ') });
+  }
+  return blocks;
 }
 
 function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
@@ -1539,14 +1659,15 @@ function HeroMindmap() {
   const newest = responses[responses.length - 1] || null;
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
 
-  // Shared HTTP helper for /api/complete.
-  const completeApi = async (prompt) => {
-    const res = await fetch('/api/complete', {
+  // Shared HTTP helper for the same multi-agent orchestration path used
+  // by `npm run cli -- task ...`.
+  const taskApi = async (prompt) => {
+    const res = await fetch('/api/task', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt }),
     });
-    if (!res.ok) throw new Error(`/api/complete ${res.status}`);
+    if (!res.ok) throw new Error(`/api/task ${res.status}`);
     const json = await res.json();
     if (typeof json.reply !== 'string') throw new Error('bad response shape');
     return json.reply;
@@ -1567,7 +1688,7 @@ function HeroMindmap() {
 
     try {
       const [reply] = await Promise.all([
-        completeApi(q),
+        taskApi(q),
         new Promise((r) => setTimeout(r, 1200)),
       ]);
       const entry = {
@@ -1598,47 +1719,23 @@ function HeroMindmap() {
     }
   };
 
-  // The catalyst sequence: bar slides → tokens collide → B shatters →
-  // fountain settles. Fires a SECOND /api/complete in parallel with
-  // the catalyst animation that asks for the template-specific JSON
-  // (categorization for the mindmap). Cached on the entry so re-bursts
-  // reuse it. If the JSON request hasn't returned by the time the
-  // catalyst ends, we wait for it before flipping to the mindmap.
+  // The catalyst sequence: bar slides -> tokens collide -> B shatters ->
+  // fountain settles. Mindmap categories are derived locally from the
+  // already-rendered markdown answer, so bursting does NOT spend a second
+  // model call and cannot hang waiting for a categorization request.
   const expand = async () => {
     if (phase !== 'response') return;
     const newestEntry = responses[responses.length - 1];
     if (!newestEntry) return;
-    setPhase('collapsing');
-
-    // Decide if we need to fetch the structured JSON or already have it.
-    const needJson = !newestEntry.data;
-    const jsonPromise = needJson
-      ? (async () => {
-          try {
-            const sys = TEMPLATE_DEFS[newestEntry.template].prompt(newestEntry.prompt);
-            const reply = await completeApi(sys);
-            const cleaned = reply.replace(/```json|```/g, '').trim();
-            return JSON.parse(cleaned);
-          } catch {
-            return FALLBACK_DATA[newestEntry.template];
-          }
-        })()
-      : Promise.resolve(newestEntry.data);
-
-    // Wait for BOTH the catalyst animation AND the JSON request to land.
-    const [parsed] = await Promise.all([
-      jsonPromise,
-      new Promise((r) => setTimeout(r, COLLAPSE_TIMELINE.total)),
-    ]);
-
-    // Cache the parsed data back onto the entry so re-bursts skip the
-    // refetch.
+    const parsed = newestEntry.data ||
+      deriveMindmapData(newestEntry.template, newestEntry.prompt, newestEntry.text);
     const next = responses.map((e) =>
       e.id === newestEntry.id ? { ...e, data: parsed } : e
     );
     setResponses(next);
     savePersistedStack(next);
-    setPhase('mindmap');
+    setPhase('collapsing');
+    setTimeout(() => setPhase('mindmap'), COLLAPSE_TIMELINE.total);
   };
   // Reverse: implode the burst, then re-materialize the stack.
   const collapse = () => {

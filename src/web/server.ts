@@ -21,6 +21,7 @@ import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
 import { ChatSession, listSessions } from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
+import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
@@ -131,6 +132,29 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           // Gemini by default with full failover semantics.
           const reply = await opts.resolver.runRole("orchestration", parsed.prompt);
           sendJson(res, 200, { reply });
+        } catch (err) {
+          sendJson(res, 500, { error: (err as Error).message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/task" && req.method === "POST") {
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { prompt?: string } | null;
+        if (typeof parsed?.prompt !== "string" || !parsed.prompt.trim()) {
+          sendJson(res, 400, { error: "prompt (non-empty string) required" });
+          return;
+        }
+        try {
+          // Same orchestration path as `npm run cli -- task <prompt>`:
+          // plan -> optional specialist role calls -> synthesis.
+          const orchestrator = new RoleOrchestrator({ resolver: opts.resolver });
+          const result = await orchestrator.runWithTrace(parsed.prompt);
+          sendJson(res, 200, {
+            reply: result.finalOutput,
+            plan: result.plan.kind,
+            perRole: result.perRole ?? [],
+          });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
         }
