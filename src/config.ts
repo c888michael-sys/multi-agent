@@ -86,14 +86,16 @@ export function loadGroqProvidersFromEnv(opts?: { model?: string }): Provider[] 
 
 /**
  * Load OpenRouter provider from env. Returns [] if OPENROUTER_KEY is unset.
- * Defaults to DeepSeek R1 (full 671B) free variant.
+ * Defaults to DeepSeek V4 Flash (free variant). R1 free was retired by
+ * OpenRouter — V4 Flash is the current best free reasoning option in the
+ * same family. Override with `opts.model` for any other OpenRouter slug.
  */
 export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provider[] {
   const key = (process.env.OPENROUTER_KEY ?? "").trim();
   if (!key) return [];
   return [
     new OpenRouterProvider({
-      id: "openrouter:deepseek-v4",
+      id: "openrouter:deepseek-v4-flash",
       apiKey: key,
       appName: "multi-agent",
       appUrl: "https://github.com/c888michael-sys/multi-agent",

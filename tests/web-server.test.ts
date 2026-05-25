@@ -160,7 +160,7 @@ describe("web server", () => {
     const future = Date.now() + 60_000;
     const { url } = spawn({
       snap: [
-        { id: "openrouter:deepseek-v4", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
+        { id: "openrouter:deepseek-v4-flash", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
         { id: "gemini:1", cooldownUntil: future, successCount: 3, rateLimitCount: 1, remainingPct: 75 },
         { id: "gemini:2", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
         { id: "gemini:3", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },

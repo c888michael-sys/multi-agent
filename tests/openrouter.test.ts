@@ -81,7 +81,7 @@ describe("OpenRouterProvider.complete", () => {
       },
     );
     const p = new OpenRouterProvider({
-      id: "openrouter:deepseek-v4",
+      id: "openrouter:deepseek-v4-flash",
       apiKey: "k",
       fetchImpl: f as typeof fetch,
     });

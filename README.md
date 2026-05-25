@@ -106,8 +106,8 @@ Functional roles replace fixed sub-agent rosters. Each role declares a *capabili
 
 1. Role abstraction layer (`RoleConfig`, `RoleResolver`) over the current Router. No behavior change initially; existing Gemini calls just routed through the new layer.
 2. Add Groq provider; register Llama 3.3 70B as `action-structural`.
-3. Add OpenRouter provider; register DeepSeek R1 as `reasoning`.
-4. Add Cerebras provider; register Llama 4 Scout as `action-repetitive`.
+3. Add OpenRouter provider; register DeepSeek V4 Flash as `reasoning`.
+4. Add Cerebras provider; register Llama 3.1 8B as `action-repetitive`.
 5. Add Mistral provider; register Codestral as `action-code`.
 6. Roster-aware orchestrator: Gemini picks which role(s) to invoke per task.
 
@@ -352,14 +352,14 @@ The orchestrator's plan-generation output is parsed as JSON with defensive fallb
 
 When a role's primary candidate is exhausted, the resolver:
 
-1. **Falls back through the role's own candidate list first** (e.g., reasoning: DeepSeek V4 → Gemini-thinking-high fallbacks).
+1. **Falls back through the role's own candidate list first** (e.g., reasoning: DeepSeek V4 Flash → Gemini-thinking-high fallbacks).
 2. **If the role's whole candidate list is exhausted**, borrows ANY healthy provider from outside the role's list as a last-resort substitute. Capabilities may degrade — for example, a borrow that subs Groq for perception loses the live web search feature.
 3. **If nothing in the pool can serve**, throws `AllProvidersExhaustedError`.
 
 Every deviation from the happy path prints a warning to stderr:
 
 ```
-⚠ role 'reasoning': primary openrouter:deepseek-v4 cooling, used backup gemini:1
+⚠ role 'reasoning': primary openrouter:deepseek-v4-flash cooling, used backup gemini:1
 ⚠ role 'perception' exhausted; substituting from outside the role's candidate list (one of: groq:llama-70b). Capabilities may be degraded.
 ⚠ role 'action-code' fully exhausted — no provider could serve.
 ```

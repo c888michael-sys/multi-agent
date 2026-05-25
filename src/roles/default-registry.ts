@@ -12,8 +12,8 @@ import type { RoleConfig } from "./types.js";
  * Provider id convention:
  *   - Gemini accounts: `gemini:1`, `gemini:2`, `gemini:3`, ...
  *   - Other providers: `<provider>:<short-model-name>`
- *     e.g., `groq:llama-70b`, `openrouter:deepseek-r1`,
- *     `mistral:codestral`, `cerebras:llama-4-scout`.
+ *     e.g., `groq:llama-70b`, `openrouter:deepseek-v4-flash`,
+ *     `mistral:codestral`, `cerebras:llama3-8b`.
  *
  * This file is the single source of truth for role configuration. Adding a new
  * provider = update the candidate list here, plus register the provider with
@@ -47,11 +47,11 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       // Primary: DeepSeek V4 Flash (284B MoE / 13B active, 1M context, native
       // reasoning). Strongest free reasoning model on OpenRouter as of May 2026.
       // ~50/day shared OpenRouter budget — adequate for a rarely-called role.
-      { providerId: "openrouter:deepseek-v4" },
-      // Fallbacks: Gemini Flash with thinking=high when R1 is unavailable or
-      // when OPENROUTER_KEY isn't set. Roughly the same benchmark scores on
-      // GPQA reasoning; different model family so it's a real fallback, not
-      // just degraded.
+      { providerId: "openrouter:deepseek-v4-flash" },
+      // Fallbacks: Gemini Flash with thinking=high when V4 Flash is
+      // unavailable or when OPENROUTER_KEY isn't set. Different provider +
+      // model family, independent quota pool, comparable GPQA scores — a
+      // real fallback, not just degraded.
       ...GEMINI_FALLBACK.map((c) => ({ ...c, mode: { thinking: "high" as const } })),
     ],
     systemPromptTemplate:
