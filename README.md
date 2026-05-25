@@ -115,6 +115,27 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 
 ---
 
+## Role fallback chains (May 2026 live config)
+
+The candidate order each role uses today, after live calibration against the actual free-tier limits each provider currently grants this project. **Lower in the list = degraded capability or higher quota** — the resolver walks top to bottom and uses the first non-cooling slot.
+
+| Role | Chain (priority order) | Notes |
+|---|---|---|
+| **orchestration** | `gemini:1 → gemini:2 → openrouter:deepseek-v4-flash → gemma:1 → gemma:2 → gemma:3` | Light-touch routing decisions; Gemini Flash is the right shape. Falls to DeepSeek V4 Flash on OpenRouter when both Flash keys are cool, then to Gemma 3 27B (different model = independent quota pool on the same Google project) as the safety net. |
+| **reasoning** | `gemini:1 (thinking=high) → gemini:2 (thinking=high) → openrouter:deepseek-v4-flash → gemma:1 → gemma:2 → gemma:3` | Same chain shape but `thinking=high` mode on the Gemini hops; reasoning quality on Gemini Flash with extended thinking is at least as good as DeepSeek V4 Flash on Aider/GPQA, and the DeepSeek slot is preserved as the dedicated-reasoning fallback. DeepSeek R1 free was retired by OpenRouter (404 on every `:free` slug). |
+| **perception** | `gemini:3 (useSearch=true) → gemma:1 → gemma:2 → gemma:3` | **`gemini:3` is reserved exclusively for perception** — it is NOT listed in orchestration or reasoning candidates, so heavy chat traffic can't drain the one Flash slot that has Google Search grounding. Gemma fallback exists for liveness even though it loses live web data when it takes over. |
+| **action-code** | `mistral:codestral → gemma:1 → gemma:2 → gemma:3` | Mistral Codestral, code-specialized, ~1 B tokens / month free. Gemma falls in below. Gemini Flash is intentionally NOT in this chain — it's reserved for perception/orchestration/reasoning where it actually matters. |
+| **action-structural** | `groq:llama-70b → gemma:1 → gemma:2 → gemma:3` | Groq Llama 3.3 70B, 1000 RPD on its own quota. |
+| **action-repetitive** | `cerebras:llama3-8b → gemma:1 → gemma:2 → gemma:3` | Cerebras Llama 3.1 8B, 1 M tok / day, wafer-scale inference. |
+
+**Why Gemma 3 (or 4 once published) as the universal safety net?** On Google AI Studio's free tier, every model has a **separate per-project RPD quota pool** — Gemini 3.5 Flash is capped at 20 RPD / project on the legacy free tier, but Gemma 3 27B-it has ~14,400 RPD / project. The same `GEMINI_KEY_N` therefore serves two independent rate-limit pools: a small premium one (Flash) and a huge bulk one (Gemma). Listing both keys' Gemma slots at the end of every chain means the system *never* hits "all providers exhausted" under normal load.
+
+**Why `gemini:3` is reserved.** Without isolation, the chat orchestrator can fire 3-6 Gemini Flash calls per turn (plan → specialists → synthesis → mindmap pre-fetch), which would burn through all three Flash keys' daily 20-RPD caps within an hour of testing. Reserving one key for perception means searches against live web data still work even when chat has eaten the other two keys.
+
+**Gemma 3 vs Gemma 4.** As of May 2026 the production model slug on AI Studio is `gemma-3-27b-it`. If Google publishes Gemma 4, change the `model` argument to `loadGemmaProvidersFromEnv()` in `src/config.ts` — the provider implementation is model-agnostic since Gemma uses the same `GoogleGenerativeAI` SDK as Gemini.
+
+---
+
 ## Key design decisions (and why)
 
 **Why start with the router, not the agents.** Agent-calling-an-LLM is a well-understood shape; nothing to prove there. The real risk in this project is multi-key/multi-account failover working reliably under real rate limits. Build the risky part first as an isolated, testable module, then layer everything else on top of its stable interface.

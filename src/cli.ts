@@ -299,10 +299,11 @@ Flags (both ask and agents):
   --search                        enable Google Search grounding (free tier: 5000/mo)
                                   appends a Sources block with cited URLs
 
-Flags for 'ask' (tools):
-  --tools                         enable local file tools (read_file, write_file, list_dir)
+Flags for 'ask' (tools — local file access is ON by default):
+  --no-tools                      disable file tools for this call (pure-LLM, no fs access)
+  --tools                         enable file tools (read_file, write_file, list_dir) — default
   --allow-bash                    additionally enable the bash tool (cmd.exe on Windows, /bin/sh elsewhere)
-                                  no sandbox — runs anything you can run. Implies --tools.
+                                  no sandbox — runs anything you can run.
   --workdir=<path>                scope tools to this directory (default: cwd)
   --trace                         print each tool call and its result before the final answer
 
@@ -417,7 +418,11 @@ async function main(): Promise<void> {
       serious: { type: "boolean", default: false },
       thinking: { type: "string" },
       search: { type: "boolean", default: false },
-      tools: { type: "boolean", default: false },
+      // Local file access is ON by default for `ask` / `agents` / `task` —
+      // the model can `read_file` / `write_file` / `list_dir` inside
+      // `--workdir` (defaults to CWD). Use `--no-tools` to suppress.
+      tools: { type: "boolean", default: true },
+      "no-tools": { type: "boolean", default: false },
       "allow-bash": { type: "boolean", default: false },
       workdir: { type: "string" },
       role: { type: "string" },
@@ -450,6 +455,9 @@ async function main(): Promise<void> {
     ...(values.search && { useSearch: true }),
   };
 
+  // --no-tools wins over the default-true --tools (explicit opt-out).
+  const toolsEnabled = !values["no-tools"] && Boolean(values.tools);
+
   if (command === "ask") {
     const roleArg = values.role as string | undefined;
     if (roleArg) {
@@ -458,7 +466,7 @@ async function main(): Promise<void> {
         process.exit(2);
       }
       await cmdAskRole(prompt, roleArg as RoleName, completeOpts);
-    } else if (values.tools || values["allow-bash"]) {
+    } else if (toolsEnabled || values["allow-bash"]) {
       const workdir = (values.workdir as string | undefined) ?? process.cwd();
       await cmdAskWithTools(
         prompt,

@@ -21,21 +21,37 @@ import type { RoleConfig } from "./types.js";
  * other code edits.
  */
 
-const GEMINI_FALLBACK = [
+// Two Gemini Flash slots reserved for orchestration + reasoning. `gemini:3`
+// is intentionally NOT in this list — it's the perception-only key, so
+// chat traffic can't drain the one slot with Google Search grounding.
+const GEMINI_FLASH_SHARED = [
   { providerId: "gemini:1" },
   { providerId: "gemini:2" },
-  { providerId: "gemini:3" },
+];
+
+// Gemma 3 27B-it slots on every Gemini key — same project, different
+// model, separate per-model RPD quota pool (~14,400/day vs Flash's
+// 20-1,500/day). Universal safety net at the end of every chain.
+const GEMMA_FALLBACK = [
+  { providerId: "gemma:1" },
+  { providerId: "gemma:2" },
+  { providerId: "gemma:3" },
 ];
 
 export const DEFAULT_ROLES: RoleConfig[] = [
   {
     name: "perception",
     description:
-      "Data collection. Uses Gemini's native Google Search grounding for live web data.",
-    candidates: GEMINI_FALLBACK.map((c) => ({
-      ...c,
-      mode: { useSearch: true },
-    })),
+      "Data collection. Uses Gemini's native Google Search grounding for live web data. `gemini:3` is reserved exclusively for this role.",
+    candidates: [
+      // Reserved key — NOT in any other role's chain. When chat hammers
+      // gemini:1 and gemini:2 dry, perception still has its own Flash key
+      // with search grounding alive.
+      { providerId: "gemini:3", mode: { useSearch: true } },
+      // Last-resort fallback: Gemma can answer the question but loses live
+      // web data. Better than failing.
+      ...GEMMA_FALLBACK,
+    ],
     systemPromptTemplate:
       "You are the perception agent. Gather facts from the web for the task. Return concise findings with sources.",
   },
@@ -44,15 +60,18 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     description:
       "Plan-of-attack, hard decisions, deliberation. Highest-effort thinking mode.",
     candidates: [
-      // Primary: DeepSeek V4 Flash (284B MoE / 13B active, 1M context, native
-      // reasoning). Strongest free reasoning model on OpenRouter as of May 2026.
-      // ~50/day shared OpenRouter budget — adequate for a rarely-called role.
+      // Primary: Gemini 3.5 Flash with `thinking=high` — extended reasoning,
+      // close to GPT-4-class on GPQA when given the full thinking budget.
+      // Two keys (gemini:1, gemini:2) shared with orchestration so we
+      // don't waste a slot on a rarely-called role.
+      ...GEMINI_FLASH_SHARED.map((c) => ({ ...c, mode: { thinking: "high" as const } })),
+      // Backup: DeepSeek V4 Flash on OpenRouter (284B MoE / 13B active,
+      // native reasoning). Independent quota pool. R1 free was retired
+      // by OpenRouter — V4 Flash is the current free option.
       { providerId: "openrouter:deepseek-v4-flash" },
-      // Fallbacks: Gemini Flash with thinking=high when V4 Flash is
-      // unavailable or when OPENROUTER_KEY isn't set. Different provider +
-      // model family, independent quota pool, comparable GPQA scores — a
-      // real fallback, not just degraded.
-      ...GEMINI_FALLBACK.map((c) => ({ ...c, mode: { thinking: "high" as const } })),
+      // Safety net: Gemma 3 27B on any of the three Gemini keys (separate
+      // per-model quota; ~14,400 RPD per key on free tier).
+      ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:
       "You are the reasoning agent. Think step by step. Produce a structured plan or decision with brief justification. Acknowledge uncertainty; prefer 'I don't know' to confident guessing.",
@@ -61,7 +80,17 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     name: "orchestration",
     description:
       "Decide which role(s) to invoke for a task; synthesize outputs from sub-agents.",
-    candidates: GEMINI_FALLBACK,
+    candidates: [
+      // Primary: Gemini 3.5 Flash (no thinking) on the two shared keys.
+      // Routing decisions are short, frequent, and don't need extended
+      // reasoning — Flash defaults are the right shape.
+      ...GEMINI_FLASH_SHARED,
+      // Backup: DeepSeek V4 Flash for when both Gemini Flash slots are
+      // cooled. Slower but a real second opinion on routing.
+      { providerId: "openrouter:deepseek-v4-flash" },
+      // Safety net: Gemma 3.
+      ...GEMMA_FALLBACK,
+    ],
     systemPromptTemplate:
       "You are the orchestrator. Choose the right role(s) for the task and integrate results into one coherent answer. Be terse.",
   },
@@ -69,10 +98,12 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     name: "action-code",
     description: "Code-specialized execution: write, modify, debug code.",
     candidates: [
-      // Primary: Mistral Codestral — code-specialized, generous Experiment-plan
-      // quota (~1B tokens/month). Different model family from the others.
+      // Primary: Mistral Codestral — code-specialized, ~1B tokens/month
+      // free on Experiment plan. Different model family.
       { providerId: "mistral:codestral" },
-      ...GEMINI_FALLBACK,
+      // Safety net: Gemma 3. Flash deliberately not included — preserves
+      // Flash quota for orchestration/reasoning/perception where it matters.
+      ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:
       "You are the code-action agent. Produce code that runs. No prose unless asked.",
@@ -82,8 +113,9 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     description:
       "General execution: structured outputs, formatting, transformations, summaries.",
     candidates: [
-      { providerId: "groq:llama-70b" }, // Llama 3.3 70B, very fast, 1000 RPD on its own pool
-      ...GEMINI_FALLBACK, // graceful fallback if GROQ_KEY missing or Groq is cooling
+      // Primary: Groq Llama 3.3 70B — 30 RPM, 1000 RPD on its own quota.
+      { providerId: "groq:llama-70b" },
+      ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:
       "You are the structural-action agent. Follow the requested format exactly. Be terse.",
@@ -92,12 +124,10 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     name: "action-repetitive",
     description: "High-volume bulk work where speed matters more than depth.",
     candidates: [
-      // Primary: Cerebras Llama 3.1 8B — wafer-scale inference at ~2000 tok/sec,
-      // 1M tokens/day free. Llama 4 Scout (mentioned in earlier docs) was
-      // moved off the standard model list; 8B is the right shape for bulk
-      // repetitive work anyway: speed and quota over depth.
+      // Primary: Cerebras Llama 3.1 8B — wafer-scale inference at
+      // ~2000 tok/sec, 1M tokens/day free.
       { providerId: "cerebras:llama3-8b" },
-      ...GEMINI_FALLBACK,
+      ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate: "You are the bulk-action agent. Process the task quickly and concisely.",
   },

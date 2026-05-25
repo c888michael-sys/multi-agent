@@ -151,9 +151,11 @@ describe("web server", () => {
     expect(j.roles.orchestration.providerId).toBe("gemini:1");
     expect(j.roles.orchestration.successCount).toBe(3);
     expect(j.roles["action-structural"].providerId).toBe("groq:llama-70b");
-    // Reasoning's OpenRouter primary is absent, but Gemini is a registered fallback.
+    // Reasoning's NEW primary chain begins with gemini:1 (Flash + thinking=high),
+    // so it's the primary not a fallback — even though OpenRouter / Gemma are
+    // missing from this test's provider set.
     expect(j.roles.reasoning.providerId).toBe("gemini:1");
-    expect(j.roles.reasoning.fallback).toBe(true);
+    expect(j.roles.reasoning.fallback).toBe(false);
   });
 
   it("/api/usage.json marks a role temporarily unavailable when all candidates are cooling", async () => {

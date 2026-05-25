@@ -24,7 +24,17 @@ import type { ProviderConfig } from "./pool.js";
  *            documented hard RPD limit; this just keeps the gauge useful)
  */
 const DEFAULT_BUDGETS: Record<string, number> = {
+  // Gemini 3.5 Flash on Studio free tier — Google's headline number is
+  // 1500 RPD/project, but newer projects ship with the much smaller
+  // 20-RPD legacy free quota until upgraded. We keep 1500 here as the
+  // *theoretical* cap so the sidebar bar tracks the "you might still get
+  // this much" headroom; live header values will override when present.
+  // Override per-deploy via `estimatedDailyBudget` if your real cap is
+  // smaller.
   gemini: 1500,
+  // Gemma 3 27B-it on the SAME Google project — separate per-model quota
+  // pool, ~14,400 RPD on free tier. The big safety net.
+  gemma: 14400,
   groq: 1000,
   openrouter: 50,
   cerebras: 1440,
@@ -46,6 +56,7 @@ const DEFAULT_BUDGETS: Record<string, number> = {
  */
 const DEFAULT_RPM: Record<string, number> = {
   gemini: 15,
+  gemma: 30,  // Gemma free tier on AI Studio is reportedly more generous on RPM too
   groq: 30,
   openrouter: 20,
   cerebras: 30,
@@ -70,6 +81,7 @@ function rpmCapFor(providerId: string): number {
  */
 const DEFAULT_COOLDOWN_MS: Record<string, number> = {
   gemini: 60_000,
+  gemma: 60_000,
   groq: 60_000,
   openrouter: 10_000,
   cerebras: 60_000,
@@ -104,6 +116,41 @@ export function loadGeminiProvidersFromEnv(opts?: { model?: string }): Provider[
         id: `gemini:${m[1]}`,
         apiKey: value,
         ...(opts?.model && { model: opts.model }),
+      }),
+    );
+  }
+
+  providers.sort((a, b) => a.id.localeCompare(b.id));
+  return providers;
+}
+
+/**
+ * Build a Gemma provider per GEMINI_KEY_N — same key, different model on
+ * the same Google Cloud project = a SEPARATE per-model RPD quota pool on
+ * Google AI Studio's free tier. Gemma 3 27B-it has ~14,400 RPD vs Gemini
+ * 3.5 Flash's ~20-1,500 RPD, so adding these slots gives every role a
+ * huge low-priority safety net for "all Flash keys cooled" days.
+ *
+ * Default model: `gemma-3-27b-it`. Override via `opts.model` (e.g. when
+ * Gemma 4 ships on AI Studio, point this at the new slug).
+ */
+export function loadGemmaProvidersFromEnv(opts?: { model?: string }): Provider[] {
+  const providers: Provider[] = [];
+  const seen = new Set<string>();
+  const model = opts?.model ?? "gemma-3-27b-it";
+
+  for (const [name, raw] of Object.entries(process.env)) {
+    const m = name.match(/^GEMINI_KEY_(\d+)$/);
+    if (!m) continue;
+    const value = (raw ?? "").trim();
+    if (!value) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    providers.push(
+      new GeminiProvider({
+        id: `gemma:${m[1]}`,
+        apiKey: value,
+        model,
       }),
     );
   }
@@ -185,6 +232,7 @@ export function loadMistralProvidersFromEnv(opts?: { model?: string }): Provider
 export function loadAllProvidersFromEnv(): Provider[] {
   return [
     ...loadGeminiProvidersFromEnv(),
+    ...loadGemmaProvidersFromEnv(),
     ...loadGroqProvidersFromEnv(),
     ...loadOpenRouterProvidersFromEnv(),
     ...loadCerebrasProvidersFromEnv(),
