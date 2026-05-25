@@ -166,6 +166,15 @@ Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior excep
 - [x] Stage 5a: streaming chat + big-bang mindmap (vertical-scroll conversation with user/AI bubbles and smooth-scroll-to-newest; **streaming tokens via `/api/chat-stream` SSE** so the bubble fills in real-time; **live LoadingView agent rows** driven by real plan/role events; persistent smart-routed `ChatSession` turns; **Cerebras-pre-fetched mindmap categorization** via `action-repetitive` role with a "preserve all detail" prompt, local `deriveMindmapData` fallback; **rip-seam catalyst** with glowing void + **agent-colored fanning particles** so the 5 agents visually become the mindmap categories; click-to-focus per-node expansion with pre-filled scoped prompt; explicit 2-6 branch angle tables; box-edge connector trim; Atelier warm theme; mobile responsive with quota drawer; LS keys `lattice.responseStack.v2` and `lattice.chatSessionId.v1`)
 - [ ] Stage 5b: optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
+- [ ] Web UI: mindmap transition **v3** — "robot arm rips the door, opens to a canvas-like (white) dimension, agents fly out, fades into mindmap" (current v2 is the seam-rip catalyst)
+
+Quality-of-life proposals (not yet started, ordered by likely user value):
+
+- [ ] **Quota warning banner in the chat** — when any role drops below 10 % remaining OR the conservation policy flips to serial mode, surface a one-line banner above the composer naming the role and its likely fallback. The data is already in `/api/usage.json`; this is a UI add only.
+- [ ] **Stop button during streaming** — a small `■` next to the composer while a turn is in flight, aborting the `/api/chat-stream` fetch and rolling the in-flight `liveTurn` back. Saves quota on bad turns.
+- [ ] **Fast-mode toggle** — composer-bar switch that bypasses smart routing for the next turn (sends straight through the orchestration role, single call, ~10 s instead of 20–45 s). Useful for short conversational turns where multi-agent depth is overkill.
+- [ ] **Settings drawer (CLI feature parity)** — surface `--serious` / `--thinking=high`, `--search`, `--role=` forced routing as toggles in the UI, so the web UI matches the CLI's full flag surface. Closes the "merge function into UI" thread.
+- [ ] **PhaseErrorBoundary around loading + response phases** — currently only the orbital phase is wrapped; defensive coverage so any future render crash anywhere in the SPA shows a recoverable panel instead of blacking the page.
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
