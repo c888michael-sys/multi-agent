@@ -2,7 +2,7 @@
 
 A multi-agent AI orchestration system built on free-tier LLM APIs, designed for $0 personal use with token-efficient inter-agent communication and graceful failover across multiple accounts/providers.
 
-**Status:** Working CLI on top of Gemini 3.5 Flash (3-project pool) with conservation mode, agent orchestration (parallel + specialist), web search, local file tools, and bash exec. Next phase: multi-provider role-based architecture (Stage 6).
+**Status:** All six stages live (Stage 6 multi-provider role architecture + Stage 5a streaming chat web UI both shipping). CLI + web UI both route through a shared smart-routed `ChatSession` over 10 provider instances (3 Gemini 3.5 Flash + 3 Gemma 3 27B + OpenRouter / Groq / Cerebras / Mistral) with **live RPM/RPD scraping from `X-RateLimit-*` headers** where providers expose them. Perception's Flash key is isolated; orchestration/reasoning share the other two. CLI local file access is on by default.
 
 ---
 
@@ -12,30 +12,36 @@ A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, 
 
 ## Capabilities at a glance
 
-**Live and tested** (against Gemini 3.5 Flash, free tier):
+**Live and tested** (5 cloud providers + Gemma slots, all verified end-to-end with real keys):
 
 - Multi-account / multi-project rotation with cooldown tracking + automatic failover
 - Conservation mode (round-robin ↔ serial with hysteresis based on remaining quota)
 - Persistent per-provider usage stats (`~/.multi-agent/state.json`, resets at UTC midnight)
+- **Live RPM/RPD from `X-RateLimit-*` headers** (OpenRouter / Groq / Cerebras / Mistral); local sliding-window estimates for Gemini (SDK doesn't expose headers)
+- **Per-provider default cooldowns** — OpenRouter 10 s, others 60 s; wire `Retry-After` from the response always wins
 - Parallel and specialist multi-agent orchestration with token-efficient synthesis
+- **Multi-turn smart-routed `ChatSession`** (orchestrator picks `direct` / `single` / `parallel` per turn) — used by both CLI `chat` REPL and web UI
 - "Serious" mode using Gemini 3.x extended reasoning (`thinkingLevel: high`)
-- Google Search grounding for live web data — free up to 5000 grounded prompts/month
-- Local file tools (`read_file`, `write_file`, `list_dir`) sandboxed to a working dir
-- Bash exec tool with timeout, output cap, and process-tree kill on Windows
+- Google Search grounding for live web data via Gemini Flash (perception role)
+- **Local file tools default-on** for `ask` (`read_file`, `write_file`, `list_dir` sandboxed to `--workdir`; `--no-tools` opts out)
+- Bash exec tool (`--allow-bash`) with timeout, output cap, and process-tree kill on Windows
 - Backoff-and-retry when all providers are cooling
-- CLI: `ask`, `agents`, `usage`, `verify-keys`, `smoke`
+- **6 roles × custom fallback chains** — perception's Flash key isolated; orchestration/reasoning share two Flash keys; Gemma 3 27B is the universal safety net (~14,400 RPD/key on free tier)
+- **Streaming web UI** with SSE token-by-token rendering, orbital-mindmap burst, MathJax, markdown formatting
+- CLI: `ask`, `agents`, `task`, `chat`, `usage`, `sessions`, `verify-keys`, `smoke`, `serve`
 
-**In progress / not yet built:**
+**In progress / planned (Stage 5b):**
 
-- Role-based multi-provider architecture (Stage 6 — adds Groq/OpenRouter/Mistral/Cerebras, lets each functional role use the best-suited model)
-- Multi-turn conversation + automatic context management
-- Web UI polish + optional bot integrations (Stage 5; Instagram bot removed)
+- Optional bot integrations (Telegram / Discord). Instagram bot idea removed.
+- OpenRouter fallback-routing (single OR call with a model list; OR walks top-to-bottom on 429/5xx/refusal)
+- Web UI mindmap transition v3 ("robot arm rips door → canvas dimension → agents fly out")
+- Quality-of-life: quota warning banner, stop-button during streaming, fast-mode toggle, settings drawer
 
 ## Build order
 
 The full vision is large, so the work is decomposed into independent stages. Each stage stands alone and gets its own design + implementation cycle.
 
-### Stage 1 — `llm_router` (foundation) ← starting here
+### Stage 1 — `llm_router` (foundation) — ✓ done
 
 A TypeScript module that hides the multi-key/multi-account chaos behind one function:
 
@@ -85,33 +91,11 @@ Decision deferred to Stage 4. Likely terminal CLI for simplicity; revisit Tauri/
 
 Explicitly out of scope until 1–4 are working.
 
-### Stage 6 — multi-provider role-based architecture ← next
+### Stage 6 — multi-provider role-based architecture — ✓ done
 
 Functional roles replace fixed sub-agent rosters. Each role declares a *capability requirement*; each model is configured to fill one or more roles. Same orchestrator code regardless of model assignments.
 
-**Roles:**
-
-| Role | Description | Primary model | Why |
-|---|---|---|---|
-| Perception | Data collection (web browsing, document reading) | Gemini 3.5 Flash + `--search` | Only free model with native Google Search grounding |
-| Reasoning | Plan-of-attack, hard decisions, deliberation | DeepSeek V4 Flash (284B MoE / 13B active) via OpenRouter | Strongest free reasoning model on OpenRouter as of May 2026; 1M context; native reasoning. R1 free retired by OpenRouter — V4-Flash is the current free option in the same family |
-| Orchestration | Decide which role(s) to invoke; synthesize outputs | Gemini 3.5 Flash (default mode) | 1M context fits roster + intermediate state; low hallucination matters for routing |
-| Action A (code) | Code-specialized execution | Codestral via Mistral | Code-specialized; generous Experiment-plan quota |
-| Action B (structural) | General execution; formatting; structured outputs | Llama 3.3 70B via Groq | 300 tok/sec; 1000 RPD on its own pool |
-| Action C (repetitive) | Bulk, high-volume tasks | Llama 3.1 8B via Cerebras | 1M tokens/day; wafer-scale inference at ~2000 tok/sec. Llama 4 Scout (mentioned in some 2026 marketing) was moved off the standard model list — 3.1 8B is the right shape for bulk repetitive work anyway |
-
-**Quota isolation:** every role draws from a *different* provider's quota pool, so heavy use in one role doesn't starve the others. No two of our roles share an account-wide rate limit.
-
-**Build order within Stage 6:**
-
-1. Role abstraction layer (`RoleConfig`, `RoleResolver`) over the current Router. No behavior change initially; existing Gemini calls just routed through the new layer.
-2. Add Groq provider; register Llama 3.3 70B as `action-structural`.
-3. Add OpenRouter provider; register DeepSeek V4 Flash as `reasoning`.
-4. Add Cerebras provider; register Llama 3.1 8B as `action-repetitive`.
-5. Add Mistral provider; register Codestral as `action-code`.
-6. Roster-aware orchestrator: Gemini picks which role(s) to invoke per task.
-
-Stage 6 adds ~4 new TS providers but does not change Stages 1–4 behavior except where the orchestrator gains awareness of the new roles.
+All five providers wired (Groq, OpenRouter, Mistral, Cerebras, plus Gemini Flash + Gemma slots), plus a roster-aware `RoleOrchestrator` driving the `task` CLI command and the web `/api/chat` smart-routing path. **For the actual live role → candidate chains as currently configured, see [Role fallback chains (May 2026 live config)](#role-fallback-chains-may-2026-live-config) below** — that section is the source of truth, this section is historical context.
 
 ---
 
@@ -164,7 +148,7 @@ The candidate order each role uses today, after live calibration against the act
 
 - [x] Stage 1: implementation
 - [x] Stage 1: tests against mocked HTTP
-- [ ] Stage 1: smoke test against 2 real Gemini accounts (waiting on keys)
+- [x] Stage 1: smoke test against 3 real Gemini accounts (live-verified with all 3 GEMINI_KEY_N slots)
 - [x] Stage 2: conservation mode (round-robin ↔ serial with hysteresis; per-provider usage tracking)
 - [x] Stage 3: orchestrator + specialist/parallel modes + token-efficient synthesis
 - [x] Stage 3: end-to-end demo verified live against Gemini 3.5 Flash
@@ -187,9 +171,16 @@ The candidate order each role uses today, after live calibration against the act
 - [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
 - [x] Stage 5a: browser UI (live-verified end-to-end against real Gemini — idle / loading / response / mindmap phases all work for research / code / compare / plan templates; burst-card layout fixed + responsive breakpoints added)
 - [x] Stage 5a: streaming chat + big-bang mindmap (vertical-scroll conversation with user/AI bubbles and smooth-scroll-to-newest; **streaming tokens via `/api/chat-stream` SSE** so the bubble fills in real-time; **live LoadingView agent rows** driven by real plan/role events; persistent smart-routed `ChatSession` turns; **Cerebras-pre-fetched mindmap categorization** via `action-repetitive` role with a "preserve all detail" prompt, local `deriveMindmapData` fallback; **rip-seam catalyst** with glowing void + **agent-colored fanning particles** so the 5 agents visually become the mindmap categories; click-to-focus per-node expansion with pre-filled scoped prompt; explicit 2-6 branch angle tables; box-edge connector trim; Atelier warm theme; mobile responsive with quota drawer; LS keys `lattice.responseStack.v2` and `lattice.chatSessionId.v1`)
+- [x] Stage 6: **Gemma 3 27B-it slots wired per Gemini key** (`gemma:1/2/3` — separate per-model quota pool on the same Google project; ~14,400 RPD vs Flash's 20-1,500. Universal safety net at the end of every role's candidate chain in `default-registry.ts`.)
+- [x] Stage 6: **Perception role isolated to `gemini:3`** — that Flash key is reserved exclusively for perception, so chat traffic on the other roles can't drain the one Gemini Flash slot with Google Search grounding.
+- [x] Stage 6: **Live RPM/RPD from `X-RateLimit-*` response headers** (Groq / OpenRouter / Cerebras / Mistral) via `provider.getLastQuota?()` + `onHeaders` callback in `openai-compat.ts`. CLI's `usage` and web sidebar tag each gauge with `live` vs `est.` so you know which numbers come from the wire.
+- [x] Stage 6: **Per-provider default cooldowns** — `DEFAULT_COOLDOWN_MS` table in `src/config.ts` (OpenRouter 10 s, others 60 s); response-header `Retry-After` always wins.
+- [x] Stage 4: **CLI local file access on by default** for `ask` — `--no-tools` to opt out.
 - [ ] Stage 5b: optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
 - [ ] Web UI: mindmap transition **v3** — "robot arm rips the door, opens to a canvas-like (white) dimension, agents fly out, fades into mindmap" (current v2 is the seam-rip catalyst)
+- [ ] Parse Gemini `RetryInfo.retryDelay` from `GoogleGenerativeAIError` so cooldowns reflect Gemini's own per-minute reset hint (currently we fall back to 60 s default for Gemini since the SDK doesn't surface `Retry-After`)
+- [ ] Brave Search / DuckDuckGo Instant Answer tool for the Gemma perception fallback (when `gemini:3` is exhausted and the resolver falls to Gemma, give it a search tool so live web data isn't lost entirely)
 
 Quality-of-life proposals (not yet started, ordered by likely user value):
 
@@ -238,13 +229,13 @@ multi-agent/
       session.ts        — ChatSession (persistent multi-turn history)
       repl.ts           — ChatRepl (interactive readline loop with slash commands)
       spinner.ts        — TTY spinner (no-op when non-tty)
-    web/                — Stage 5a (browser UI; not live-verified — see handover notes)
-      server.ts         — built-in http server, static + /api/* routes
+    web/                — Stage 5a (browser UI; live-verified, see Web UI section)
+      server.ts         — built-in http server: static + /api/* routes (chat / chat-stream / complete / task / usage.json / sessions)
       static/
-        index.html      — SPA shell
-        style.css       — visual styles (from claude.ai/design handoff bundle)
-        app.jsx         — HeroMindmap React component (adapted from handoff)
-        templates.jsx   — template defs + burst renderers (from handoff)
+        index.html      — SPA shell (loads React + Babel + MathJax from CDN)
+        style.css       — visual styles (Atelier warm theme)
+        app.jsx         — HeroMindmap component + phases + sidebar + catalyst overlay
+        templates.jsx   — template defs (research/code/compare/plan), node extractors, mindmap renderers
   tests/                — vitest, mocked SDK throughout
     fixtures.ts         — FakeProvider, ToolFakeProvider, RateLimitedError
   scripts/
@@ -261,10 +252,10 @@ multi-agent/
 ## Architecture
 
 ```
-                  ┌─────────────────────────────┐
-                  │ CLI (src/cli.ts)            │
-                  │  ask / agents / usage       │
-                  └──────────────┬──────────────┘
+                  ┌─────────────────────────────────────────────────┐
+                  │ CLI (src/cli.ts)  +  Web (src/web/server.ts)    │
+                  │  ask / agents / task / chat / usage / serve     │
+                  └──────────────┬──────────────────────────────────┘
                                  │
        ┌─────────────────────────┼─────────────────────────┐
        ↓                         ↓                         ↓
@@ -305,7 +296,7 @@ multi-agent/
 - **`RoleOrchestrator`** (`src/agents/role-orchestrator.ts`) — the Stage 6 capstone. Takes a free-form task, asks the orchestration role for a JSON plan (`direct` / `single` / `parallel`), executes the plan via `RoleResolver`, synthesizes per-role outputs when needed. Used by the `task` CLI command. Defensive plan parsing falls back to a single `action-structural` call on malformed JSON.
 - **`ToolRunner`** (`src/tools/runner.ts`) — multi-turn function-calling loop. Captures Gemini's `thoughtSignature` and re-attaches it on subsequent turns (required for Gemini 3.x). Caps iterations at 10.
 - **`ConservationPolicy`** (`src/conservation.ts`) — observes Router's usage snapshot, flips Pool mode round-robin ↔ serial with hysteresis. `tick()` is manual; `attachConservationPolicy(router)` registers a `router.onAfterCall` hook so the policy auto-ticks after every successful call. The CLI's `buildRouter` calls this by default — conservation adapts in real time once any provider has an `estimatedDailyBudget` set.
-- **`RoleConfig` / `RoleResolver`** (`src/roles/`) — Stage 6: functional role → ordered list of candidate providers. Resolver picks the first registered + non-cooling candidate and calls the Router constrained to that provider subset. Defaults in `default-registry.ts`. Currently all roles fall back to Gemini until other providers are wired (steps 2-5 of Stage 6).
+- **`RoleConfig` / `RoleResolver`** (`src/roles/`) — Stage 6: functional role → ordered list of candidate providers. Resolver picks the first registered + non-cooling candidate and calls the Router constrained to that provider subset. Defaults in `default-registry.ts` (live chains as of May 2026: see the *Role fallback chains* table above). All five non-Gemini providers (Groq, OpenRouter, Mistral, Cerebras) are wired plus Gemma 3 slots; perception's `gemini:3` is reserved exclusively to keep Google Search grounding alive when chat traffic drains the other Flash keys.
 
 ## Setup
 
@@ -318,25 +309,36 @@ multi-agent/
 5. `npm run verify-keys` — calls each configured key once (1 request per key)
 6. `npm run smoke` — single round-trip through the router (1 request)
 
-### Multi-provider (Stage 6)
+### Multi-provider
 
 For the full role-based architecture, add keys for any of these providers (each role degrades gracefully if its provider's key is missing):
 
 | Env var | Provider | Sign-up URL | Free tier |
 |---|---|---|---|
-| `OPENROUTER_KEY` | OpenRouter | https://openrouter.ai → Keys | ~50 req/day across all free models combined |
+| `OPENROUTER_KEY` | OpenRouter | https://openrouter.ai → Keys | `:free` models capped to ~20/day per account without a $10 lifetime credit top-up; **~1000/day after the top-up** (one-time, not subscription). Calls without credit return `402 insufficient_quota`. |
 | `GROQ_KEY` | Groq | https://console.groq.com → API Keys | 30 RPM / 1000 RPD account-wide |
 | `MISTRAL_KEY` | Mistral | https://console.mistral.ai → API Keys (phone verification required) | 1B tokens/month on Experiment plan |
 | `CEREBRAS_KEY` | Cerebras | https://cloud.cerebras.ai → API Keys | 1M tokens/day, 30 RPM |
 
+**Gemma slots come free with each Gemini key.** No separate signup — every `GEMINI_KEY_N` is automatically registered twice: once as `gemini:N` (Flash) and once as `gemma:N` (Gemma 3 27B-it). The two share a Google Cloud project but draw from **independent per-model RPD quota pools** on the free tier (Flash ≈ 20–1,500/day depending on project age; Gemma 3 ≈ 14,400/day). Doubles your effective Google-side headroom at zero cost.
+
+**Note on Gemini Flash free-tier limits.** Google quotes "1500 RPD" as the headline number, but newer projects ship with a much smaller **20 RPD legacy quota** (5 RPM) until upgraded. If you see `429 RESOURCE_EXHAUSTED` quickly on a key, that's the 20-RPD cap — known and expected; the Gemma slot on the same key is your safety valve. The estimated daily budget in the sidebar's "EST" column may overstate the actual headroom in that situation.
+
 ## CLI
 
 ```
-npm run cli -- ask "your prompt here"
+npm run cli -- ask "your prompt here"                       # one-shot, local file tools on by default
+npm run cli -- ask --no-tools "..."                         # pure LLM, no fs access
+npm run cli -- ask --role=reasoning "..."                   # force a specific role's chain
 npm run cli -- agents "your prompt here"                    # parallel, 3 default agents
 npm run cli -- agents --mode=specialist "your prompt"       # specialist routing
 npm run cli -- agents --trace "your prompt"                 # print per-agent outputs
-npm run cli -- usage                                        # cumulative usage (persisted across runs, daily UTC reset)
+npm run cli -- task "your prompt"                           # roster-aware orchestrator picks roles per task
+npm run cli -- chat <session-id>                            # interactive smart-routed REPL with persistent history
+npm run cli -- sessions                                     # list saved chat sessions
+npm run cli -- usage                                        # per-provider RPM/RPD live or estimated, cooldowns
+npm run cli -- verify-keys                                  # one ping per configured key, reports ✓/✗
+npm run cli -- serve [--port=N]                             # boots the web UI on localhost (default 7421)
 npm run cli -- --help
 ```
 
@@ -375,14 +377,14 @@ The orchestrator's plan-generation output is parsed as JSON with defensive fallb
 
 When a role's primary candidate is exhausted, the resolver:
 
-1. **Falls back through the role's own candidate list first** (e.g., reasoning: DeepSeek V4 Flash → Gemini-thinking-high fallbacks).
-2. **If the role's whole candidate list is exhausted**, borrows ANY healthy provider from outside the role's list as a last-resort substitute. Capabilities may degrade — for example, a borrow that subs Groq for perception loses the live web search feature.
+1. **Falls back through the role's own candidate list first** (e.g., reasoning: `gemini:1` thinking=high → `gemini:2` thinking=high → `openrouter:deepseek-v4-flash` → `gemma:1/2/3`).
+2. **If the role's whole candidate list is exhausted**, borrows ANY healthy provider from outside the role's list as a last-resort substitute. Capabilities may degrade — for example, a borrow that subs Groq for perception loses Google Search grounding.
 3. **If nothing in the pool can serve**, throws `AllProvidersExhaustedError`.
 
 Every deviation from the happy path prints a warning to stderr:
 
 ```
-⚠ role 'reasoning': primary openrouter:deepseek-v4-flash cooling, used backup gemini:1
+⚠ role 'reasoning': primary gemini:1 cooling, used backup gemini:2
 ⚠ role 'perception' exhausted; substituting from outside the role's candidate list (one of: groq:llama-70b). Capabilities may be degraded.
 ⚠ role 'action-code' fully exhausted — no provider could serve.
 ```
@@ -502,7 +504,7 @@ Persistence: the visible chat transcript is mirrored to `localStorage[lattice.re
 
 ## Web UI handover notes (read this if you're picking it up cold)
 
-**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (189/189 — 15 cover `src/web/server.ts`: route shapes, chat context persistence, role status/fallback mapping, CORS, traversal protection). This pass was browser-smoke-verified with a fake resolver because the fresh clone had no local API keys; earlier real-key verification covered the main web phases. Current browser smoke confirmed `/api/chat` turn persistence, MathJax rendering in the response bubble, real/fallback sidebar statuses, and local bold-label mindmap splitting.
+**Status as of last commit:** code compiled, typechecks clean, mocked unit tests pass (197/197 — including `tests/pool.test.ts` covering live-quota override, per-entry cooldown, RPM window pruning, plus 15 web-server tests). Live-verified end-to-end with real keys: 6 roles route correctly, perception isolation confirmed (`gemini:3` only — orchestration/reasoning don't touch it), Gemma slots load alongside Gemini slots (10 providers total). Browser smoke confirmed `/api/chat` turn persistence, MathJax rendering in the response bubble, real/fallback sidebar statuses with `live` vs `est.` source tags, and local markdown-heading mindmap splitting.
 
 **To verify it works:**
 
@@ -782,6 +784,11 @@ The Router does NOT need changes — it's provider-agnostic. As long as your Pro
 - **Backoff `maxRetryWaitMs` must exceed the typical cooldown duration.** Default cooldown is 60s; default `maxRetryWaitMs` is 90s. With matching values, the retry math gives up at the boundary before sleeping. Found this the hard way in live testing.
 - **State file at `~/.multi-agent/state.json` persists across runs and across tests if you ever point a `FileStateStore` at the default path.** Tests should use `InMemoryStateStore` or temporary paths.
 - **Role routing iterates candidates in priority order, not via the Router's round-robin.** Earlier versions built a multi-provider allow-list per role and let the Router pick — that defeated role priority because the round-robin cursor decided which one got the call, not the role's primary. `RoleResolver.runRole` now iterates candidates one-at-a-time with a single-element allow-list each, falling through to the next only when the current is fully exhausted.
+- **OpenRouter `:free` models require a $10 credit top-up for the standard rate limit.** Without credits, `:free` slugs return `402 insufficient_quota` (which our error classifier currently treats as a rate-limit because the body contains "quota"). One-time deposit, not a subscription. If you see all-failures on every OpenRouter attempt, this is almost certainly why — direct-curl returns the explicit "Out of credits" message.
+- **Gemini SDK abstracts response headers.** `@google/generative-ai` returns parsed objects, not raw `Response`s, so we never see `X-RateLimit-*` headers Google may or may not send. That's why all `gemini:N` and `gemma:N` rows in the usage display tag as `[est.]` — they use the local sliding-window counter, not header-reported live values. The OpenAI-compat providers (Groq / OpenRouter / Cerebras / Mistral) tag as `[live]` once they've received a response that carried the headers.
+- **Gemma slots and Gemini slots share a Google Cloud project but have INDEPENDENT per-model RPD pools.** This is what makes the Gemma safety net work — exhausting `gemini:1` Flash quota doesn't touch the `gemma:1` Gemma quota even though they're the same key. Don't conflate them when reading the sidebar: row count = 6 Google-side rows (3 Flash + 3 Gemma) on 3 keys.
+- **Gemini `RetryInfo.retryDelay` in error messages is not yet parsed.** When Gemini 429s with a body like `"Please retry in 35.9s. ... retryDelay: 35s"`, our code currently falls back to the per-provider `DEFAULT_COOLDOWN_MS` (60 s). Tracked as a planned improvement; live cooldowns will be shorter once we parse the field.
+- **The 20-RPD Gemini Flash "legacy free" quota is a thing.** Newer Google Cloud projects ship with this much-smaller free-tier cap (20 RPD, 5 RPM) instead of the 1,500 RPD Google quotes as the headline. The sidebar's `RPD x/1500` gauge is a config-time estimate, not a live header read — so if you see `RPD 4/1500` and then get rate-limited, you've hit the 20-cap, not the 1500-cap. The Gemma slot on the same key is your reliable workaround.
 
 ## Project conventions
 
