@@ -64,14 +64,22 @@ export class GeminiProvider implements Provider {
   }
 
   retryAfterMs(err: unknown): number | null {
-    const e = err as { headers?: Record<string, string>; retryAfter?: number };
+    const e = err as { headers?: Record<string, string>; retryAfter?: number; message?: string };
+    // 1) Standard Retry-After header (rare with the SDK but free if it's there).
     const header = e?.headers?.["retry-after"] ?? e?.headers?.["Retry-After"];
     if (header) {
       const seconds = Number(header);
       if (Number.isFinite(seconds)) return seconds * 1000;
     }
+    // 2) Direct `retryAfter` field on the error (some SDK paths populate this).
     if (typeof e?.retryAfter === "number") return e.retryAfter * 1000;
-    return null;
+    // 3) Gemini SDK embeds RetryInfo inside the error MESSAGE as a JSON
+    //    array. Sample:
+    //      "...Please retry in 35.9s. [{...},{"@type":"...RetryInfo","retryDelay":"35s"}]"
+    //    Parse the embedded JSON for the structured retryDelay; fall back to
+    //    the human-readable "retry in X.Ys" phrase if the JSON shape isn't there.
+    const msg = String(e?.message ?? err ?? "");
+    return parseGeminiRetryDelayMs(msg);
   }
 
   async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
@@ -282,5 +290,62 @@ export function appendSources(text: string, response: unknown): string {
     return `${text}\n\nSources:\n${queryLine}${sources.join("\n")}`;
   } catch {
     return text;
+  }
+}
+
+/**
+ * Parse Gemini's error message for the actual retry hint Google sent.
+ *
+ * The SDK error includes both an English sentence ("Please retry in 35.9s.")
+ * and a structured RetryInfo JSON object inside square brackets:
+ *
+ *   [{"@type":"...RetryInfo","retryDelay":"35s"}]
+ *
+ * Prefer the structured form (more precise — supports "35s" / "1.5s" /
+ * "1234ms"); fall back to the English phrase if the JSON isn't there;
+ * return null if neither pattern matches.
+ *
+ * Exported for test coverage; the GeminiProvider also calls it from
+ * retryAfterMs().
+ */
+export function parseGeminiRetryDelayMs(message: string): number | null {
+  if (!message) return null;
+
+  // 1) Structured retryDelay. The SDK serializes the rpc.Status details
+  //    into a JSON array in the message text; rather than parse the whole
+  //    array (which is fragile when sibling objects have nested brackets
+  //    like `"links":[]`), we match the `"retryDelay": "..."` field
+  //    directly — it's the only field we actually need and the substring
+  //    is unambiguous within Google's error format.
+  const structured = message.match(/"retryDelay"\s*:\s*"([^"]+)"/);
+  if (structured) {
+    const ms = parseDurationToMs(structured[1]!);
+    if (ms !== null) return ms;
+  }
+
+  // 2) English fallback — "Please retry in 35.9s" / "retry in 35s".
+  const englishMatch = message.match(/retry in\s+([\d.]+)\s*s/i);
+  if (englishMatch) {
+    const seconds = Number(englishMatch[1]);
+    if (Number.isFinite(seconds)) return Math.round(seconds * 1000);
+  }
+
+  return null;
+}
+
+/** Parse Google's protobuf Duration string ("35s", "1.5s", "1234ms") to ms. */
+function parseDurationToMs(s: string): number | null {
+  // Matches: digits + optional decimal + unit (s | ms | m | h | ns).
+  const m = s.trim().match(/^(\d+(?:\.\d+)?)(ns|ms|s|m|h)$/);
+  if (!m) return null;
+  const value = Number(m[1]);
+  if (!Number.isFinite(value)) return null;
+  switch (m[2]) {
+    case "ns": return Math.round(value / 1_000_000);
+    case "ms": return Math.round(value);
+    case "s":  return Math.round(value * 1000);
+    case "m":  return Math.round(value * 60_000);
+    case "h":  return Math.round(value * 3_600_000);
+    default:   return null;
   }
 }

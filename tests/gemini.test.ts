@@ -4,6 +4,7 @@ import {
   appendSources,
   historyToGeminiContents,
   parseToolResponse,
+  parseGeminiRetryDelayMs,
 } from "../src/providers/gemini.js";
 
 describe("GeminiProvider.isRateLimitError", () => {
@@ -198,5 +199,49 @@ describe("GeminiProvider.retryAfterMs", () => {
 
   it("returns null when no retry-after info is present", () => {
     expect(p.retryAfterMs(new Error("nope"))).toBeNull();
+  });
+
+  it("parses embedded RetryInfo JSON from a Gemini 429 message", () => {
+    // Realistic shape — same array the SDK serializes into the error
+    // message text on quota-exceeded.
+    const msg =
+      `[429 Too Many Requests] You exceeded your current quota. ` +
+      `Please retry in 35.908251991s. ` +
+      `[{"@type":"type.googleapis.com/google.rpc.Help","links":[]},` +
+      `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"35s"}]`;
+    const err = new Error(msg);
+    expect(p.retryAfterMs(err)).toBe(35_000);
+  });
+
+  it("falls back to the English 'retry in X.Ys' phrase when JSON isn't there", () => {
+    const err = new Error("Quota exceeded. Please retry in 12.5s.");
+    expect(p.retryAfterMs(err)).toBe(12_500);
+  });
+});
+
+describe("parseGeminiRetryDelayMs (unit)", () => {
+  it("returns null for empty / unrelated messages", () => {
+    expect(parseGeminiRetryDelayMs("")).toBeNull();
+    expect(parseGeminiRetryDelayMs("some other error")).toBeNull();
+  });
+
+  it("parses RetryInfo with seconds units", () => {
+    const msg = `prefix [{"@type":"google.rpc.RetryInfo","retryDelay":"45s"}] suffix`;
+    expect(parseGeminiRetryDelayMs(msg)).toBe(45_000);
+  });
+
+  it("parses RetryInfo with millisecond units", () => {
+    const msg = `[{"@type":"google.rpc.RetryInfo","retryDelay":"1500ms"}]`;
+    expect(parseGeminiRetryDelayMs(msg)).toBe(1_500);
+  });
+
+  it("parses RetryInfo with fractional seconds", () => {
+    const msg = `[{"@type":"google.rpc.RetryInfo","retryDelay":"2.5s"}]`;
+    expect(parseGeminiRetryDelayMs(msg)).toBe(2_500);
+  });
+
+  it("ignores malformed JSON and falls through to English", () => {
+    const msg = `Please retry in 7s. (broken json [{not valid)`;
+    expect(parseGeminiRetryDelayMs(msg)).toBe(7_000);
   });
 });
