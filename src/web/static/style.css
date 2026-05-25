@@ -273,6 +273,96 @@
   color: var(--mm-fg-faint);
 }
 
+/* Rate-budget rows — per-agent stacked RPM + RPD gauges, with optional
+   cooling countdown header. Reads as an instrument readout. */
+.mm-rate-row {
+  display: flex; flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 6px;
+  border-bottom: 0.5px dashed var(--mm-line);
+  font-family: var(--mm-font-mono);
+  font-size: 10px;
+  color: rgba(245,243,239,0.55);
+}
+.mm-rate-row:last-child { border-bottom: 0; }
+.mm-rate-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  letter-spacing: 0.06em;
+}
+.mm-rate-label {
+  color: rgba(245,243,239,0.85);
+  font-weight: 500;
+}
+.mm-rate-provider {
+  color: var(--mm-fg-faint);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+  text-align: right;
+}
+.mm-rate-cooling {
+  color: oklch(0.72 0.16 30);  /* warm amber — only used here on purpose */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  animation: mmblink 1.6s steps(2) infinite;
+}
+.mm-rate-gauges {
+  display: flex; flex-direction: column; gap: 3px;
+}
+.mm-rate-gauge {
+  display: grid;
+  grid-template-columns: 30px 1fr 56px;
+  gap: 6px; align-items: center;
+}
+.mm-rate-gauge-label {
+  color: var(--mm-fg-faint);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.mm-rate-gauge-bar {
+  height: 3px; border-radius: 999px;
+  background: rgba(245,243,239,0.05);
+  overflow: hidden;
+  position: relative;
+}
+.mm-rate-gauge-fill {
+  height: 100%;
+  background: var(--c, var(--accent));
+  border-radius: inherit;
+  transition: width 0.5s cubic-bezier(0.2,0.7,0.2,1);
+}
+.mm-rate-gauge-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 9.5px;
+  color: rgba(245,243,239,0.7);
+  display: inline-flex; justify-content: flex-end; align-items: baseline; gap: 4px;
+}
+/* Tiny source tag — "live" = header-reported, "est" = our sliding window. */
+.mm-rate-src {
+  font-style: normal;
+  font-size: 7.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mm-fg-faint);
+  border: 0.5px solid var(--mm-line);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+.mm-rate-source-live .mm-rate-src {
+  color: oklch(0.85 0.10 195);
+  border-color: oklch(0.85 0.10 195 / 0.4);
+}
+.mm-rate-row.unknown .mm-rate-gauge-fill { width: 0 !important; }
+.mm-rate-row.unknown .mm-rate-gauge-num { color: var(--mm-fg-faint); }
+.mm-rate-row.cooling .mm-rate-gauge-fill {
+  background: oklch(0.72 0.16 30);
+}
+
 .mm-log { font-size: 10.5px; line-height: 1.7; color: rgba(245,243,239,0.42); }
 .mm-log .dim { color: rgba(245,243,239,0.32); }
 

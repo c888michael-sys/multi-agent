@@ -79,8 +79,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/usage.json" && req.method === "GET") {
         // Machine-readable counterpart for the web sidebar's live gauges.
-        // Resolve each role through the configured candidate order so missing
-        // primaries and cooled providers show honestly.
+        // Exposes both RPM (rolling 60s window) and RPD (daily, UTC reset)
+        // plus an accurate cooldown countdown in milliseconds.
         const snap = opts.router.snapshot();
         const roles = roleUsageSnapshot(snap);
         sendJson(res, 200, {
@@ -90,7 +90,14 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             successCount: p.successCount,
             rateLimitCount: p.rateLimitCount,
             remainingPct: p.remainingPct ?? null,
-            cooling: p.cooldownUntil > Date.now(),
+            estimatedDailyBudget: p.estimatedDailyBudget ?? null,
+            rpmCount: p.rpmCount,
+            rpmCap: p.rpmCap ?? null,
+            rpmSource: p.rpmSource,
+            rpdSource: p.rpdSource,
+            liveQuotaFetchedAt: p.liveQuotaFetchedAt ?? null,
+            cooling: p.cooldownMsRemaining > 0,
+            cooldownMsRemaining: p.cooldownMsRemaining,
           })),
           roles,
         });
@@ -341,12 +348,24 @@ function roleUsageSnapshot(snap: ProviderSnapshot[]): Record<string, unknown> {
       successCount: picked.successCount,
       rateLimitCount: picked.rateLimitCount,
       remainingPct: picked.remainingPct ?? null,
+      estimatedDailyBudget: picked.estimatedDailyBudget ?? null,
+      rpmCount: picked.rpmCount,
+      rpmCap: picked.rpmCap ?? null,
+      rpmSource: picked.rpmSource,
+      rpdSource: picked.rpdSource,
+      liveQuotaFetchedAt: picked.liveQuotaFetchedAt ?? null,
       cooldownUntil: picked.cooldownUntil,
+      cooldownMsRemaining: picked.cooldownMsRemaining,
       cooling,
       candidates: registered.map((p) => ({
         providerId: p.id,
-        cooling: p.cooldownUntil > now,
+        cooling: p.cooldownMsRemaining > 0,
+        cooldownMsRemaining: p.cooldownMsRemaining,
         remainingPct: p.remainingPct ?? null,
+        rpmCount: p.rpmCount,
+        rpmCap: p.rpmCap ?? null,
+        rpmSource: p.rpmSource,
+        rpdSource: p.rpdSource,
       })),
     };
   }

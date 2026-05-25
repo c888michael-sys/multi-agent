@@ -164,13 +164,32 @@ function ConstellationOverlay() {
 }
 
 // ─── Sidebar ────────────────────────────────────────────────
+// Format milliseconds-until-available as M:SS for sub-hour, Hh Mm for longer.
+function formatCountdown(ms) {
+  const secs = Math.ceil(ms / 1000);
+  if (secs < 60) return `0:${String(secs).padStart(2, '0')}`;
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
 function CompactNumber(n) {
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
   return String(n);
 }
 
 function Sidebar({ phase, latestResponse, open }) {
+  // `usage` is the most recent snapshot from /api/usage.json.
+  // `usageFetchedAt` records when we received it, so we can subtract
+  // elapsed ms from each provider's cooldownMsRemaining to drive a
+  // smooth live countdown without re-polling every second.
   const [usage, setUsage] = React.useState({ roles: {}, mode: 'round-robin' });
+  const [usageFetchedAt, setUsageFetchedAt] = React.useState(performance.now());
   React.useEffect(() => {
     let cancelled = false;
     const fetchUsage = async () => {
@@ -178,7 +197,10 @@ function Sidebar({ phase, latestResponse, open }) {
         const r = await fetch('/api/usage.json');
         if (!r.ok) return;
         const j = await r.json();
-        if (!cancelled) setUsage(j);
+        if (!cancelled) {
+          setUsage(j);
+          setUsageFetchedAt(performance.now());
+        }
       } catch {/* ignore */}
     };
     fetchUsage();
@@ -187,8 +209,17 @@ function Sidebar({ phase, latestResponse, open }) {
   }, []);
   React.useEffect(() => {
     if (phase !== 'response') return;
-    fetch('/api/usage.json').then((r) => r.ok && r.json().then(setUsage)).catch(() => {});
+    fetch('/api/usage.json').then((r) => r.ok && r.json().then((j) => {
+      setUsage(j); setUsageFetchedAt(performance.now());
+    })).catch(() => {});
   }, [phase]);
+
+  // 1 Hz tick so the cooldown countdown advances smoothly between polls.
+  const [, forceTick] = React.useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const contextUsed = latestResponse?.tokenEstimate || 0;
   const contextBudget = latestResponse?.tokenBudget || 100000;
@@ -275,18 +306,83 @@ function Sidebar({ phase, latestResponse, open }) {
             <div className="mm-gauge-fill" style={{ width: Math.min(100, contextPct) + '%' }} />
           </div>
         </div>
-        <div className="mm-lbl mm-lbl-sub">daily quota <i>provider budget</i></div>
+        <div className="mm-lbl mm-lbl-sub">rate budgets <i>RPM · RPD</i></div>
         {MM_AGENTS.map((a) => {
           const role = (usage.roles || {})[a.id];
-          const hasReal = role && typeof role.remainingPct === 'number';
-          const usedPct = hasReal ? disp[a.id] || 0 : 0;
+          // Compute live cooldown by subtracting elapsed-since-fetch from
+          // the server-reported cooldownMsRemaining. Floors at 0 once expired.
+          const elapsed = performance.now() - usageFetchedAt;
+          const liveCooldownMs = role && role.cooling
+            ? Math.max(0, (role.cooldownMsRemaining || 0) - elapsed)
+            : 0;
+          const isCooling = liveCooldownMs > 0;
+
+          const hasRpm = role && typeof role.rpmCount === 'number' && role.rpmCap > 0;
+          const hasRpd = role && typeof role.remainingPct === 'number';
+          const rpmCount = role?.rpmCount ?? 0;
+          const rpmCap = role?.rpmCap ?? null;
+          const rpmPct = hasRpm ? Math.min(100, (rpmCount / rpmCap) * 100) : 0;
+          const rpdUsedPct = hasRpd ? Math.max(0, 100 - role.remainingPct) : 0;
+          const successCount = role?.successCount ?? 0;
+          const dailyBudget = role?.estimatedDailyBudget ?? null;
+
           return (
-            <div key={a.id} className={'mm-bar-row' + (!hasReal ? ' unknown' : '')} style={{ '--c': a.color }}>
-              <span className="label">{a.name.toLowerCase()}</span>
-              <span className="bar"><span className="fill" style={{ width: usedPct + '%' }} /></span>
-              <span className="num" title={hasReal ? `${role.remainingPct.toFixed(0)}% of daily budget remaining` : 'No daily budget estimate from provider'}>
-                {hasReal ? `${usedPct.toFixed(0)}%` : 'n/a'}
-              </span>
+            <div
+              key={a.id}
+              className={
+                'mm-rate-row' +
+                (!hasRpm && !hasRpd ? ' unknown' : '') +
+                (isCooling ? ' cooling' : '')
+              }
+              style={{ '--c': a.color }}
+              title={role?.providerId
+                ? `${role.providerId}${role.fallback ? ' (fallback)' : ''}`
+                : 'No provider registered'}
+            >
+              <div className="mm-rate-head">
+                <span className="mm-rate-label">{a.name.toLowerCase()}</span>
+                {isCooling
+                  ? <span className="mm-rate-cooling">cooling {formatCountdown(liveCooldownMs)}</span>
+                  : <span className="mm-rate-provider">{role?.providerId || 'n/a'}</span>}
+              </div>
+              <div className="mm-rate-gauges">
+                <div
+                  className={'mm-rate-gauge mm-rate-source-' + (role?.rpmSource || 'estimated')}
+                  title={hasRpm
+                    ? `${rpmCount} requests in last 60s (cap ${rpmCap}) — ${role?.rpmSource === 'live' ? 'reported by provider header' : 'estimated from local sliding window'}`
+                    : 'No RPM cap'}
+                >
+                  <span className="mm-rate-gauge-label">RPM</span>
+                  <span className="mm-rate-gauge-bar">
+                    <span className="mm-rate-gauge-fill" style={{ width: rpmPct + '%' }} />
+                  </span>
+                  <span className="mm-rate-gauge-num">
+                    {hasRpm ? `${rpmCount}/${rpmCap}` : '–'}
+                    {role?.rpmSource && <em className="mm-rate-src">{role.rpmSource === 'live' ? 'live' : 'est'}</em>}
+                  </span>
+                </div>
+                <div
+                  className={'mm-rate-gauge mm-rate-source-' + (role?.rpdSource || 'estimated')}
+                  title={hasRpd
+                    ? `${role?.rpdSource === 'live'
+                        ? `${Math.round((100 - role.remainingPct) / 100 * dailyBudget)} of ${dailyBudget} daily quota used — reported by provider header`
+                        : `${successCount} of ${dailyBudget} successes today (estimated; resets at UTC midnight)`}`
+                    : 'No daily budget'}
+                >
+                  <span className="mm-rate-gauge-label">RPD</span>
+                  <span className="mm-rate-gauge-bar">
+                    <span className="mm-rate-gauge-fill" style={{ width: rpdUsedPct + '%' }} />
+                  </span>
+                  <span className="mm-rate-gauge-num">
+                    {hasRpd
+                      ? (role.rpdSource === 'live'
+                          ? `${Math.round((100 - role.remainingPct) / 100 * dailyBudget)}/${dailyBudget}`
+                          : `${successCount}/${dailyBudget}`)
+                      : '–'}
+                    {role?.rpdSource && <em className="mm-rate-src">{role.rpdSource === 'live' ? 'live' : 'est'}</em>}
+                  </span>
+                </div>
+              </div>
             </div>
           );
         })}

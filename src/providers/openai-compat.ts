@@ -43,8 +43,16 @@ export interface ChatCompletionOptions {
  * POST to <baseUrl>/chat/completions with Bearer auth. Returns parsed JSON or
  * throws OpenAICompatError with status/body/headers attached. Headers are
  * lowercased for case-insensitive Retry-After lookup.
+ *
+ * `onHeaders` is called on SUCCESS too — providers use it to scrape live
+ * rate-limit info (X-RateLimit-*) so the pool can report real RPM/RPD
+ * straight from the wire instead of estimating from a local counter.
  */
-export async function chatCompletion(opts: ChatCompletionOptions): Promise<unknown> {
+export async function chatCompletion(
+  opts: ChatCompletionOptions & {
+    onHeaders?: (headers: Record<string, string>) => void;
+  },
+): Promise<unknown> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const res = await fetchImpl(`${opts.baseUrl}/chat/completions`, {
     method: "POST",
@@ -56,18 +64,97 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<unkno
     body: JSON.stringify(opts.body),
   });
   const text = await res.text();
+  const headers: Record<string, string> = {};
+  res.headers.forEach((v, k) => {
+    headers[k.toLowerCase()] = v;
+  });
   if (!res.ok) {
-    const headers: Record<string, string> = {};
-    res.headers.forEach((v, k) => {
-      headers[k.toLowerCase()] = v;
-    });
+    // Surface headers even on error — rate-limit info often arrives with
+    // the 429 itself.
+    opts.onHeaders?.(headers);
     throw new OpenAICompatError(opts.providerName, res.status, text, headers);
   }
+  opts.onHeaders?.(headers);
   try {
     return JSON.parse(text);
   } catch {
     throw new Error(`${opts.providerName} returned non-JSON success body: ${text.slice(0, 200)}`);
   }
+}
+
+/**
+ * Live rate-limit info parsed from a provider's response headers. Whatever
+ * the provider didn't tell us stays undefined.
+ */
+export interface LiveQuota {
+  /** Requests-per-minute remaining (provider-reported). */
+  rpmRemaining?: number;
+  /** Requests-per-minute limit (provider-reported). */
+  rpmCap?: number;
+  /** Requests-per-day remaining (provider-reported). */
+  rpdRemaining?: number;
+  /** Requests-per-day limit (provider-reported). */
+  rpdCap?: number;
+  /** ms-since-epoch when this snapshot was scraped. */
+  fetchedAt: number;
+}
+
+/**
+ * Parse the common OpenAI-compat rate-limit header families. Different
+ * providers emit slightly different headers; we look at the union:
+ *
+ *   X-RateLimit-Remaining / X-RateLimit-Limit                (OpenRouter style)
+ *   x-ratelimit-remaining-requests / x-ratelimit-limit-requests  (Groq)
+ *   x-ratelimit-remaining / x-ratelimit-limit                (Cerebras / Mistral)
+ *
+ * Plus the *-day suffixes some providers expose for daily caps:
+ *   x-ratelimit-remaining-requests-day / -limit-day
+ *
+ * Headers are case-insensitive; the chatCompletion helper lowercases them
+ * before calling us, so we only look at the lowercase form.
+ */
+export function parseLiveQuotaFromHeaders(
+  headers: Record<string, string>,
+  fetchedAt: number,
+): LiveQuota {
+  const q: LiveQuota = { fetchedAt };
+
+  // Per-minute window. Try the Groq-style "requests" variant first
+  // (most explicit), then fall back to the bare key.
+  const rpmRemaining =
+    headers["x-ratelimit-remaining-requests"] ??
+    headers["x-ratelimit-remaining"] ??
+    headers["x-ratelimit-remaining-requests-minute"];
+  const rpmCap =
+    headers["x-ratelimit-limit-requests"] ??
+    headers["x-ratelimit-limit"] ??
+    headers["x-ratelimit-limit-requests-minute"];
+  if (rpmRemaining !== undefined) {
+    const n = Number(rpmRemaining);
+    if (Number.isFinite(n)) q.rpmRemaining = n;
+  }
+  if (rpmCap !== undefined) {
+    const n = Number(rpmCap);
+    if (Number.isFinite(n)) q.rpmCap = n;
+  }
+
+  // Per-day window (when provider exposes it separately).
+  const rpdRemaining =
+    headers["x-ratelimit-remaining-requests-day"] ??
+    headers["x-ratelimit-remaining-day"];
+  const rpdCap =
+    headers["x-ratelimit-limit-requests-day"] ??
+    headers["x-ratelimit-limit-day"];
+  if (rpdRemaining !== undefined) {
+    const n = Number(rpdRemaining);
+    if (Number.isFinite(n)) q.rpdRemaining = n;
+  }
+  if (rpdCap !== undefined) {
+    const n = Number(rpdCap);
+    if (Number.isFinite(n)) q.rpdCap = n;
+  }
+
+  return q;
 }
 
 /** Convert our provider-agnostic history into OpenAI chat messages. */

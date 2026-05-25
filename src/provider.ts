@@ -56,4 +56,11 @@ export interface Provider {
     opts: CompleteOptions | undefined,
     onToken: (text: string) => void,
   ): Promise<string>;
+  /**
+   * Optional: returns the latest rate-limit info scraped from a provider
+   * response (X-RateLimit-* headers). Providers that don't expose this
+   * info (e.g., the Gemini SDK) leave this undefined; the pool falls back
+   * to its locally-counted RPM/RPD estimate.
+   */
+  getLastQuota?(): import("./providers/openai-compat.js").LiveQuota | null;
 }

@@ -31,9 +31,54 @@ const DEFAULT_BUDGETS: Record<string, number> = {
   mistral: 500,
 };
 
+/**
+ * Per-minute request caps. Used to drive the live RPM gauge and to warn
+ * when the user is about to trip the per-minute window (which is a much
+ * faster recovery than RPD — minute, not 24h).
+ *
+ * Free-tier numbers as of mid-2026 (will drift; override per-deploy via
+ * `estimatedRpmCap` on the provider config):
+ *   gemini:    15 RPM per project on Studio free tier
+ *   groq:      30 RPM account-wide
+ *   openrouter: 20 RPM on `:free` models (shared pool)
+ *   cerebras:  30 RPM
+ *   mistral:   60 RPM (1 RPS soft limit on Experiment plan)
+ */
+const DEFAULT_RPM: Record<string, number> = {
+  gemini: 15,
+  groq: 30,
+  openrouter: 20,
+  cerebras: 30,
+  mistral: 60,
+};
+
 function budgetFor(providerId: string): number {
   const prefix = providerId.split(":")[0] ?? "";
   return DEFAULT_BUDGETS[prefix] ?? 500;
+}
+
+function rpmCapFor(providerId: string): number {
+  const prefix = providerId.split(":")[0] ?? "";
+  return DEFAULT_RPM[prefix] ?? 30;
+}
+
+/**
+ * Fallback cooldown per provider — used ONLY when a rate-limit response
+ * arrives without a Retry-After header. Real cooldowns from the wire
+ * always take precedence. Per-provider tuning matters because the per-
+ * minute reset window differs (OpenRouter free is ~10s; Gemini is ~60s).
+ */
+const DEFAULT_COOLDOWN_MS: Record<string, number> = {
+  gemini: 60_000,
+  groq: 60_000,
+  openrouter: 10_000,
+  cerebras: 60_000,
+  mistral: 60_000,
+};
+
+function defaultCooldownFor(providerId: string): number {
+  const prefix = providerId.split(":")[0] ?? "";
+  return DEFAULT_COOLDOWN_MS[prefix] ?? 60_000;
 }
 
 /**
@@ -149,12 +194,15 @@ export function loadAllProvidersFromEnv(): Provider[] {
 
 /**
  * Same as loadAllProvidersFromEnv but wraps each provider in a
- * ProviderConfig that carries `estimatedDailyBudget` so the pool can
- * compute remainingPct for the sidebar's quota gauges.
+ * ProviderConfig that carries `estimatedDailyBudget` AND `estimatedRpmCap`
+ * so the pool can compute remaining quota for both the RPD bar (daily,
+ * resets at UTC midnight) and the RPM gauge (rolling 60s window).
  */
 export function loadAllProviderConfigsFromEnv(): ProviderConfig[] {
   return loadAllProvidersFromEnv().map((provider) => ({
     provider,
     estimatedDailyBudget: budgetFor(provider.id),
+    estimatedRpmCap: rpmCapFor(provider.id),
+    defaultCooldownMs: defaultCooldownFor(provider.id),
   }));
 }

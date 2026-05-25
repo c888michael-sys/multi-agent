@@ -13,6 +13,8 @@ import {
   buildChatBody,
   looksLikeRateLimit,
   retryAfterMsFromHeaders,
+  parseLiveQuotaFromHeaders,
+  type LiveQuota,
 } from "./openai-compat.js";
 
 export interface OpenRouterProviderOptions {
@@ -48,6 +50,8 @@ export class OpenRouterProvider implements Provider {
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
   private readonly fetchImpl?: typeof fetch;
+  /** Most recent rate-limit info scraped from response headers. */
+  private lastQuota: LiveQuota | null = null;
 
   constructor(opts: OpenRouterProviderOptions) {
     this.id = opts.id;
@@ -60,6 +64,21 @@ export class OpenRouterProvider implements Provider {
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
   }
 
+  /** Builds the chatCompletion args + onHeaders callback once. */
+  private callOpts(body: Record<string, unknown>) {
+    return {
+      apiKey: this.apiKey,
+      baseUrl: this.baseUrl,
+      body,
+      providerName: "OpenRouter",
+      extraHeaders: this.extraHeaders,
+      onHeaders: (headers: Record<string, string>) => {
+        this.lastQuota = parseLiveQuotaFromHeaders(headers, Date.now());
+      },
+      ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
+    };
+  }
+
   async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
     const body: Record<string, unknown> = {
       model: this.model,
@@ -67,28 +86,13 @@ export class OpenRouterProvider implements Provider {
     };
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-
-    const res = await chatCompletion({
-      apiKey: this.apiKey,
-      baseUrl: this.baseUrl,
-      body,
-      providerName: "OpenRouter",
-      extraHeaders: this.extraHeaders,
-      ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
-    });
+    const res = await chatCompletion(this.callOpts(body));
     return extractTextFromCompletion(res);
   }
 
   async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
     const body = buildChatBody(this.model, history, opts);
-    const res = await chatCompletion({
-      apiKey: this.apiKey,
-      baseUrl: this.baseUrl,
-      body,
-      providerName: "OpenRouter",
-      extraHeaders: this.extraHeaders,
-      ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
-    });
+    const res = await chatCompletion(this.callOpts(body));
     return extractTextFromCompletion(res);
   }
 
@@ -104,15 +108,7 @@ export class OpenRouterProvider implements Provider {
     };
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-
-    const res = await chatCompletion({
-      apiKey: this.apiKey,
-      baseUrl: this.baseUrl,
-      body,
-      providerName: "OpenRouter",
-      extraHeaders: this.extraHeaders,
-      ...(this.fetchImpl && { fetchImpl: this.fetchImpl }),
-    });
+    const res = await chatCompletion(this.callOpts(body));
     return parseOpenAIToolResponse(res);
   }
 
@@ -122,5 +118,9 @@ export class OpenRouterProvider implements Provider {
 
   retryAfterMs(err: unknown): number | null {
     return retryAfterMsFromHeaders(err);
+  }
+
+  getLastQuota(): LiveQuota | null {
+    return this.lastQuota;
   }
 }

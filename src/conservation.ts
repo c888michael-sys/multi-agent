@@ -99,29 +99,59 @@ export function attachConservationPolicy(
   return policy;
 }
 
-/** Pretty-print snapshot for console display. */
+/**
+ * Pretty-print snapshot for console display. Per-provider line:
+ *
+ *   gemini:1  RPM 3/15  RPD 47/1500 (~97% left)  rejected: 0   [cooling 0:42]
+ *
+ *   - RPM is the rolling-60s window (recovers in <1 min)
+ *   - RPD is success-count vs estimated daily budget (resets at UTC midnight)
+ *   - `rejected` is the cumulative count of rate-limited attempts today
+ *   - cooldown countdown is shown only when active
+ */
 export function formatUsageReport(router: Router): string {
   const snap = router.snapshot();
   const now = Date.now();
   const utc = new Date(now).toISOString().slice(0, 10);
   const lines = [
-    `Usage today (UTC ${utc}, resets at next UTC midnight). Pool mode: ${router.getMode()}.`,
+    `Usage today (UTC ${utc}, RPD resets at next UTC midnight; RPM is rolling 60s). Pool mode: ${router.getMode()}.`,
   ];
   for (const p of snap) {
-    const parts = [`${p.successCount} successful`, `${p.rateLimitCount} rate-limited`];
-    if (p.remainingPct !== undefined) parts.push(`~${p.remainingPct.toFixed(0)}% budget left`);
-    let suffix = "";
-    if (p.cooldownUntil > now) {
-      const secs = Math.ceil((p.cooldownUntil - now) / 1000);
-      suffix = `  [cooling — back in ${formatDuration(secs)}]`;
+    const parts: string[] = [];
+    const rpmTag = p.rpmSource === "live" ? "live" : "est.";
+    const rpdTag = p.rpdSource === "live" ? "live" : "est.";
+    parts.push(`RPM ${p.rpmCount}${p.rpmCap !== undefined ? "/" + p.rpmCap : ""} [${rpmTag}]`);
+    if (p.estimatedDailyBudget !== undefined) {
+      // For live source we know remaining directly; for estimated we count
+      // successes. The displayed numerator is "used today" = cap - remaining.
+      const used = p.rpdSource === "live"
+        ? Math.max(0, p.estimatedDailyBudget - Math.round((p.remainingPct ?? 0) / 100 * p.estimatedDailyBudget))
+        : p.successCount;
+      const pct = p.remainingPct !== undefined ? `~${p.remainingPct.toFixed(0)}% left` : "";
+      parts.push(`RPD ${used}/${p.estimatedDailyBudget}${pct ? ` (${pct})` : ""} [${rpdTag}]`);
+    } else {
+      parts.push(`${p.successCount} successful`);
     }
-    lines.push(`  ${p.id}: ${parts.join(", ")}${suffix}`);
+    parts.push(`rejected: ${p.rateLimitCount}`);
+    let suffix = "";
+    if (p.cooldownMsRemaining > 0) {
+      suffix = `   [cooling ${formatCooldown(p.cooldownMsRemaining)}]`;
+    }
+    lines.push(`  ${p.id.padEnd(28)} ${parts.join("  ")}${suffix}`);
   }
   return lines.join("\n");
 }
 
-function formatDuration(secs: number): string {
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.ceil(secs / 60)}m`;
-  return `${Math.floor(secs / 3600)}h ${Math.ceil((secs % 3600) / 60)}m`;
+/** Show sub-minute cooldowns with seconds precision; minutes for longer. */
+function formatCooldown(ms: number): string {
+  const secs = Math.ceil(ms / 1000);
+  if (secs < 60) return `0:${String(secs).padStart(2, "0")}`;
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${h}h ${m}m`;
 }
