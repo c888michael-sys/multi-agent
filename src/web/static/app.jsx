@@ -529,7 +529,13 @@ function ChatTurn({ entry, accent, isNewest }) {
 // Translate a ChatProgressEvent shape into a short pill label.
 function statusLabel(status) {
   if (!status) return 'routing…';
-  const ph = status.phase || status.kind;
+  // Prefer kind (the outer event type: 'role-start' / 'role-end' / 'plan' / ...)
+  // over phase (the inner sub-phase: 'single' / 'synthesis' / 'direct' / ...).
+  // The streaming handler does `{phase: evt.kind, ...evt}`, so the spread
+  // overrides phase with evt.phase when present — we must read kind first
+  // or every role-start gets misclassified as its inner phase and falls
+  // through to the generic 'thinking…' default.
+  const ph = status.kind || status.phase;
   if (ph === 'plan-start') return 'orchestrator planning…';
   if (ph === 'plan') return `plan: ${status.plan?.kind || '?'}`;
   if (ph === 'role-start') {
@@ -1368,7 +1374,15 @@ function LoadingView({ prompt, liveStatus, summarize }) {
     const map = Object.fromEntries(MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }]));
     if (!liveStatus) return map;
     const { phase, role, kind, ok, plan } = liveStatus;
-    const ph = phase || kind;
+    // Prefer kind (outer event type: role-start / role-end / plan-start / plan)
+    // over phase (inner sub-phase: single / synthesis / direct / parallel).
+    // The /api/chat-stream client merges events as `{phase: evt.kind, ...evt}`,
+    // which means evt.phase ("single", "synthesis", …) clobbers the outer
+    // phase= evt.kind we just wrote. Without this inversion every role-start
+    // resolved to its inner phase string ("single"), missed every branch in
+    // the switch below, and the agent state map stayed in its initial
+    // plan-start state — so only `orchestration` ever showed as working.
+    const ph = kind || phase;
     if (ph === 'plan-start') {
       // Orchestrator is choosing roles
       map['orchestration'] = { state: 'engaged', label: 'planning…' };

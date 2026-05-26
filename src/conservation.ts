@@ -102,7 +102,7 @@ export function attachConservationPolicy(
 /**
  * Pretty-print snapshot for console display. Per-provider line:
  *
- *   gemini:1  RPM 3/15  RPD 47/1500 (~97% left)  rejected: 0   [cooling 0:42]
+ *   gemini:1  RPM 2/5  RPD 8/20 (~60% left) [est.]  rejected: 0   [cooling 0:42]
  *
  *   - RPM is the rolling-60s window (recovers in <1 min)
  *   - RPD is success-count vs estimated daily budget (resets at UTC midnight)

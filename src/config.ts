@@ -16,7 +16,10 @@ import type { ProviderConfig } from "./pool.js";
  * a provider config.
  *
  * Sources:
- *   gemini: ~1500 RPD per project on Studio free tier
+ *   gemini: 20 RPD/project on the legacy free tier (CONFIRMED May 2026
+ *           against this project's accounts). Google's docs sometimes
+ *           quote 1500 — that's the upgraded/paid number, NOT what a
+ *           fresh free project actually gets.
  *   groq:   ~1000 RPD account-wide on free tier
  *   openrouter: ~50 RPD shared across all free models
  *   cerebras: ~1440 RPD (1 RPM rate cap × 24h, the soft daily cap)
