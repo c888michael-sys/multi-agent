@@ -180,7 +180,8 @@ The candidate order each role uses today, after live calibration against the act
 - [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
 - [ ] Web UI: mindmap transition **v3** — "robot arm rips the door, opens to a canvas-like (white) dimension, agents fly out, fades into mindmap" (current v2 is the seam-rip catalyst)
 - [x] Parse Gemini `RetryInfo.retryDelay` from `GoogleGenerativeAIError` so cooldowns reflect Gemini's own per-minute reset hint (the SDK doesn't surface `Retry-After`, but it embeds `RetryInfo.retryDelay` as JSON in the error message text — we now match `"retryDelay": "..."` directly + fall back to the English `"retry in X.Ys"` phrase, then to the per-provider 60 s default if neither pattern is present. See `parseGeminiRetryDelayMs` in `src/providers/gemini.ts`.)
-- [ ] Brave Search / DuckDuckGo Instant Answer tool for the Gemma perception fallback (when `gemini:3` is exhausted and the resolver falls to Gemma, give it a search tool so live web data isn't lost entirely)
+- [x] **Brave Search / DuckDuckGo Instant Answer tool** for the Gemma perception fallback (when `gemini:3` is exhausted and the resolver falls to Gemma, the `web_search` tool gives the model a way to still fetch fresh web data). `src/tools/web-search.ts` — Brave preferred when `BRAVE_SEARCH_KEY` is set (free 2000 q/mo), DuckDuckGo Instant Answer as the keyless fallback (no signup). Wired into `cmdAskWithTools`, so `npm run cli -- ask "..."` already has `web_search` available alongside `read_file` / `write_file` / `list_dir`. 7 new unit tests covering Brave-primary, DDG-fallback, HTML-strip, empty-query, no-results, and Brave-429 → DDG fallthrough. 211/211 tests pass.
+- [ ] **UI bug — LoadingView only shows "orchestrator working"** while a chat turn is in flight. Should reflect which specialist is currently running (reasoning / action-code / etc.) based on the `role-start` / `role-end` SSE events. The events ARE emitted by `/api/chat-stream` and the frontend subscribes, so the bug is in the LoadingView's state mapping — investigate `app.jsx` LoadingView component and confirm it's reading `liveTurn.activeRole` (or whatever the field is) correctly. Likely a one-line fix once located.
 
 Quality-of-life proposals (not yet started, ordered by likely user value):
 
@@ -322,7 +323,15 @@ For the full role-based architecture, add keys for any of these providers (each 
 
 **Gemma slots come free with each Gemini key.** No separate signup — every `GEMINI_KEY_N` is automatically registered twice: once as `gemini:N` (Flash) and once as `gemma:N` (Gemma 3 27B-it). The two share a Google Cloud project but draw from **independent per-model RPD quota pools** on the free tier (Flash ≈ 20–1,500/day depending on project age; Gemma 3 ≈ 14,400/day). Doubles your effective Google-side headroom at zero cost.
 
-**Note on Gemini Flash free-tier limits.** Google quotes "1500 RPD" as the headline number, but newer projects ship with a much smaller **20 RPD legacy quota** (5 RPM) until upgraded. If you see `429 RESOURCE_EXHAUSTED` quickly on a key, that's the 20-RPD cap — known and expected; the Gemma slot on the same key is your safety valve. The estimated daily budget in the sidebar's "EST" column may overstate the actual headroom in that situation.
+**Confirmed Gemini 3.5 Flash free-tier limits (May 2026, per project):**
+
+| Bucket | Limit | Notes |
+|---|---:|---|
+| **RPM** | **5** | Requests-per-minute; trips first under bursty load |
+| **TPM** | **250,000** | Tokens-per-minute; generous, rarely binding |
+| **RPD** | **20** | Requests-per-day; the real bottleneck — resets at UTC midnight |
+
+These are baked into `DEFAULT_BUDGETS["gemini"] = 20` and `DEFAULT_RPM["gemini"] = 5` in `src/config.ts`. Google's docs sometimes quote 15 RPM / 1500 RPD as the headline — those apply to upgraded/paid tiers, not the legacy free quota you get on a fresh project. If you have an upgraded project, override per-deploy via `ProviderConfig.estimatedDailyBudget` / `estimatedRpmCap`. **Gemma 3 on the SAME project has its own 30 RPM / 14,400 RPD pool**, which is why we register it as a separate `gemma:N` slot — it's the real safety net for the action roles and any role that doesn't strictly need Flash-specific features (`thinking=high` / Google Search grounding).
 
 ## CLI
 

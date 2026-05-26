@@ -28,6 +28,7 @@ import {
   FileStateStore,
   FileTools,
   BashTool,
+  WebSearchTool,
   ToolRunner,
   RoleResolver,
   RoleOrchestrator,
@@ -159,6 +160,11 @@ async function cmdAskWithTools(
   if (allowBash) {
     tools.push(new BashTool({ workdir: fileTools.workdir }).asTool());
   }
+  // Web search is always registered. Uses Brave if BRAVE_SEARCH_KEY is in
+  // env (free 2000 q/mo); falls back to DuckDuckGo Instant Answer (no key
+  // needed, lower coverage) otherwise. Either way the model decides
+  // whether to call it.
+  tools.push(new WebSearchTool().tool());
   const runner = new ToolRunner({ router, tools });
 
   const toolNames = tools.map((t) => t.name).join(", ");

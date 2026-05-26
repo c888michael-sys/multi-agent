@@ -24,14 +24,12 @@ import type { ProviderConfig } from "./pool.js";
  *            documented hard RPD limit; this just keeps the gauge useful)
  */
 const DEFAULT_BUDGETS: Record<string, number> = {
-  // Gemini 3.5 Flash on Studio free tier — Google's headline number is
-  // 1500 RPD/project, but newer projects ship with the much smaller
-  // 20-RPD legacy free quota until upgraded. We keep 1500 here as the
-  // *theoretical* cap so the sidebar bar tracks the "you might still get
-  // this much" headroom; live header values will override when present.
-  // Override per-deploy via `estimatedDailyBudget` if your real cap is
-  // smaller.
-  gemini: 1500,
+  // Gemini 3.5 Flash on Studio free tier — CONFIRMED via this project's
+  // accounts (May 2026): 20 RPD, 5 RPM, 250k TPM per project. Google's
+  // headline 1500 RPD/project is the upgraded-tier number; newer free
+  // projects ship with 20. Override per-deploy via `estimatedDailyBudget`
+  // if your project actually has the upgraded cap.
+  gemini: 20,
   // Gemma 3 27B-it on the SAME Google project — separate per-model quota
   // pool, ~14,400 RPD on free tier. The big safety net.
   gemma: 14400,
@@ -48,15 +46,18 @@ const DEFAULT_BUDGETS: Record<string, number> = {
  *
  * Free-tier numbers as of mid-2026 (will drift; override per-deploy via
  * `estimatedRpmCap` on the provider config):
- *   gemini:    15 RPM per project on Studio free tier
+ *   gemini:    5 RPM per project on Studio free tier (confirmed May 2026
+ *              against this project's accounts; the "15 RPM" number some
+ *              docs quote applies to upgraded/paid tiers)
+ *   gemma:     30 RPM (Gemma's per-model pool, distinct from Flash)
  *   groq:      30 RPM account-wide
  *   openrouter: 20 RPM on `:free` models (shared pool)
  *   cerebras:  30 RPM
  *   mistral:   60 RPM (1 RPS soft limit on Experiment plan)
  */
 const DEFAULT_RPM: Record<string, number> = {
-  gemini: 15,
-  gemma: 30,  // Gemma free tier on AI Studio is reportedly more generous on RPM too
+  gemini: 5,
+  gemma: 30,
   groq: 30,
   openrouter: 20,
   cerebras: 30,
