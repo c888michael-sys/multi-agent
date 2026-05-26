@@ -24,8 +24,45 @@ import { ChatSession, listSessions } from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
 import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 import { DEFAULT_ROLES } from "../roles/default-registry.js";
+import type { CompleteOptions } from "../provider.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const VALID_ROLES: ReadonlySet<RoleName> = new Set<RoleName>([
+  "perception",
+  "reasoning",
+  "orchestration",
+  "action-code",
+  "action-structural",
+  "action-repetitive",
+]);
+
+/**
+ * Translate the optional CLI-parity flags (`thinking`, `useSearch`,
+ * `forceRole`) from a /api/chat or /api/chat-stream body into the
+ * ChatSession.send() argument shape. Invalid forceRole values are
+ * dropped silently — better than 400'ing a chat turn just because a
+ * stale UI sent an unknown role.
+ */
+function buildChatOpts(parsed: {
+  thinking?: "low" | "medium" | "high" | null;
+  useSearch?: boolean;
+  forceRole?: string | null;
+}): { opts: CompleteOptions; routing: { forceRole?: RoleName } } {
+  const opts: CompleteOptions = {};
+  if (parsed.thinking === "low" || parsed.thinking === "medium" || parsed.thinking === "high") {
+    opts.thinking = parsed.thinking;
+  }
+  if (parsed.useSearch === true) {
+    opts.useSearch = true;
+  }
+  const routing: { forceRole?: RoleName } = {};
+  const fr = parsed.forceRole;
+  if (typeof fr === "string" && VALID_ROLES.has(fr as RoleName)) {
+    routing.forceRole = fr as RoleName;
+  }
+  return { opts, routing };
+}
 const STATIC_DIR = join(__dirname, "static");
 
 const MIME: Record<string, string> = {
@@ -155,14 +192,23 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/chat" && req.method === "POST") {
         const body = await readBody(req);
-        const parsed = safeJsonParse(body) as { sessionId?: string; message?: string } | null;
+        const parsed = safeJsonParse(body) as
+          | {
+              sessionId?: string;
+              message?: string;
+              thinking?: "low" | "medium" | "high" | null;
+              useSearch?: boolean;
+              forceRole?: string | null;
+            }
+          | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
           return;
         }
+        const chatOpts = buildChatOpts(parsed);
         const session = createChatSession(opts, parsed.sessionId);
         try {
-          const result = await session.send(parsed.message);
+          const result = await session.send(parsed.message, chatOpts.opts, undefined, chatOpts.routing);
           sendJson(res, 200, {
             reply: result.reply,
             servedBy: result.servedBy,
@@ -187,11 +233,20 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       // frame; events have no event name (default 'message').
       if (pathname === "/api/chat-stream" && req.method === "POST") {
         const body = await readBody(req);
-        const parsed = safeJsonParse(body) as { sessionId?: string; message?: string } | null;
+        const parsed = safeJsonParse(body) as
+          | {
+              sessionId?: string;
+              message?: string;
+              thinking?: "low" | "medium" | "high" | null;
+              useSearch?: boolean;
+              forceRole?: string | null;
+            }
+          | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
           return;
         }
+        const chatOpts = buildChatOpts(parsed);
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -206,9 +261,12 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         };
         const session = createChatSession(opts, parsed.sessionId);
         try {
-          const result = await session.send(parsed.message, undefined, (evt) => {
-            writeEvent(evt);
-          });
+          const result = await session.send(
+            parsed.message,
+            chatOpts.opts,
+            (evt) => { writeEvent(evt); },
+            chatOpts.routing,
+          );
           writeEvent({
             kind: "done",
             reply: result.reply,

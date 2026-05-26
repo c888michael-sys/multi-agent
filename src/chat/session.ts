@@ -201,12 +201,17 @@ export class ChatSession {
     userInput: string,
     opts?: CompleteOptions,
     onProgress?: (evt: ChatProgressEvent) => void,
+    routing?: { forceRole?: RoleName },
   ): Promise<SendResult> {
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
       ...(this.powerful && { thinking: "high" as const }),
       ...opts,
     };
+    // Per-turn role override: when the caller specifies a forceRole we
+    // bypass smart routing for this turn only and call that role directly.
+    // The session's smartRouting setting is preserved for future turns.
+    const forcedRole = routing?.forceRole;
     const emit = (evt: ChatProgressEvent) => {
       if (onProgress) {
         try { onProgress(evt); } catch {/* ignore caller errors */}
@@ -232,19 +237,20 @@ export class ChatSession {
     let servedBy: RoleName[];
     let plan: Plan | undefined;
     try {
-      if (!this.smartRouting) {
-        emit({ kind: "role-start", role: this.role, phase: "single" });
+      if (!this.smartRouting || forcedRole) {
+        const directRole = forcedRole ?? this.role;
+        emit({ kind: "role-start", role: directRole, phase: "single" });
         if (onProgress) {
           reply = await this.resolver.runRoleChatStream(
-            this.role, this.history,
+            directRole, this.history,
             (text) => emit({ kind: "token", text }),
             effectiveOpts,
           );
         } else {
-          reply = await this.resolver.runRoleChat(this.role, this.history, effectiveOpts);
+          reply = await this.resolver.runRoleChat(directRole, this.history, effectiveOpts);
         }
-        emit({ kind: "role-end", role: this.role, ok: true });
-        servedBy = [this.role];
+        emit({ kind: "role-end", role: directRole, ok: true });
+        servedBy = [directRole];
       } else {
         const planned = await this.planAndExecute(effectiveOpts, emit);
         reply = planned.reply;

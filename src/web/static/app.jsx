@@ -183,11 +183,10 @@ function CompactNumber(n) {
   return String(n);
 }
 
-function Sidebar({ phase, latestResponse, open }) {
-  // `usage` is the most recent snapshot from /api/usage.json.
-  // `usageFetchedAt` records when we received it, so we can subtract
-  // elapsed ms from each provider's cooldownMsRemaining to drive a
-  // smooth live countdown without re-polling every second.
+// Shared poller for /api/usage.json. Used by the sidebar (gauges +
+// cooldown countdowns) and the quota-warning banner. Polling at 3 Hz is
+// cheap and keeps the two views perfectly in sync.
+function useUsage(extraDepKey) {
   const [usage, setUsage] = React.useState({ roles: {}, mode: 'round-robin' });
   const [usageFetchedAt, setUsageFetchedAt] = React.useState(performance.now());
   React.useEffect(() => {
@@ -207,12 +206,210 @@ function Sidebar({ phase, latestResponse, open }) {
     const id = setInterval(fetchUsage, 3000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
+  // Optional one-shot refresh hook keyed on caller-supplied value
+  // (e.g. phase change). Lets the banner refresh immediately when a
+  // turn finishes, instead of waiting up to 3 s for the next poll.
   React.useEffect(() => {
-    if (phase !== 'response') return;
+    if (extraDepKey === undefined) return;
     fetch('/api/usage.json').then((r) => r.ok && r.json().then((j) => {
       setUsage(j); setUsageFetchedAt(performance.now());
     })).catch(() => {});
-  }, [phase]);
+  }, [extraDepKey]);
+  return { usage, usageFetchedAt };
+}
+
+// QuotaBanner — one-line strip above the composer that warns when any
+// role drops below 10 % remaining, falls back, becomes temporarily
+// unavailable, or the conservation pool flips to serial mode. Renders
+// nothing when everything is healthy so the chat surface stays clean.
+//
+// Data comes from /api/usage.json (same source the sidebar polls). The
+// banner prioritizes the LOWEST-remaining role so users see the most
+// urgent signal first; a "+N more" suffix appears if multiple roles
+// are degraded simultaneously.
+function QuotaBanner({ phase }) {
+  // Re-fetch when the phase changes so the banner reflects post-turn
+  // state without waiting for the next 3 s poll.
+  const { usage } = useUsage(phase);
+  const issues = React.useMemo(() => {
+    const out = [];
+    const roles = usage.roles || {};
+    for (const a of MM_AGENTS) {
+      const r = roles[a.id];
+      if (!r) continue;
+      // Hard-down: nothing in the role's chain can serve right now.
+      if (r.status === 'unavailable') {
+        out.push({ kind: 'unavailable', role: a, providerId: null, pct: 0 });
+        continue;
+      }
+      // Soft-down: every candidate is cooling. The picked provider in
+      // r.providerId is still the primary but it's cooling.
+      if (r.status === 'temporarily-unavailable' || r.cooling) {
+        out.push({ kind: 'cooling', role: a, providerId: r.providerId, pct: r.remainingPct ?? 0 });
+        continue;
+      }
+      // Low-quota: the picked provider has < 10 % left. Includes the
+      // case where r.fallback is true (we're already on a backup).
+      if (typeof r.remainingPct === 'number' && r.remainingPct < 10) {
+        out.push({
+          kind: r.fallback ? 'fallback-low' : 'low',
+          role: a, providerId: r.providerId, pct: r.remainingPct,
+        });
+        continue;
+      }
+      if (r.fallback) {
+        out.push({ kind: 'fallback', role: a, providerId: r.providerId, pct: r.remainingPct ?? 100 });
+      }
+    }
+    // Sort: hard-down first, then by lowest remaining %.
+    out.sort((a, b) => {
+      const rank = (k) => k === 'unavailable' ? 0 : k === 'cooling' ? 1 : k === 'low' ? 2 : k === 'fallback-low' ? 3 : 4;
+      const r = rank(a.kind) - rank(b.kind);
+      if (r !== 0) return r;
+      return (a.pct || 0) - (b.pct || 0);
+    });
+    return out;
+  }, [usage]);
+
+  const serial = usage.mode === 'serial';
+  if (!serial && issues.length === 0) return null;
+
+  const lead = issues[0];
+  const leadText = !lead ? null
+    : lead.kind === 'unavailable'
+      ? `${lead.role.name.toLowerCase()} has no provider available — turns to that role will fail`
+    : lead.kind === 'cooling'
+      ? `${lead.role.name.toLowerCase()} is cooling on every candidate; turns will block briefly`
+    : lead.kind === 'fallback-low'
+      ? `${lead.role.name.toLowerCase()} on fallback (${lead.providerId}) — only ${Math.round(lead.pct)} % left`
+    : lead.kind === 'low'
+      ? `${lead.role.name.toLowerCase()} (${lead.providerId}) at ${Math.round(lead.pct)} % — will rotate to next candidate soon`
+    : `${lead.role.name.toLowerCase()} running on fallback (${lead.providerId})`;
+
+  const more = issues.length > 1 ? ` +${issues.length - 1} more` : '';
+  const serialTag = serial ? <span className="mm-quota-banner-serial">conservation: serial</span> : null;
+
+  return (
+    <div
+      className={'mm-quota-banner mm-quota-' + (lead?.kind || (serial ? 'serial-only' : 'ok'))}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="mm-quota-banner-dot" />
+      {leadText && <span className="mm-quota-banner-msg">{leadText}{more}</span>}
+      {!leadText && serial && <span className="mm-quota-banner-msg">conservation mode active — pool flipped to serial dispatch</span>}
+      {leadText && serialTag}
+    </div>
+  );
+}
+
+// SettingsDrawer — slide-in panel from the right that exposes the
+// CLI's runtime flags as web UI toggles:
+//   • Serious / powerful mode  → adds `thinking: "high"` to every
+//     underlying call (CLI: --serious / --thinking=high).
+//   • Live web search          → adds `useSearch: true` so the perception
+//     primary uses Google Search grounding (CLI: --search).
+//   • Force role               → bypasses smart routing for the next turn
+//     and pins the call to a specific role's chain (CLI: --role=<name>).
+// Settings persist to localStorage; HeroMindmap reads them per submit and
+// includes them in the /api/chat-stream body. The chip in the nav reflects
+// the *number of non-default* knobs so the user can tell at a glance
+// whether anything is currently in effect.
+function SettingsDrawer({ open, onClose, settings, onChange }) {
+  const drawerRef = React.useRef(null);
+  // Close on Escape so the drawer doesn't trap focus.
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  return (
+    <>
+      <div
+        className={'mm-settings-scrim' + (open ? ' open' : '')}
+        onClick={onClose}
+        aria-hidden={!open}
+      />
+      <aside
+        ref={drawerRef}
+        className={'mm-settings-drawer' + (open ? ' open' : '')}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        aria-hidden={!open}
+      >
+        <div className="mm-settings-head">
+          <span className="mm-settings-title">Settings</span>
+          <button className="mm-settings-close" onClick={onClose} aria-label="Close settings">×</button>
+        </div>
+        <div className="mm-settings-body">
+          <div className="mm-settings-row">
+            <label className="mm-settings-label">
+              <input
+                type="checkbox"
+                checked={settings.serious}
+                onChange={(e) => onChange({ ...settings, serious: e.target.checked })}
+              />
+              <span className="mm-settings-text">
+                <span className="mm-settings-name">Serious mode</span>
+                <span className="mm-settings-hint">adds <code>thinking: high</code> to every Gemini call — slower, more deliberate (CLI: <code>--serious</code>)</span>
+              </span>
+            </label>
+          </div>
+          <div className="mm-settings-row">
+            <label className="mm-settings-label">
+              <input
+                type="checkbox"
+                checked={settings.search}
+                onChange={(e) => onChange({ ...settings, search: e.target.checked })}
+              />
+              <span className="mm-settings-text">
+                <span className="mm-settings-name">Live web search</span>
+                <span className="mm-settings-hint">Google Search grounding on every call that supports it (CLI: <code>--search</code>)</span>
+              </span>
+            </label>
+          </div>
+          <div className="mm-settings-row mm-settings-row-select">
+            <span className="mm-settings-name">Force role</span>
+            <select
+              className="mm-settings-select"
+              value={settings.forceRole}
+              onChange={(e) => onChange({ ...settings, forceRole: e.target.value })}
+            >
+              {ROLE_OPTIONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+            <span className="mm-settings-hint">
+              Skip smart routing — every turn goes through the chosen role's chain (CLI: <code>--role=&lt;name&gt;</code>)
+            </span>
+          </div>
+          <div className="mm-settings-foot">
+            <button
+              className="mm-settings-reset"
+              onClick={() => onChange({ ...DEFAULT_SETTINGS })}
+              title="Reset all settings to defaults"
+            >
+              reset to defaults
+            </button>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function settingsActiveCount(s) {
+  let n = 0;
+  if (s.serious) n++;
+  if (s.search) n++;
+  if (s.forceRole && s.forceRole !== 'auto') n++;
+  return n;
+}
+
+function Sidebar({ phase, latestResponse, open }) {
+  const { usage, usageFetchedAt } = useUsage(phase === 'response' ? 'response-tick' : undefined);
 
   // 1 Hz tick so the cooldown countdown advances smoothly between polls.
   const [, forceTick] = React.useState(0);
@@ -1851,6 +2048,42 @@ function formatResponseText(entry) {
 // ─── App ───────────────────────────────────────────────────
 const STACK_LS_KEY = 'lattice.responseStack.v2';
 const SESSION_LS_KEY = 'lattice.chatSessionId.v1';
+const SETTINGS_LS_KEY = 'lattice.settings.v1';
+
+// Persistent user-tunable knobs that mirror CLI flags one-for-one:
+//   serious  → thinking: "high"  (Gemini extended reasoning on every call)
+//   search   → useSearch: true   (Google Search grounding on the perception primary)
+//   role     → forceRole (one of RoleName) | 'auto' (let smart-routing decide)
+// All knobs persist to localStorage so refresh / new tab keeps the user's
+// chosen mode. forceRole='auto' means "no override", which is the default.
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto' };
+const ROLE_OPTIONS = [
+  { value: 'auto',              label: 'auto (smart routing)' },
+  { value: 'orchestration',     label: 'orchestration' },
+  { value: 'perception',        label: 'perception (search grounding)' },
+  { value: 'reasoning',         label: 'reasoning (deliberation)' },
+  { value: 'action-code',       label: 'action-code (Codestral)' },
+  { value: 'action-structural', label: 'action-structural (Llama 70B)' },
+  { value: 'action-repetitive', label: 'action-repetitive (Cerebras)' },
+];
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_LS_KEY);
+    if (!raw) return { ...DEFAULT_SETTINGS };
+    const parsed = JSON.parse(raw);
+    return {
+      serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
+      search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
+      forceRole: ROLE_OPTIONS.some((r) => r.value === parsed.forceRole) ? parsed.forceRole : 'auto',
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+function saveSettings(s) {
+  try { localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(s)); } catch {}
+}
 const IMPLODE_DURATION_MS = 440;
 
 function loadSessionId() {
@@ -1925,13 +2158,25 @@ class PhaseErrorBoundary extends React.Component {
   render() {
     if (this.state.error) {
       const msg = String(this.state.error?.message || this.state.error || 'unknown error');
+      const label = this.props.label || 'mindmap';
+      const recoverLabel = this.props.recoverLabel || '← back to chat';
       return (
         <div className="mm-phase mm-phase-error" role="alert">
           <div className="mm-phase-error-card">
-            <div className="mm-phase-error-title">mindmap render failed</div>
+            <div className="mm-phase-error-title">{label} render failed</div>
             <div className="mm-phase-error-msg">{msg}</div>
-            <button className="mm-phase-error-back" onClick={this.props.onRecover}>
-              ← back to chat
+            <button
+              className="mm-phase-error-back"
+              onClick={() => {
+                // Clear our error before delegating to the parent's recover.
+                // Without the reset, a re-mount that hits the same bug would
+                // never repaint because getDerivedStateFromError already
+                // latched us into the error state.
+                this.setState({ error: null });
+                this.props.onRecover?.();
+              }}
+            >
+              {recoverLabel}
             </button>
           </div>
         </div>
@@ -1957,6 +2202,15 @@ function HeroMindmap() {
   const [liveTurn, setLiveTurn] = React.useState(null);
   // Mobile sidebar drawer (the desktop sidebar is hidden by media query).
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  // Settings drawer — CLI-parity toggles (serious / search / force-role).
+  // Persist on every change so refresh keeps the chosen mode.
+  const [settings, setSettingsState] = React.useState(loadSettings);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const setSettings = React.useCallback((next) => {
+    setSettingsState(next);
+    saveSettings(next);
+  }, []);
+  const activeSettingsCount = settingsActiveCount(settings);
 
   React.useEffect(() => {
     if (!stageRef.current) return;
@@ -1976,6 +2230,19 @@ function HeroMindmap() {
   const newest = responses[responses.length - 1] || null;
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
 
+  // AbortController for the in-flight /api/chat-stream fetch. Held in a
+  // ref so the stop button can reach it without re-rendering on creation.
+  // We also track a boolean state `streaming` to drive UI (stop-button
+  // visibility, composer disabled state).
+  const streamAbortRef = React.useRef(null);
+  const [streaming, setStreaming] = React.useState(false);
+  const stopStream = React.useCallback(() => {
+    const ac = streamAbortRef.current;
+    if (ac) {
+      try { ac.abort(); } catch {}
+    }
+  }, []);
+
   // Streaming chat submit. POSTs to /api/chat-stream and consumes the
   // server-sent events one at a time:
   //   - plan-start / plan / role-start / role-end / summarize-*: update
@@ -1984,6 +2251,12 @@ function HeroMindmap() {
   //     real-time, like Claude/ChatGPT
   //   - done: finalize the turn into the responses array
   //   - error: append a placeholder error turn so the user sees the failure
+  //
+  // The fetch is bound to an AbortController so the stop button (see
+  // `stopStream` above) can cancel mid-stream. On abort we keep whatever
+  // partial text already arrived as a normal turn (so the user doesn't
+  // lose work mid-thought) but suppress the error-string fallback —
+  // an abort is intentional, not a failure.
   const submit = async () => {
     const q = draft.trim();
     if (!q) return;
@@ -1992,18 +2265,32 @@ function HeroMindmap() {
     setDraft('');
     setPhase('loading');
     setLiveTurn({ prompt: q, partial: '', status: { phase: 'plan-start' } });
+    setStreaming(true);
 
     let partial = '';
     let lastStatus = { phase: 'plan-start' };
     let summarizedTurns = 0;
     let doneEvent = null;
     let errorMsg = null;
+    let aborted = false;
+
+    const ac = new AbortController();
+    streamAbortRef.current = ac;
 
     try {
+      // Build per-turn body — settings drawer translates to backend opts:
+      //   serious  → thinking: "high"
+      //   search   → useSearch: true
+      //   forceRole (≠ 'auto') → forceRole: <role>
+      const body = { sessionId, message: q };
+      if (settings.serious) body.thinking = 'high';
+      if (settings.search) body.useSearch = true;
+      if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, message: q }),
+        body: JSON.stringify(body),
+        signal: ac.signal,
       });
       if (!res.ok || !res.body) throw new Error(`/api/chat-stream ${res.status}`);
 
@@ -2049,10 +2336,31 @@ function HeroMindmap() {
         }
       }
     } catch (e) {
-      errorMsg = e.message || 'request failed';
+      // Aborts come through as a DOMException with name === 'AbortError' in
+      // most browsers; some implementations throw a TypeError on aborted
+      // body reads. Either way, recognize "this was user-initiated cancel"
+      // and don't surface as an error.
+      if (e?.name === 'AbortError' || ac.signal.aborted) {
+        aborted = true;
+      } else {
+        errorMsg = e.message || 'request failed';
+      }
+    } finally {
+      streamAbortRef.current = null;
+      setStreaming(false);
     }
 
-    // Finalize the turn into the responses array.
+    // If the user aborted before ANY token landed, drop the turn entirely:
+    // there's nothing meaningful to persist, and they've effectively said
+    // "never mind." We still flip back to a safe phase below.
+    if (aborted && !partial && !doneEvent) {
+      setLiveTurn(null);
+      setPhase(responses.length > 0 ? 'response' : 'idle');
+      return;
+    }
+
+    // Finalize the turn into the responses array. On abort with partial
+    // text we keep what arrived (no error string).
     const finalText = doneEvent?.reply || partial || (errorMsg ? `(error: ${errorMsg})` : '');
     const entry = {
       id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
@@ -2176,6 +2484,16 @@ function HeroMindmap() {
     clearPersistedStack();
   };
 
+  // Soft recovery for PhaseErrorBoundary catches: keep the conversation
+  // history (responses + sessionId) intact, but tear down any in-flight
+  // turn state and return to a safe phase. If we have any persisted turns
+  // we land on 'response'; otherwise we go to idle.
+  const recoverFromError = React.useCallback(() => {
+    setLiveTurn(null);
+    setCurrentPrompt('');
+    setPhase(responses.length > 0 ? 'response' : 'idle');
+  }, [responses.length]);
+
   return (
     <div className="mm-root" data-phase={phase}>
       <div className="mm-aurora" />
@@ -2197,7 +2515,21 @@ function HeroMindmap() {
           </svg>
           Lattice
         </div>
-        <div className="mm-status"><i />5/5 AGENTS ONLINE</div>
+        <div className="mm-nav-right">
+          <div className="mm-status"><i />5/5 AGENTS ONLINE</div>
+          <button
+            className={'mm-nav-settings' + (settingsOpen ? ' open' : '') + (activeSettingsCount > 0 ? ' active' : '')}
+            onClick={() => setSettingsOpen(true)}
+            title="Open settings (thinking depth, search, forced role)"
+            aria-label="Open settings"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            {activeSettingsCount > 0 && <span className="mm-nav-settings-badge">{activeSettingsCount}</span>}
+          </button>
+        </div>
       </nav>
 
       <Sidebar phase={phase} latestResponse={newest} open={sidebarOpen} />
@@ -2210,43 +2542,85 @@ function HeroMindmap() {
         {sidebarOpen ? 'close' : 'quota'}
       </button>
 
+      <SettingsDrawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={settings}
+        onChange={setSettings}
+      />
+
       <div
         ref={stageRef}
         className="mm-stage"
         data-phase={phase}
         style={{ '--accent': accent }}
       >
+        {/*
+          Quota-warning strip. Renders nothing when every role is
+          healthy; mounts a one-liner when any role drops below 10 %
+          remaining, falls back, or the pool flips to serial mode.
+          Lives inside the stage so it overlays content without
+          taking layout space when hidden.
+        */}
+        <QuotaBanner phase={phase} />
         {phase === 'idle' && (
-          <IdleView draft={draft} setDraft={setDraft} submit={submit} />
+          <PhaseErrorBoundary label="idle view" recoverLabel="reset" onRecover={reset}>
+            <IdleView draft={draft} setDraft={setDraft} submit={submit} />
+          </PhaseErrorBoundary>
         )}
         {phase === 'loading' && (
-          <LoadingView prompt={currentPrompt}
-            liveStatus={liveTurn?.status}
-            summarize={liveTurn?.summarize}
-          />
+          <PhaseErrorBoundary label="loading view" recoverLabel="← back to chat" onRecover={recoverFromError}>
+            <LoadingView prompt={currentPrompt}
+              liveStatus={liveTurn?.status}
+              summarize={liveTurn?.summarize}
+            />
+          </PhaseErrorBoundary>
         )}
         {(phase === 'response' || phase === 'collapsing' || phase === 'imploding') && (
-          <ResponseStackView
-            draft={draft} setDraft={setDraft} submit={submit}
-            responses={responses} expand={expand} reset={reset} phase={phase}
-            liveTurn={liveTurn}
-          />
+          <PhaseErrorBoundary label="chat" recoverLabel="reset thread" onRecover={reset}>
+            <ResponseStackView
+              draft={draft} setDraft={setDraft} submit={submit}
+              responses={responses} expand={expand} reset={reset} phase={phase}
+              liveTurn={liveTurn}
+            />
+          </PhaseErrorBoundary>
         )}
         {phase === 'collapsing' && (
-          <CatalystOverlay
-            newest={newest}
-            stageRect={stageRect}
-            slideDistance={stageRect.h ? stageRect.h * 0.36 : 200}
-          />
+          <PhaseErrorBoundary label="catalyst" recoverLabel="← back to chat" onRecover={recoverFromError}>
+            <CatalystOverlay
+              newest={newest}
+              stageRect={stageRect}
+              slideDistance={stageRect.h ? stageRect.h * 0.36 : 200}
+            />
+          </PhaseErrorBoundary>
         )}
         {phase === 'mindmap' && (
-          <PhaseErrorBoundary onRecover={collapse}>
+          <PhaseErrorBoundary label="mindmap" recoverLabel="← back to chat" onRecover={collapse}>
             <OrbitalMindmap
               responses={responses}
               collapse={collapse} reset={reset} phase={phase}
               draft={draft} setDraft={setDraft} submit={submit}
             />
           </PhaseErrorBoundary>
+        )}
+        {/*
+          Floating stop button — only mounts while a /api/chat-stream
+          turn is in flight. Calls AbortController.abort(); the submit
+          handler's catch block recognizes the abort, keeps any partial
+          text already streamed, and returns to a safe phase. Lives
+          inside .mm-stage so it sits above LoadingView and the chat
+          composer alike without either needing to know about it.
+        */}
+        {streaming && (
+          <button
+            className="mm-stop-stream"
+            onClick={stopStream}
+            title="Stop generating (saves quota on bad turns)"
+            aria-label="Stop generating"
+          >
+            <span className="mm-stop-glyph" aria-hidden="true" />
+            <span className="mm-stop-label">stop</span>
+          </button>
         )}
       </div>
     </div>
