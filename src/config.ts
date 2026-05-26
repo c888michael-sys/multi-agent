@@ -1,4 +1,17 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve the directory of config.ts (either src/ or dist/src/)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load the environment variables from the absolute path of the project root's .env.
+// This guarantees key loading succeeds even if the process is launched from outside
+// the project directory (e.g. hosting via PM2, system service, or different directory).
+dotenv.config({ path: join(__dirname, "..", ".env") });
+dotenv.config({ path: join(__dirname, "..", "..", ".env") });
+
 import { GeminiProvider } from "./providers/gemini.js";
 import { GroqProvider } from "./providers/groq.js";
 import { OpenRouterProvider } from "./providers/openrouter.js";
