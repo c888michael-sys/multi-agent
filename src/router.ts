@@ -247,7 +247,10 @@ export class Router {
       if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      const earliest = this.pool.earliestAvailable();
+      const earliest = this.pool.earliestAvailableIn(providerIds);
+      if (!isFinite(earliest)) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
       const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
       if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
@@ -307,7 +310,10 @@ export class Router {
       if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      const earliest = this.pool.earliestAvailable();
+      const earliest = this.pool.earliestAvailableIn(providerIds);
+      if (!isFinite(earliest)) {
+        throw new AllProvidersExhaustedError(attempts);
+      }
       const waitMs = Math.max(0, earliest - this.now()) + this.jitter();
       if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);

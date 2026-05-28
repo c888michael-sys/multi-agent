@@ -176,6 +176,9 @@ The candidate order each role uses today, after live calibration against the act
 - [x] Stage 6: **Live RPM/RPD from `X-RateLimit-*` response headers** (Groq / OpenRouter / Cerebras / Mistral) via `provider.getLastQuota?()` + `onHeaders` callback in `openai-compat.ts`. CLI's `usage` and web sidebar tag each gauge with `live` vs `est.` so you know which numbers come from the wire.
 - [x] Stage 6: **Per-provider default cooldowns** — `DEFAULT_COOLDOWN_MS` table in `src/config.ts` (OpenRouter 10 s, others 60 s); response-header `Retry-After` always wins.
 - [x] Stage 4: **CLI local file access on by default** for `ask` — `--no-tools` to opt out.
+- [x] **Hybrid local-model toggle** (`--local` on CLI; "Hybrid local models" toggle in the web settings drawer). When enabled, prepends locally-hosted Ollama providers to two role chains: `reasoning → ollama:deepseek-r1` (DeepSeek-R1 32B) and `action-code → ollama:qwen2.5-coder` (Qwen 2.5 Coder). All other roles unchanged. Cloud candidates remain in the chain as fallback if the daemon is unreachable or the model isn't pulled. Default Ollama endpoint is `http://localhost:11434`; override with `OLLAMA_HOST` env var. The web server registers Ollama providers at boot whenever `serve --local` is used OR a chat request body carries `useLocal: true` — the per-request flag lets the UI flip modes without restarting. See [src/providers/ollama.ts](src/providers/ollama.ts).
+- [x] **File attachments in the web composer.** Paperclip button next to send opens the OS file picker; selected text files (max 256 KB each, 1 MB total) appear as removable chips above the textarea. On submit, file contents are prepended to the message as fenced blocks (`### filename\n\`\`\`ext\n...\n\`\`\``) so the model can read them inline. Binary detection rejects non-text uploads. Per-file content is fenced with an auto-extended backtick fence so files containing their own \`\`\` aren't broken. See `Composer` in [src/web/static/app.jsx](src/web/static/app.jsx).
+- [x] **Router fix — chat backoff respects role allow-list.** `Router.completeChat` and `Router.completeChatStream` previously computed their wait-until-recovery using `pool.earliestAvailable()` instead of `earliestAvailableIn(providerIds)`, which meant role-constrained chat calls (the entire web UI hot path) would spin-retry against a cooled, allow-listed provider while unrelated healthy providers showed wait=0. Fixed by switching both call sites to the filtered variant, matching the existing `Router.complete` and `Router.completeWithTools` behavior. See [src/router.ts:250](src/router.ts), [src/router.ts:310](src/router.ts).
 - [ ] Stage 5b: optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
 - [ ] Web UI: mindmap transition **v3** — "robot arm rips the door, opens to a canvas-like (white) dimension, agents fly out, fades into mindmap" (current v2 is the seam-rip catalyst)
@@ -322,6 +325,28 @@ For the full role-based architecture, add keys for any of these providers (each 
 | `CEREBRAS_KEY` | Cerebras | https://cloud.cerebras.ai → API Keys | 1M tokens/day, 30 RPM |
 
 **Gemma slots come free with each Gemini key.** No separate signup — every `GEMINI_KEY_N` is automatically registered twice: once as `gemini:N` (Flash) and once as `gemma:N` (Gemma 3 27B-it). The two share a Google Cloud project but draw from **independent per-model RPD quota pools** on the free tier (Flash ≈ 20–1,500/day depending on project age; Gemma 3 ≈ 14,400/day). Doubles your effective Google-side headroom at zero cost.
+
+### Hybrid local mode (optional)
+
+If you have an Ollama daemon running on the same machine (or on your LAN), you can route the two most expensive role chains to local models instead of the cloud:
+
+| Role | Local model | Where it usually goes (cloud) |
+|---|---|---|
+| `reasoning` | `deepseek-r1:32b` | `gemini:1` / `gemini:2` with `thinking=high` |
+| `action-code` | `qwen2.5-coder:latest` | `mistral:codestral` |
+
+All other roles (orchestration, perception, action-structural, action-repetitive) continue to use their cloud chains regardless of this toggle — perception in particular needs Google Search grounding and cannot be swapped to a local model.
+
+Setup:
+
+1. Install Ollama (https://ollama.com).
+2. `ollama pull deepseek-r1:32b` (≈19 GB; needs ~24 GB unified RAM or a 24 GB+ VRAM GPU).
+3. `ollama pull qwen2.5-coder:latest` (≈4 GB).
+4. Enable via either path:
+   - **CLI**: pass `--local` to any command — `npm run cli -- task --local "..."`, `npm run cli -- chat --local my-session`, `npm run cli -- serve --local`.
+   - **Web UI**: open the settings drawer (top-right gear), toggle "Hybrid local models." The toggle persists in `localStorage[lattice.settings.v1]`; each chat-stream request sends `useLocal: true` so the server picks the local-prepend resolver for that turn only.
+
+Override the daemon URL with `OLLAMA_HOST=http://other-host:11434` in `.env` if Ollama runs on a different machine. The cloud chain is preserved as fallback in local mode — if the daemon is down or the model isn't pulled, the role gracefully falls through to the original cloud candidate.
 
 **Confirmed Gemini 3.5 Flash free-tier limits (May 2026, per project):**
 

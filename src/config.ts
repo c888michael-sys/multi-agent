@@ -17,8 +17,20 @@ import { GroqProvider } from "./providers/groq.js";
 import { OpenRouterProvider } from "./providers/openrouter.js";
 import { CerebrasProvider } from "./providers/cerebras.js";
 import { MistralProvider } from "./providers/mistral.js";
+import { OllamaProvider } from "./providers/ollama.js";
 import type { Provider } from "./provider.js";
 import type { ProviderConfig } from "./pool.js";
+
+/**
+ * Local Ollama models we wire by default when --local is enabled.
+ * Provider id format: `ollama:<short-name>` (so the role registry can
+ * reference them in candidate chains). Keys are the role they primarily
+ * serve so the role-builder knows which to slot where.
+ */
+export const LOCAL_OLLAMA_MODELS = {
+  reasoning: { providerId: "ollama:deepseek-r1", model: "deepseek-r1:32b" },
+  "action-code": { providerId: "ollama:qwen2.5-coder", model: "qwen2.5-coder:latest" },
+} as const;
 
 /**
  * Per-provider best-guess daily request budgets used to populate the
@@ -39,6 +51,25 @@ import type { ProviderConfig } from "./pool.js";
  *   mistral: 500 RPD placeholder (Experiment plan is token-based, no
  *            documented hard RPD limit; this just keeps the gauge useful)
  */
+/**
+ * Build the locally-hosted Ollama providers used by the hybrid mode.
+ * Each is registered with a unique provider id so the role registry
+ * can target them individually (e.g. `ollama:deepseek-r1` for reasoning,
+ * `ollama:qwen2.5-coder` for action-code). The base URL defaults to
+ * http://localhost:11434 but can be overridden via OLLAMA_HOST env var
+ * (useful if Ollama runs on another machine on the LAN).
+ *
+ * Models live in [[LOCAL_OLLAMA_MODELS]]. To swap which local model
+ * fills a role, edit that table; the role registry's `local` overlay
+ * picks them up automatically.
+ */
+export function loadOllamaProviders(opts?: { baseUrl?: string }): Provider[] {
+  const baseUrl = opts?.baseUrl ?? (process.env.OLLAMA_HOST ?? "http://localhost:11434");
+  return Object.values(LOCAL_OLLAMA_MODELS).map(
+    (m) => new OllamaProvider({ id: m.providerId, model: m.model, baseUrl }),
+  );
+}
+
 const DEFAULT_BUDGETS: Record<string, number> = {
   // Gemini 3.5 Flash on Studio free tier — CONFIRMED via this project's
   // accounts (May 2026): 20 RPD, 5 RPM, 250k TPM per project. Google's
@@ -53,6 +84,9 @@ const DEFAULT_BUDGETS: Record<string, number> = {
   openrouter: 50,
   cerebras: 1440,
   mistral: 500,
+  // Local Ollama models — no daily cap. Display gauge as 9999 so the
+  // sidebar shows them as effectively unlimited without special-casing.
+  ollama: 9999,
 };
 
 /**
@@ -78,6 +112,9 @@ const DEFAULT_RPM: Record<string, number> = {
   openrouter: 20,
   cerebras: 30,
   mistral: 60,
+  // Local Ollama — bounded only by the machine; pick a generous cap so
+  // the RPM gauge effectively shows headroom rather than throttling.
+  ollama: 999,
 };
 
 function budgetFor(providerId: string): number {
@@ -103,6 +140,9 @@ const DEFAULT_COOLDOWN_MS: Record<string, number> = {
   openrouter: 10_000,
   cerebras: 60_000,
   mistral: 60_000,
+  // Local Ollama — never rate-limits, never cools. The short value
+  // here is harmless because isRateLimitError always returns false.
+  ollama: 1_000,
 };
 
 function defaultCooldownFor(providerId: string): number {

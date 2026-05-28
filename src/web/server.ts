@@ -81,12 +81,28 @@ const MIME: Record<string, string> = {
 
 export interface ServerOptions {
   router: Router;
+  /** Default resolver — used when the request body does not specify `useLocal`. */
   resolver: RoleResolver;
+  /** Optional local-mode resolver. Selected per request when `useLocal: true`. */
+  localResolver?: RoleResolver;
+  /** Optional cloud-mode resolver. Selected per request when `useLocal: false`. */
+  cloudResolver?: RoleResolver;
   port?: number;
   /** When true, allow cross-origin requests (browsers from other origins). Default false. */
   cors?: boolean;
   /** Override chat-session storage directory. Used by tests; default is ~/.multi-agent/sessions. */
   sessionStorageDir?: string;
+}
+
+/**
+ * Select the resolver for this request based on the optional `useLocal`
+ * field in the body. When the chosen alternative isn't registered (e.g.
+ * `localResolver` not supplied), falls back to the default `resolver`.
+ */
+function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleResolver {
+  if (useLocal === true && opts.localResolver) return opts.localResolver;
+  if (useLocal === false && opts.cloudResolver) return opts.cloudResolver;
+  return opts.resolver;
 }
 
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
@@ -148,7 +164,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/complete" && req.method === "POST") {
         const body = await readBody(req);
-        const parsed = safeJsonParse(body) as { prompt?: string; role?: string } | null;
+        const parsed = safeJsonParse(body) as { prompt?: string; role?: string; useLocal?: boolean } | null;
         if (typeof parsed?.prompt !== "string" || !parsed.prompt.trim()) {
           sendJson(res, 400, { error: "prompt (non-empty string) required" });
           return;
@@ -159,7 +175,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           // to drain Cerebras's 1M-tok/day budget for categorization
           // work, keeping the orchestrator's Gemini quota for the chat.
           const role = (parsed.role as RoleName) || ("orchestration" as RoleName);
-          const reply = await opts.resolver.runRole(role, parsed.prompt);
+          const r = resolverFor(opts, parsed.useLocal);
+          const reply = await r.runRole(role, parsed.prompt);
           sendJson(res, 200, { reply });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
@@ -199,6 +216,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               thinking?: "low" | "medium" | "high" | null;
               useSearch?: boolean;
               forceRole?: string | null;
+              useLocal?: boolean;
             }
           | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
@@ -206,7 +224,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         const chatOpts = buildChatOpts(parsed);
-        const session = createChatSession(opts, parsed.sessionId);
+        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
         try {
           const result = await session.send(parsed.message, chatOpts.opts, undefined, chatOpts.routing);
           sendJson(res, 200, {
@@ -240,6 +258,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               thinking?: "low" | "medium" | "high" | null;
               useSearch?: boolean;
               forceRole?: string | null;
+              useLocal?: boolean;
             }
           | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
@@ -259,7 +278,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         const writeEvent = (payload: unknown) => {
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
         };
-        const session = createChatSession(opts, parsed.sessionId);
+        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
         try {
           const result = await session.send(
             parsed.message,
@@ -431,9 +450,9 @@ function roleUsageSnapshot(snap: ProviderSnapshot[]): Record<string, unknown> {
   return roles;
 }
 
-function createChatSession(opts: ServerOptions, id: string): ChatSession {
+function createChatSession(opts: ServerOptions, id: string, useLocal?: boolean): ChatSession {
   return new ChatSession({
-    resolver: opts.resolver,
+    resolver: resolverFor(opts, useLocal),
     id,
     ...(opts.sessionStorageDir && { storagePath: join(opts.sessionStorageDir, `${id}.json`) }),
   });

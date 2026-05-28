@@ -348,6 +348,19 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
             <label className="mm-settings-label">
               <input
                 type="checkbox"
+                checked={settings.useLocal}
+                onChange={(e) => onChange({ ...settings, useLocal: e.target.checked })}
+              />
+              <span className="mm-settings-text">
+                <span className="mm-settings-name">Hybrid local models</span>
+                <span className="mm-settings-hint">route reasoning → DeepSeek-R1 32B and action-code → Qwen 2.5 Coder on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
+              </span>
+            </label>
+          </div>
+          <div className="mm-settings-row">
+            <label className="mm-settings-label">
+              <input
+                type="checkbox"
                 checked={settings.serious}
                 onChange={(e) => onChange({ ...settings, serious: e.target.checked })}
               />
@@ -405,6 +418,7 @@ function settingsActiveCount(s) {
   if (s.serious) n++;
   if (s.search) n++;
   if (s.forceRole && s.forceRole !== 'auto') n++;
+  if (s.useLocal) n++;
   return n;
 }
 
@@ -623,9 +637,71 @@ function Sidebar({ phase, latestResponse, open }) {
   );
 }
 
+// Hard caps for file-attach. Files larger than PER_FILE_MAX_BYTES are
+// rejected; once TOTAL_MAX_BYTES is reached we stop accepting more.
+// 256 KB / 1 MB are conservative — context budget is the real ceiling
+// (chat budget defaults to 100k tokens ≈ 400 KB of English text).
+const ATTACH_PER_FILE_MAX_BYTES = 256 * 1024;
+const ATTACH_TOTAL_MAX_BYTES = 1024 * 1024;
+
+// Detect a probably-binary file by scanning the first KB for NUL bytes.
+// Good enough for the keep-it-text rule — UTF-8 text never contains \x00.
+function looksBinary(text) {
+  const sample = text.slice(0, 1024);
+  return sample.indexOf('\x00') !== -1;
+}
+
+// Read a File as UTF-8 text. Rejects if larger than PER_FILE_MAX_BYTES
+// or if the content looks binary. Returns { name, text } on success.
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    if (file.size > ATTACH_PER_FILE_MAX_BYTES) {
+      reject(new Error(`${file.name} is ${(file.size / 1024).toFixed(0)} KB — over the ${ATTACH_PER_FILE_MAX_BYTES / 1024} KB per-file limit`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`${file.name}: read failed`));
+    reader.onload = () => {
+      const text = String(reader.result || '');
+      if (looksBinary(text)) {
+        reject(new Error(`${file.name} looks binary — only text files supported`));
+        return;
+      }
+      resolve({ name: file.name, text });
+    };
+    reader.readAsText(file);
+  });
+}
+
+// Render an attached file's content as a fenced block the model can read.
+// Uses the file extension as the fence language hint when present.
+function fenceForAttachment(att) {
+  const dot = att.name.lastIndexOf('.');
+  const ext = dot > 0 ? att.name.slice(dot + 1).toLowerCase() : '';
+  // Pick three backticks but bump count if the file itself contains them.
+  let fence = '```';
+  while (att.text.includes(fence)) fence += '`';
+  return `${fence}${ext}\n${att.text}\n${fence}`;
+}
+
+// Compose the final message body: attachments first, prompt last. The
+// model sees "Attached files:" with each file's content fenced, then a
+// blank line, then the user's actual prompt.
+function composeMessageWithAttachments(prompt, attachments) {
+  if (!attachments || attachments.length === 0) return prompt;
+  const header = attachments.length === 1
+    ? `Attached file: ${attachments[0].name}`
+    : `Attached files (${attachments.length}): ${attachments.map((a) => a.name).join(', ')}`;
+  const blocks = attachments.map((a) => `### ${a.name}\n${fenceForAttachment(a)}`).join('\n\n');
+  return `${header}\n\n${blocks}\n\n---\n\n${prompt}`;
+}
+
 // ─── Composer (used in idle + response phases) ─────────────
-function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
+function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments, setAttachments }) {
   const ref = React.useRef(null);
+  const fileRef = React.useRef(null);
+  const [attachError, setAttachError] = React.useState(null);
+  const canAttach = typeof setAttachments === 'function';
   React.useEffect(() => {
     const ta = ref.current; if (!ta) return;
     ta.style.height = 'auto';
@@ -642,6 +718,41 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
     try { ta.setSelectionRange(end, end); } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoFocus]);
+
+  const onPickFiles = async (e) => {
+    setAttachError(null);
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // allow re-picking the same filename later
+    if (!files.length || !canAttach) return;
+    const current = attachments || [];
+    const accepted = [...current];
+    let total = accepted.reduce((acc, a) => acc + a.text.length, 0);
+    const errors = [];
+    for (const f of files) {
+      if (total + f.size > ATTACH_TOTAL_MAX_BYTES) {
+        errors.push(`${f.name}: would exceed total ${ATTACH_TOTAL_MAX_BYTES / 1024} KB cap`);
+        continue;
+      }
+      try {
+        const att = await readFileAsText(f);
+        accepted.push(att);
+        total += att.text.length;
+      } catch (err) {
+        errors.push(err.message || String(err));
+      }
+    }
+    setAttachments(accepted);
+    if (errors.length) setAttachError(errors.join('; '));
+  };
+
+  const removeAttachment = (idx) => {
+    if (!canAttach) return;
+    const next = (attachments || []).filter((_, i) => i !== idx);
+    setAttachments(next);
+    if (next.length === 0) setAttachError(null);
+  };
+
+  const hasContent = !!value.trim() || (attachments && attachments.length > 0);
   return (
     <div className="mm-composer">
       <div className="mm-composer-in">
@@ -649,6 +760,18 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
           <span>$ lattice ~/ orchestrate</span>
           <span className="live">{disabled ? 'routing' : 'live'}</span>
         </div>
+        {canAttach && attachments && attachments.length > 0 && (
+          <div className="mm-attach-chips">
+            {attachments.map((a, i) => (
+              <span key={`${a.name}-${i}`} className="mm-attach-chip" title={`${a.name} · ${(a.text.length / 1024).toFixed(1)} KB`}>
+                <span className="mm-attach-name">{a.name}</span>
+                <span className="mm-attach-size">{(a.text.length / 1024).toFixed(1)} KB</span>
+                <button className="mm-attach-x" onClick={() => removeAttachment(i)} aria-label={`Remove ${a.name}`}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        {attachError && <div className="mm-attach-error" role="alert">{attachError}</div>}
         <textarea
           ref={ref}
           rows={1}
@@ -663,11 +786,37 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled }) {
         />
         <div className="mm-composer-bar">
           <span className="mm-model"><i />smart routing · 5 visible roles</span>
-          <button className="mm-send" onClick={onSubmit} disabled={disabled || !value.trim()}>
-            <svg viewBox="0 0 24 24" fill="none">
-              <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
+          <div className="mm-composer-actions">
+            {canAttach && (
+              <>
+                <input
+                  type="file"
+                  ref={fileRef}
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={onPickFiles}
+                  accept=".txt,.md,.markdown,.json,.yaml,.yml,.csv,.tsv,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.c,.cc,.cpp,.h,.hpp,.sh,.bash,.zsh,.ps1,.toml,.ini,.cfg,.conf,.log,.sql,.gql,.graphql,.proto,text/*,application/json"
+                />
+                <button
+                  className="mm-attach-btn"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={disabled}
+                  title="Attach text files"
+                  aria-label="Attach file"
+                  type="button"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M21 11.5l-8.5 8.5a5 5 0 0 1-7-7L13.5 4.5a3.5 3.5 0 0 1 5 5L10 18a2 2 0 0 1-3-3l7.5-7.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </>
+            )}
+            <button className="mm-send" onClick={onSubmit} disabled={disabled || !hasContent}>
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1522,7 +1671,7 @@ function previewTextForNode(node) {
 
 // ─── Phase views ───────────────────────────────────────────
 
-function IdleView({ draft, setDraft, submit }) {
+function IdleView({ draft, setDraft, submit, attachments, setAttachments }) {
   return (
     <div className="mm-phase mm-phase-idle">
       <div className="mm-hero">
@@ -1543,7 +1692,7 @@ function IdleView({ draft, setDraft, submit }) {
         </p>
       </div>
       <div className="mm-composer-wrap">
-        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus />
+        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} />
       </div>
       <div className="mm-template-row">
         {TEMPLATE_KEYS.map((k) => (
@@ -1651,6 +1800,7 @@ function LoadingView({ prompt, liveStatus, summarize }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
+  attachments, setAttachments,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -1754,7 +1904,7 @@ function ResponseStackView({
           <div ref={bottomRef} className="mm-chat-anchor" aria-hidden="true" />
         </div>
         <div className="mm-chat-composer">
-          <Composer value={draft} onChange={setDraft} onSubmit={submit} />
+          <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} />
         </div>
       </div>
     </div>
@@ -1883,7 +2033,7 @@ function OrbitalNode({ node, pos, index, onFocus }) {
 // Focused-node view — covers the stage (sidebar untouched), composer
 // slides up to the bottom strip and is pre-filled so the next message
 // is scoped to this specific category.
-function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit }) {
+function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attachments, setAttachments }) {
   return (
     <div className="mm-focus-overlay" style={{ '--accent': accent }}>
       <div className="mm-focus-bar">
@@ -1908,7 +2058,7 @@ function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit }) {
         </div>
       </div>
       <div className="mm-focus-composer-wrap">
-        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus />
+        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} />
       </div>
     </div>
   );
@@ -1917,6 +2067,7 @@ function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit }) {
 function OrbitalMindmap({
   responses, collapse, reset, phase,
   draft, setDraft, submit,
+  attachments, setAttachments,
 }) {
   const newest = responses[responses.length - 1];
   const stageRef = React.useRef(null);
@@ -1952,6 +2103,7 @@ function OrbitalMindmap({
         accent={accent}
         onBack={closeFocus}
         draft={draft} setDraft={setDraft} submit={submit}
+        attachments={attachments} setAttachments={setAttachments}
       />
     );
   }
@@ -2004,7 +2156,7 @@ function OrbitalMindmap({
             <span>collapse to thread</span>
           </button>
           <span className="mm-orbit-center-tag">A · composer</span>
-          <Composer value={draft} onChange={setDraft} onSubmit={submit} />
+          <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} />
         </div>
 
         {positions.map((pos, i) => (
@@ -2056,7 +2208,7 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 //   role     → forceRole (one of RoleName) | 'auto' (let smart-routing decide)
 // All knobs persist to localStorage so refresh / new tab keeps the user's
 // chosen mode. forceRole='auto' means "no override", which is the default.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto' };
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false };
 const ROLE_OPTIONS = [
   { value: 'auto',              label: 'auto (smart routing)' },
   { value: 'orchestration',     label: 'orchestration' },
@@ -2076,6 +2228,7 @@ function loadSettings() {
       serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
       search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
       forceRole: ROLE_OPTIONS.some((r) => r.value === parsed.forceRole) ? parsed.forceRole : 'auto',
+      useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -2190,6 +2343,7 @@ function HeroMindmap() {
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
   const [draft, setDraft] = React.useState('');
+  const [attachments, setAttachments] = React.useState([]);
   const [currentPrompt, setCurrentPrompt] = React.useState('');
   const [responses, setResponses] = React.useState(initialStack);
   const [sessionId, setSessionId] = React.useState(() => loadSessionId());
@@ -2259,12 +2413,18 @@ function HeroMindmap() {
   // an abort is intentional, not a failure.
   const submit = async () => {
     const q = draft.trim();
-    if (!q) return;
-    const template = detectTemplate(q);
-    setCurrentPrompt(q);
+    if (!q && (!attachments || attachments.length === 0)) return;
+    // The user-visible prompt in chat is what they typed (or a placeholder
+    // when attaching files with no extra prompt). The actual model input
+    // includes the file contents prepended.
+    const displayPrompt = q || `(reviewing ${attachments.length} attached file${attachments.length > 1 ? 's' : ''})`;
+    const modelPrompt = composeMessageWithAttachments(q || 'Please review the attached file(s) and respond.', attachments);
+    const template = detectTemplate(displayPrompt);
+    setCurrentPrompt(displayPrompt);
     setDraft('');
+    setAttachments([]);
     setPhase('loading');
-    setLiveTurn({ prompt: q, partial: '', status: { phase: 'plan-start' } });
+    setLiveTurn({ prompt: displayPrompt, partial: '', status: { phase: 'plan-start' } });
     setStreaming(true);
 
     let partial = '';
@@ -2282,10 +2442,11 @@ function HeroMindmap() {
       //   serious  → thinking: "high"
       //   search   → useSearch: true
       //   forceRole (≠ 'auto') → forceRole: <role>
-      const body = { sessionId, message: q };
+      const body = { sessionId, message: modelPrompt };
       if (settings.serious) body.thinking = 'high';
       if (settings.search) body.useSearch = true;
       if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
+      if (settings.useLocal) body.useLocal = true;
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2364,7 +2525,7 @@ function HeroMindmap() {
     const finalText = doneEvent?.reply || partial || (errorMsg ? `(error: ${errorMsg})` : '');
     const entry = {
       id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-      prompt: q,
+      prompt: displayPrompt,
       template,
       text: finalText.trim(),
       servedBy: doneEvent?.servedBy || [],
@@ -2413,7 +2574,7 @@ function HeroMindmap() {
       const res = await fetch('/api/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, role: 'action-repetitive' }),
+        body: JSON.stringify({ prompt, role: 'action-repetitive', useLocal: settings.useLocal }),
       });
       if (res.ok) {
         const json = await res.json();
@@ -2480,6 +2641,7 @@ function HeroMindmap() {
     setPhase('idle');
     setCurrentPrompt('');
     setDraft('');
+    setAttachments([]);
     setResponses([]);
     clearPersistedStack();
   };
@@ -2565,7 +2727,7 @@ function HeroMindmap() {
         <QuotaBanner phase={phase} />
         {phase === 'idle' && (
           <PhaseErrorBoundary label="idle view" recoverLabel="reset" onRecover={reset}>
-            <IdleView draft={draft} setDraft={setDraft} submit={submit} />
+            <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} />
           </PhaseErrorBoundary>
         )}
         {phase === 'loading' && (
@@ -2582,6 +2744,7 @@ function HeroMindmap() {
               draft={draft} setDraft={setDraft} submit={submit}
               responses={responses} expand={expand} reset={reset} phase={phase}
               liveTurn={liveTurn}
+              attachments={attachments} setAttachments={setAttachments}
             />
           </PhaseErrorBoundary>
         )}
@@ -2600,6 +2763,7 @@ function HeroMindmap() {
               responses={responses}
               collapse={collapse} reset={reset} phase={phase}
               draft={draft} setDraft={setDraft} submit={submit}
+              attachments={attachments} setAttachments={setAttachments}
             />
           </PhaseErrorBoundary>
         )}

@@ -38,6 +38,36 @@ const GEMMA_FALLBACK = [
   { providerId: "gemma:3" },
 ];
 
+/**
+ * Local-mode candidates — when the hybrid toggle is on, these get
+ * prepended to the matching role's chain so they win when registered.
+ *
+ *   reasoning      → ollama:deepseek-r1   (DeepSeek-R1 32B, locally hosted)
+ *   action-code    → ollama:qwen2.5-coder (Qwen 2.5 Coder, locally hosted)
+ *
+ * Cloud candidates remain in the chain as fallback if the local daemon
+ * is unreachable or the model isn't pulled. All other roles are
+ * unchanged in local mode.
+ */
+const LOCAL_REASONING = { providerId: "ollama:deepseek-r1" };
+const LOCAL_ACTION_CODE = { providerId: "ollama:qwen2.5-coder" };
+
+/**
+ * Build the role registry. With `local: true`, prepend the local Ollama
+ * candidates to the reasoning and action-code chains; cloud roles stay
+ * untouched.
+ */
+export function buildDefaultRoles(opts?: { local?: boolean }): RoleConfig[] {
+  const roles = DEFAULT_ROLES.map((r) => ({ ...r, candidates: [...r.candidates] }));
+  if (opts?.local) {
+    const reasoning = roles.find((r) => r.name === "reasoning");
+    if (reasoning) reasoning.candidates.unshift(LOCAL_REASONING);
+    const actionCode = roles.find((r) => r.name === "action-code");
+    if (actionCode) actionCode.candidates.unshift(LOCAL_ACTION_CODE);
+  }
+  return roles;
+}
+
 export const DEFAULT_ROLES: RoleConfig[] = [
   {
     name: "perception",

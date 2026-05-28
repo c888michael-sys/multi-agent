@@ -37,6 +37,8 @@ import {
   listSessions,
   startWebServer,
   DEFAULT_ROLES,
+  buildDefaultRoles,
+  loadOllamaProviders,
   type ControllerMode,
   type CompleteOptions,
   type ThinkingLevel,
@@ -74,8 +76,13 @@ const VALID_ROLES: RoleName[] = [
 
 const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
 
-function buildRouter(): Router {
+function buildRouter(opts?: { local?: boolean }): Router {
   const configs = loadAllProviderConfigsFromEnv();
+  if (opts?.local) {
+    for (const p of loadOllamaProviders()) {
+      configs.push({ provider: p, estimatedDailyBudget: 9999, estimatedRpmCap: 999 });
+    }
+  }
   if (configs.length === 0) {
     console.error(
       "No provider keys configured. Set at least GEMINI_KEY_1 in .env (see .env.example).",
@@ -88,6 +95,11 @@ function buildRouter(): Router {
   // gauges and the round-robin → serial mode flip in real time.
   attachConservationPolicy(router);
   return router;
+}
+
+/** Roles registry for the run — local-aware when --local is set. */
+function rolesFor(local: boolean) {
+  return local ? buildDefaultRoles({ local: true }) : DEFAULT_ROLES;
 }
 
 function buildDefaultAgents(router: Router): Agent[] {
@@ -118,8 +130,8 @@ function buildDefaultAgents(router: Router): Agent[] {
   ];
 }
 
-async function cmdAsk(prompt: string, opts: CompleteOptions): Promise<void> {
-  const router = buildRouter();
+async function cmdAsk(prompt: string, opts: CompleteOptions, local: boolean): Promise<void> {
+  const router = buildRouter({ local });
   const out = await router.complete(prompt, opts);
   console.log(out);
   console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
@@ -129,9 +141,10 @@ async function cmdAskRole(
   prompt: string,
   role: RoleName,
   opts: CompleteOptions,
+  local: boolean,
 ): Promise<void> {
-  const router = buildRouter();
-  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
+  const router = buildRouter({ local });
+  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
   const candidate = resolver.resolveCandidate(role);
   if (!candidate) {
     console.error(
@@ -153,8 +166,9 @@ async function cmdAskWithTools(
   trace: boolean,
   allowBash: boolean,
   opts: CompleteOptions,
+  local: boolean,
 ): Promise<void> {
-  const router = buildRouter();
+  const router = buildRouter({ local });
   const fileTools = new FileTools(resolvePath(workdir));
   const tools = fileTools.toolset();
   if (allowBash) {
@@ -189,8 +203,9 @@ async function cmdAgents(
   mode: ControllerMode,
   trace: boolean,
   opts: CompleteOptions,
+  local: boolean,
 ): Promise<void> {
-  const router = buildRouter();
+  const router = buildRouter({ local });
   const subs = buildDefaultAgents(router);
   const controller = new Controller({ router, subAgents: subs, mode });
   const result = await controller.runWithTrace(prompt, opts);
@@ -214,18 +229,38 @@ function cmdUsage(): void {
   console.log(formatUsageReport(router));
 }
 
-async function cmdChat(sessionId: string, powerful: boolean): Promise<void> {
-  const router = buildRouter();
-  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
+async function cmdChat(sessionId: string, powerful: boolean, local: boolean): Promise<void> {
+  const router = buildRouter({ local });
+  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
   const session = new ChatSession({ resolver, id: sessionId, powerful });
   const repl = new ChatRepl({ session, router });
   await repl.run();
 }
 
-async function cmdServe(port: number): Promise<void> {
-  const router = buildRouter();
-  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
-  const { url } = startWebServer({ router, resolver, port });
+async function cmdServe(port: number, local: boolean): Promise<void> {
+  // Always register Ollama providers at boot so the web UI's per-request
+  // `useLocal` toggle has something to route to. If the local daemon
+  // isn't running, calls just fail with a fetch error — same shape as
+  // any cloud provider with a bad key.
+  const router = buildRouter({ local: true });
+  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
+  // Alternate-mode resolver: when CLI booted with --local, this is the
+  // cloud-only resolver; without --local, this is the local-prepend
+  // resolver. Either way, the web UI can ask for the other mode per
+  // request via `useLocal` in the body.
+  const localResolver = local
+    ? resolver
+    : new RoleResolver(router, rolesFor(true), { onEvent: printRoleEvent });
+  const cloudResolver = local
+    ? new RoleResolver(router, rolesFor(false), { onEvent: printRoleEvent })
+    : resolver;
+  const { url } = startWebServer({
+    router,
+    resolver,
+    localResolver,
+    cloudResolver,
+    port,
+  });
   console.log(`multi-agent web UI live at ${url}`);
   console.log(`open it in a browser. Ctrl+C to stop.`);
   // Keep the process alive — server holds the event loop. Wait forever.
@@ -241,9 +276,9 @@ function cmdSessions(): void {
   for (const id of ids) console.log(id);
 }
 
-async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions): Promise<void> {
-  const router = buildRouter();
-  const resolver = new RoleResolver(router, DEFAULT_ROLES, { onEvent: printRoleEvent });
+async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions, local: boolean): Promise<void> {
+  const router = buildRouter({ local });
+  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
   const unsat = resolver.unsatisfiedRoles();
   if (unsat.length > 0) {
     console.error(
@@ -297,6 +332,19 @@ Flags for 'chat':
 
 Flags for 'serve':
   --port=<n>                      port to bind (default 7421)
+  --local                         default the web UI into hybrid local-model mode
+                                  (DeepSeek-R1 32B for reasoning, Qwen 2.5 Coder for
+                                  action-code via Ollama at localhost:11434). The web
+                                  UI can still toggle modes per request; this flag
+                                  only sets the initial default.
+
+Flag (any command — ask/agents/task/chat/serve):
+  --local                         prepend the local Ollama providers to the role
+                                  registry for this run (reasoning→ollama:deepseek-r1,
+                                  action-code→ollama:qwen2.5-coder). Requires a running
+                                  Ollama daemon with those models pulled. Cloud
+                                  candidates remain in the chain as fallback.
+                                  Override the daemon URL with OLLAMA_HOST in env.
 
 Flags (both ask and agents):
   --serious                       enable extended reasoning (thinkingLevel=high)
@@ -347,7 +395,10 @@ async function main(): Promise<void> {
   if (command === "chat") {
     const { values: cv, positionals: cp } = parseArgs({
       args: argv.slice(1),
-      options: { powerful: { type: "boolean", default: false } },
+      options: {
+        powerful: { type: "boolean", default: false },
+        local: { type: "boolean", default: false },
+      },
       allowPositionals: true,
       strict: true,
     });
@@ -357,7 +408,7 @@ async function main(): Promise<void> {
       printHelp();
       process.exit(2);
     }
-    await cmdChat(sessionId, Boolean(cv.powerful));
+    await cmdChat(sessionId, Boolean(cv.powerful), Boolean(cv.local));
     return;
   }
 
@@ -369,7 +420,10 @@ async function main(): Promise<void> {
   if (command === "serve") {
     const { values: sv } = parseArgs({
       args: argv.slice(1),
-      options: { port: { type: "string", default: "7421" } },
+      options: {
+        port: { type: "string", default: "7421" },
+        local: { type: "boolean", default: false },
+      },
       allowPositionals: false,
       strict: true,
     });
@@ -378,7 +432,7 @@ async function main(): Promise<void> {
       console.error(`Error: --port must be a valid port number (got: ${sv.port})`);
       process.exit(2);
     }
-    await cmdServe(port);
+    await cmdServe(port, Boolean(sv.local));
     return;
   }
 
@@ -389,6 +443,7 @@ async function main(): Promise<void> {
         trace: { type: "boolean", default: false },
         serious: { type: "boolean", default: false },
         thinking: { type: "string" },
+        local: { type: "boolean", default: false },
       },
       allowPositionals: true,
       strict: true,
@@ -411,7 +466,7 @@ async function main(): Promise<void> {
       thinking2 = "high";
     }
     const taskOpts: CompleteOptions = thinking2 !== undefined ? { thinking: thinking2 } : {};
-    await cmdTask(taskPrompt, Boolean(tv.trace), taskOpts);
+    await cmdTask(taskPrompt, Boolean(tv.trace), taskOpts, Boolean(tv.local));
     return;
   }
 
@@ -432,6 +487,7 @@ async function main(): Promise<void> {
       "allow-bash": { type: "boolean", default: false },
       workdir: { type: "string" },
       role: { type: "string" },
+      local: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: true,
@@ -464,6 +520,7 @@ async function main(): Promise<void> {
   // --no-tools wins over the default-true --tools (explicit opt-out).
   const toolsEnabled = !values["no-tools"] && Boolean(values.tools);
 
+  const localFlag = Boolean(values.local);
   if (command === "ask") {
     const roleArg = values.role as string | undefined;
     if (roleArg) {
@@ -471,7 +528,7 @@ async function main(): Promise<void> {
         console.error(`Error: --role must be one of ${VALID_ROLES.join("|")} (got: ${roleArg})`);
         process.exit(2);
       }
-      await cmdAskRole(prompt, roleArg as RoleName, completeOpts);
+      await cmdAskRole(prompt, roleArg as RoleName, completeOpts, localFlag);
     } else if (toolsEnabled || values["allow-bash"]) {
       const workdir = (values.workdir as string | undefined) ?? process.cwd();
       await cmdAskWithTools(
@@ -480,9 +537,10 @@ async function main(): Promise<void> {
         Boolean(values.trace),
         Boolean(values["allow-bash"]),
         completeOpts,
+        localFlag,
       );
     } else {
-      await cmdAsk(prompt, completeOpts);
+      await cmdAsk(prompt, completeOpts, localFlag);
     }
     return;
   }
@@ -493,7 +551,7 @@ async function main(): Promise<void> {
       console.error(`Error: --mode must be 'parallel' or 'specialist' (got: ${mode})`);
       process.exit(2);
     }
-    await cmdAgents(prompt, mode, Boolean(values.trace), completeOpts);
+    await cmdAgents(prompt, mode, Boolean(values.trace), completeOpts, localFlag);
     return;
   }
 

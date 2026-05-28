@@ -31,6 +31,8 @@ export {
   loadMistralProvidersFromEnv,
   loadAllProvidersFromEnv,
   loadAllProviderConfigsFromEnv,
+  loadOllamaProviders,
+  LOCAL_OLLAMA_MODELS,
 } from "./config.js";
 export {
   FileStateStore,
@@ -71,7 +73,7 @@ export {
 } from "./roles/resolver.js";
 export type { RoleName, RoleConfig, ProviderRef, RoleEvent } from "./roles/types.js";
 export type { RoleResolverOptions } from "./roles/resolver.js";
-export { DEFAULT_ROLES } from "./roles/default-registry.js";
+export { DEFAULT_ROLES, buildDefaultRoles } from "./roles/default-registry.js";
 
 // Agents
 export { Agent, type AgentOptions } from "./agents/agent.js";
