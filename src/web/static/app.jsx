@@ -1460,13 +1460,27 @@ function lineFromBoxToBox(cx, cy, nx, ny, compHalfW, compHalfH, nodeHalfW, nodeH
   };
 }
 
+// COLLAPSE_TIMELINE — v3 "robot arm rips the door" catalyst.
+//   armEnter:   arm slides in from off-canvas right, claw open, descends
+//               toward the seam at horizontal center.
+//   armClamp:   claw closes on the seam line. Short anticipation beat.
+//   armYank:    arm violently jerks LEFT. The chat scroll list tears
+//               with it (translateX + skew + opacity fade). Behind the
+//               torn chat, the white "canvas dimension" reveals via a
+//               radial wipe from the impact point.
+//   armRetreat: arm continues off-screen left. Brief flash at center.
+//   shatter:    particles spawn from a center cluster on the white canvas.
+//   fountain:   particles arc to their final orbital positions, then
+//               hand off to the OrbitalNode mounts.
 const COLLAPSE_TIMELINE = {
-  barSlide:      { start:    0, dur:  420 },
-  tokensFly:     { start:  420, dur:  500 },  // tokens enter & travel
-  impact:        { start:  920, dur:   90 },  // collision flash
-  shatter:       { start: 1010, dur:  160 },  // particles spawn at center
-  fountain:      { start: 1170, dur:  730 },  // arc to final positions
-  total: 1900,
+  armEnter:   { start:    0, dur:  450 },
+  armClamp:   { start:  450, dur:  180 },
+  armYank:    { start:  630, dur:  470 },
+  armRetreat: { start: 1100, dur:  260 },
+  impact:     { start: 1100, dur:   90 },  // legacy alias kept for "flash" code that other branches still reference
+  shatter:    { start: 1360, dur:  180 },
+  fountain:   { start: 1540, dur:  860 },
+  total: 2400,
 };
 
 function CatalystOverlay({ newest, slideDistance, stageRect }) {
@@ -1505,20 +1519,74 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   );
   const n = nodes.length;
 
-  // Tokens fly in from off-canvas; B (OUTPUT) enters from LEFT, A (MINDMAP)
-  // from RIGHT. They accelerate (ease-in) toward the collision point and
-  // disappear at impact (the anchor replaces them as a single element).
-  const tokensP = progress('tokensFly');
-  const tokensEased = tokensP * tokensP * tokensP;  // ease-in cubic
-  const tokensVisible = t >= COLLAPSE_TIMELINE.tokensFly.start && t < COLLAPSE_TIMELINE.impact.start;
-  // Final offset of 68 px = half token width + 2 px gap → tokens just
-  // TOUCH at collision; nothing overlaps.
-  const tokenAX = `calc(50% + ${(1 - tokensEased) * 60 + 68}px)`;
-  const tokenBX = `calc(50% - ${(1 - tokensEased) * 60 + 68}px)`;
+  // ─── v3 catalyst: robot arm rips the door ──────────────────────
+  //
+  // The arm enters from off-canvas right, descends to the horizontal
+  // seam line at vertical center, claw clamps, then violently yanks
+  // LEFT. The chat scroll list tears with the yank (translateX/skew/
+  // fade — driven by CSS data-phase=collapsing). Behind the torn
+  // chat, the white canvas dimension reveals via a radial wipe from
+  // the seam-attack point. The arm continues off-screen left; a brief
+  // ring flash marks the rip moment; then the existing shatter +
+  // fountain plays on the WHITE canvas.
 
-  // Impact moment — short ring.
-  const flashVisible = inWindow('impact') || (t > COLLAPSE_TIMELINE.impact.start && t < COLLAPSE_TIMELINE.impact.start + 280);
-  const flashP = (t - COLLAPSE_TIMELINE.impact.start) / 240;
+  // Easings used below.
+  const easeInCubic = (u) => u * u * u;
+  const easeOutCubic = (u) => 1 - Math.pow(1 - u, 3);
+
+  // Arm position. We render the arm as a single group translated by
+  // (armX, armY) px from a "home" position centered on the rip-point.
+  // armRotZ controls a slight rotation around the wrist during yank
+  // so the wrench reads as "wrenching" not "skidding."
+  let armX = 0, armY = -160, armRotZ = 0;
+  let clawOpen = 1; // 1 = fully open, 0 = fully closed
+  if (t < COLLAPSE_TIMELINE.armEnter.start + COLLAPSE_TIMELINE.armEnter.dur) {
+    // Sliding in from upper-right. We use a cubic ease-out so the arm
+    // decelerates as it nears the seam — feels deliberate, not floppy.
+    const u = easeOutCubic(progress('armEnter'));
+    armX = 380 - 380 * u;          // 380 → 0
+    armY = -160 + 160 * u;          // -160 → 0
+  } else if (t < COLLAPSE_TIMELINE.armClamp.start + COLLAPSE_TIMELINE.armClamp.dur) {
+    // Clamp beat — claw closes, brief overshoot in X for visual snap.
+    const u = progress('armClamp');
+    armX = 0 + Math.sin(u * Math.PI) * 4;  // tiny anticipation
+    armY = 0;
+    clawOpen = 1 - u;
+  } else if (t < COLLAPSE_TIMELINE.armYank.start + COLLAPSE_TIMELINE.armYank.dur) {
+    // Yank — accelerates LEFT. Wrist rotates slightly to imply force.
+    const u = easeInCubic(progress('armYank'));
+    armX = -u * 520;                // 0 → -520
+    armY = u * 18;                  // slight downward bite
+    armRotZ = -u * 12;              // tilt counter-clockwise as it pulls
+    clawOpen = 0;
+  } else if (t < COLLAPSE_TIMELINE.armRetreat.start + COLLAPSE_TIMELINE.armRetreat.dur) {
+    // Retreat — continues off-screen, claw opens (releases torn fabric).
+    const u = progress('armRetreat');
+    armX = -520 - u * 600;          // -520 → -1120
+    armY = 18 + u * 20;
+    armRotZ = -12 - u * 8;
+    clawOpen = u;
+  } else {
+    armX = -1120; armY = 38; armRotZ = -20; clawOpen = 1;
+  }
+  const armVisible = t < COLLAPSE_TIMELINE.armRetreat.start + COLLAPSE_TIMELINE.armRetreat.dur + 80;
+
+  // Door / canvas reveal — a radial wipe centered on the rip-point.
+  // Sized 0 during armEnter, ramps to full coverage during yank, holds
+  // through fountain. The white canvas stays put until the parent
+  // phase flips back to 'imploding' (i.e. user clicks COLLAPSE TO
+  // THREAD); CSS keys off [data-phase] so the parent does the revert.
+  const revealStart = COLLAPSE_TIMELINE.armClamp.start;
+  const revealDur = 360;
+  const revealP = Math.max(0, Math.min(1, (t - revealStart) / revealDur));
+  const revealRadius = easeOutCubic(revealP) * Math.max(stageRect?.w || 0, stageRect?.h || 0) * 1.4;
+
+  // Brief ring flash right after the arm finishes its yank — same
+  // visual beat the v2 'impact' moment served, but here it represents
+  // "the seam pops open and the canvas dimension finishes revealing."
+  const flashStart = COLLAPSE_TIMELINE.armRetreat.start;
+  const flashVisible = t >= flashStart && t < flashStart + 280;
+  const flashP = (t - flashStart) / 240;
   const flashScale = 0.6 + flashP * 0.7;
   const flashOpacity = Math.max(0, 1 - flashP) * (flashP > 0 ? 1 : 0);
 
@@ -1623,43 +1691,90 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
 
   return (
     <div className="mm-catalyst-overlay" aria-hidden="true">
-      <div className="mm-catalyst-field">
-        <span />
-        <span />
-        <span />
-      </div>
-      {/* Tokens fly in — labeled text boxes. */}
-      {tokensVisible && (
-        <>
-          <div
-            className="mm-collide-token mm-token-b"
-            style={{
-              left: tokenBX,
-              top: `50%`,
-              opacity: tokensP > 0.05 ? 1 : 0,
-            }}
-          >
-            <span className="mm-token-tick" />
-            <span>output</span>
-          </div>
-          <div
-            className="mm-collide-token mm-token-a"
-            style={{
-              left: tokenAX,
-              top: `50%`,
-              opacity: tokensP > 0.05 ? 1 : 0,
-            }}
-          >
-            <span className="mm-token-tick" />
-            <span>mindmap</span>
-          </div>
-        </>
+      {/* Canvas-dimension reveal: a circular white wipe centered on
+          the rip-point. Grows to fill the stage as the arm yanks. The
+          CSS uses radial-gradient with a positioned hard edge so this
+          renders cheaply (no canvas, no big SVG). When the parent
+          phase flips to 'mindmap' the whole stage stays white via
+          [data-phase="mindmap"] styling — this overlay then unmounts
+          but the white background persists. */}
+      <div
+        className="mm-canvas-reveal"
+        style={{
+          // Radial gradient with a hard edge at revealRadius pixels.
+          // Inside: pure canvas-ivory. Outside: transparent so the
+          // underlying atelier theme bleeds through during the wipe.
+          background: `radial-gradient(circle at 50% 50%, oklch(0.98 0.005 95) 0, oklch(0.98 0.005 95) ${revealRadius}px, transparent ${revealRadius + 2}px)`,
+          opacity: revealP > 0 ? 1 : 0,
+        }}
+      />
+
+      {/* Robot arm — single SVG group, transformed via inline style so
+          requestAnimationFrame updates from React drive the motion.
+          Anatomy: shoulder anchor → upper-arm bar → elbow joint → forearm
+          bar → wrist joint → two-finger claw. The claw open/close is
+          driven by `clawOpen` (1 = open, 0 = clamped). */}
+      {armVisible && stageRect && (
+        <svg
+          className="mm-robot-arm"
+          viewBox="-200 -200 400 400"
+          style={{
+            left: `calc(50% + ${armX}px)`,
+            top: `calc(50% + ${armY}px)`,
+            transform: `translate(-50%, -100%) rotate(${armRotZ.toFixed(2)}deg)`,
+            transformOrigin: '50% 100%',
+          }}
+          aria-hidden="true"
+        >
+          {/* Shadow under the arm for depth */}
+          <ellipse cx="0" cy="0" rx="60" ry="6" fill="rgba(0,0,0,0.35)" />
+          {/* Shoulder mount (off-screen anchor — rendered as a chunky bar) */}
+          <rect x="-12" y="-180" width="24" height="60" rx="3"
+            fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
+          {/* Upper arm — vertical-ish bar from shoulder down toward elbow */}
+          <rect x="-8" y="-130" width="16" height="80" rx="2"
+            fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
+          {/* Elbow joint */}
+          <circle cx="0" cy="-50" r="9"
+            fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
+          <circle cx="0" cy="-50" r="3" fill="oklch(0.20 0.01 240)" />
+          {/* Forearm — angled slightly inward toward the wrist */}
+          <rect x="-7" y="-50" width="14" height="42" rx="2"
+            fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
+          {/* Wrist joint */}
+          <circle cx="0" cy="-8" r="6"
+            fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.3" />
+          {/* Claw — two fingers pivoting around the wrist. Rotation
+              interpolates between 24° (open) and 4° (clamped). */}
+          {(() => {
+            const ang = 4 + clawOpen * 20;
+            return (
+              <>
+                <rect x="-2" y="-6" width="4" height="20" rx="1.2"
+                  transform={`rotate(${-ang} 0 -8)`}
+                  fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
+                <rect x="-2" y="-6" width="4" height="20" rx="1.2"
+                  transform={`rotate(${ang} 0 -8)`}
+                  fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
+                {/* Tip nubs */}
+                <circle cx={Math.sin(-ang * Math.PI / 180) * 18}
+                        cy={-8 + Math.cos(-ang * Math.PI / 180) * 18}
+                        r="2.6" fill="oklch(0.85 0.03 65)" />
+                <circle cx={Math.sin(ang * Math.PI / 180) * 18}
+                        cy={-8 + Math.cos(ang * Math.PI / 180) * 18}
+                        r="2.6" fill="oklch(0.85 0.03 65)" />
+              </>
+            );
+          })()}
+        </svg>
       )}
 
-      {/* Impact ring */}
+      {/* Rip flash — short radial pop right after the arm finishes
+          its yank, marking the moment the canvas dimension finishes
+          opening up. */}
       {flashVisible && (
         <div
-          className="mm-impact-flash"
+          className="mm-impact-flash mm-rip-flash"
           style={{
             opacity: flashOpacity,
             transform: `translate(-50%, -50%) scale(${flashScale.toFixed(2)})`,
@@ -1667,9 +1782,11 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         />
       )}
 
-      {/* A anchor — appears at center after impact and stays through the
-          fountain. Same labeled-box visual as the colliding A token. */}
-      {t >= COLLAPSE_TIMELINE.impact.start && (
+      {/* Center anchor on the white canvas — same labeled-box that the
+          OrbitalNode rest position uses for the composer A. Appears
+          when the canvas finishes revealing so the user sees "this is
+          where the mindmap will be." */}
+      {t >= COLLAPSE_TIMELINE.armRetreat.start && (
         <div className="mm-collide-token mm-token-a mm-anchor-a"
           style={{ left: '50%', top: '50%', opacity: 1, transform: 'translate(-50%, -50%)' }}
         >

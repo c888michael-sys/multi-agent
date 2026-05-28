@@ -3277,3 +3277,102 @@
   font: 13px/1.2 var(--mm-mono, "Geist Mono", monospace);
   color: var(--mm-fg, currentColor);
 }
+
+/* ─── v3 catalyst: robot arm + persistent canvas dimension ─────────
+   The catalyst plays as the parent phase moves chat → mindmap. The
+   white canvas STAYS during the mindmap phase; only an explicit
+   COLLAPSE TO THREAD action (which sets phase=imploding) restores
+   the atelier theme.
+
+   Palette override is scoped via [data-phase="collapsing"] and
+   [data-phase="mindmap"] on the .mm-root container. We override
+   the existing CSS custom properties (which the rest of the UI
+   already consumes) rather than touching individual rules. */
+.mm-root[data-phase="collapsing"],
+.mm-root[data-phase="mindmap"] {
+  --mm-bg: oklch(0.97 0.005 95);
+  --mm-fg: oklch(0.20 0.01 240);
+  --accent: oklch(0.55 0.18 250);
+  --mm-border: rgba(20, 30, 60, 0.10);
+  background: var(--mm-bg) !important;
+  color: var(--mm-fg);
+  transition: background 320ms ease, color 280ms ease;
+}
+/* Soften the constellation / aurora / scan overlays during canvas
+   mode so they don't fight the white. */
+.mm-root[data-phase="collapsing"] .mm-aurora,
+.mm-root[data-phase="collapsing"] .mm-scan,
+.mm-root[data-phase="collapsing"] .mm-vignette,
+.mm-root[data-phase="mindmap"] .mm-aurora,
+.mm-root[data-phase="mindmap"] .mm-scan,
+.mm-root[data-phase="mindmap"] .mm-vignette {
+  opacity: 0.08;
+}
+
+/* Chat-tear: when collapsing, the chat list lurches LEFT with a
+   slight skew + opacity fade, as if the robot arm yanked it
+   off-screen. Synchronizes with the armYank window (~470 ms
+   starting at 630 ms into the catalyst). */
+.mm-root[data-phase="collapsing"] .mm-chat-list {
+  animation: mm-chat-tear 700ms cubic-bezier(0.5, 0, 0.85, 0.3) 600ms forwards;
+  pointer-events: none;
+}
+@keyframes mm-chat-tear {
+  0%   { transform: translateX(0)      skewX(0deg)   skewY(0deg); opacity: 1; filter: none; }
+  35%  { transform: translateX(-40px)  skewX(-3deg)  skewY(0.5deg); opacity: 0.85; }
+  100% { transform: translateX(-110vw) skewX(-14deg) skewY(2deg);  opacity: 0; filter: blur(4px); }
+}
+/* The BURST seam handle slides up + out instead of down — it goes
+   along with the chat, not into the void. */
+.mm-root[data-phase="collapsing"] .mm-seam-handle.sliding {
+  animation: mm-seam-snatched 600ms ease-in 500ms forwards;
+}
+@keyframes mm-seam-snatched {
+  to { transform: translate(-120vw, -10px); opacity: 0; }
+}
+
+/* Canvas-reveal layer — sits behind every catalyst element so the
+   tear, the arm, and the flash all paint on top of the spreading
+   white circle. pointer-events: none so it doesn't trap clicks. */
+.mm-canvas-reveal {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  transition: opacity 80ms linear;
+}
+
+/* Robot arm — positioned by inline style; z-index above everything
+   else so it visually owns the moment. */
+.mm-robot-arm {
+  position: absolute;
+  width: 200px;
+  height: 240px;
+  pointer-events: none;
+  z-index: 60;
+  overflow: visible;
+  filter: drop-shadow(0 4px 14px rgba(15, 25, 50, 0.35));
+}
+
+/* Rip-flash variant — slightly cooler color than the v2 impact ring
+   to read as "canvas dimension opening" rather than "tokens
+   colliding." */
+.mm-impact-flash.mm-rip-flash {
+  background: radial-gradient(circle, oklch(0.65 0.18 250 / 0.75) 0%, oklch(0.65 0.18 250 / 0) 70%);
+}
+
+/* Mindmap-phase node + thread strip restyling for canvas mode. The
+   existing rules use --accent and --mm-fg, so they pick up the new
+   values automatically. We only need a few additional overrides for
+   surfaces that were fully transparent on charcoal. */
+.mm-root[data-phase="mindmap"] .mm-orbit-node,
+.mm-root[data-phase="mindmap"] .mm-orbit-center {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(4px);
+  border-color: rgba(20, 30, 60, 0.12);
+  box-shadow: 0 6px 18px rgba(15, 25, 50, 0.08);
+}
+.mm-root[data-phase="mindmap"] .mm-thread-strip {
+  background: rgba(255, 255, 255, 0.90);
+  border-bottom: 1px solid rgba(20, 30, 60, 0.10);
+}
