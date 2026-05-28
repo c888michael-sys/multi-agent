@@ -19,6 +19,14 @@ export interface OllamaProviderOptions {
   model: string;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Per-request timeout in milliseconds. Defaults to 180_000 (3 min) —
+   * generous enough that a cold 32B model loading from disk on a slow
+   * machine still gets through, but bounded so a wedged daemon can't
+   * hang the categorize-prefetch pipeline indefinitely. Override per
+   * test or per-deploy.
+   */
+  requestTimeoutMs?: number;
 }
 
 interface OllamaMessage {
@@ -45,12 +53,28 @@ export class OllamaProvider implements Provider {
   readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
+  private readonly requestTimeoutMs: number;
 
   constructor(opts: OllamaProviderOptions) {
     this.id = opts.id;
     this.model = opts.model;
     this.baseUrl = opts.baseUrl ?? "http://localhost:11434";
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
+  }
+
+  /**
+   * Run a fetch with an AbortController-backed timeout. Without this,
+   * a stalled Ollama daemon (model still loading, GPU contention) would
+   * keep the call pending forever and leave the higher-level prefetch
+   * promise unresolved.
+   */
+  private fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const fetchImpl = this.fetchImpl ?? fetch;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    return fetchImpl(url, { ...init, signal: controller.signal })
+      .finally(() => clearTimeout(timer));
   }
 
   async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
@@ -58,14 +82,13 @@ export class OllamaProvider implements Provider {
   }
 
   async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
-    const fetchImpl = this.fetchImpl ?? fetch;
     const body: Record<string, unknown> = {
       model: this.model,
       messages: historyToOllamaMessages(history),
       stream: false,
       options: this.buildOllamaOptions(opts),
     };
-    const res = await fetchImpl(`${this.baseUrl}/api/chat`, {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -83,14 +106,13 @@ export class OllamaProvider implements Provider {
     opts: CompleteOptions | undefined,
     onToken: (text: string) => void,
   ): Promise<string> {
-    const fetchImpl = this.fetchImpl ?? fetch;
     const body: Record<string, unknown> = {
       model: this.model,
       messages: historyToOllamaMessages(history),
       stream: true,
       options: this.buildOllamaOptions(opts),
     };
-    const res = await fetchImpl(`${this.baseUrl}/api/chat`, {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

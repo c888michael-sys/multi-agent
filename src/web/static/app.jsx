@@ -183,6 +183,52 @@ function CompactNumber(n) {
   return String(n);
 }
 
+// Pull the first balanced {…} block out of a model response and parse
+// it as JSON. Strips <think>…</think> chain-of-thought blocks (used by
+// reasoning models like DeepSeek-R1) and ```json fences first, then
+// walks the remaining text tracking brace depth and JSON-string state
+// so braces inside string literals don't confuse the scan. Returns the
+// parsed object or null on any failure — the categorize pipeline treats
+// null as "couldn't structure this reply" rather than silently rendering
+// fictional fallback data.
+//
+// This used to be a single `replace(/```json|```/g, '').trim()` + JSON.parse,
+// which broke as soon as any local model (qwen-coder especially) added
+// a sentence of prose before or after the JSON — causing the mindmap to
+// never activate in hybrid mode.
+function extractFirstJsonObject(text) {
+  if (!text) return null;
+  let s = String(text);
+  // 1) Strip <think>…</think> blocks (multi-line, case-insensitive) —
+  //    DeepSeek-R1 and similar reasoning models emit these around their
+  //    actual answer.
+  s = s.replace(/<think[\s\S]*?<\/think>/gi, '');
+  // 2) Strip markdown code fences — both ```json and bare ```.
+  s = s.replace(/```\s*json\s*/gi, '').replace(/```/g, '');
+  // 3) Scan for the first balanced {…}.
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const candidate = s.slice(start, i + 1);
+        try { return JSON.parse(candidate); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
 // Shared poller for /api/usage.json. Used by the sidebar (gauges +
 // cooldown countdowns) and the quota-warning banner. Polling at 3 Hz is
 // cheap and keeps the two views perfectly in sync.
@@ -2739,6 +2785,12 @@ function HeroMindmap() {
   // showing made-up fallback data.
   const prefetchPromisesRef = React.useRef(new Map());
 
+  // Categorize-prompt timeout. Local Ollama models (qwen-coder in
+  // hybrid mode) can take 30-60s on modest hardware before they emit
+  // anything; we wait up to 120s before declaring the prefetch failed
+  // so the BarHandle's "structuring…" state doesn't become permanent.
+  const CATEGORIZE_TIMEOUT_MS = 120_000;
+
   // Categorize the entry's final markdown answer into the matching
   // template JSON, preserving every detail. Routes to qwen-coder
   // (action-code role, local) when hybrid mode is on, otherwise to
@@ -2753,18 +2805,32 @@ function HeroMindmap() {
     ));
     const prompt = comprehensiveCategorizePrompt(entry.template, entry.prompt, entry.text);
     let parsed = null;
+    // AbortController + timeout — without this a stalled local Ollama
+    // call (or any slow categorizer) would leave the prefetch promise
+    // pending forever and the BarHandle stuck at "structuring…".
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CATEGORIZE_TIMEOUT_MS);
     try {
       const res = await fetch('/api/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, role, useLocal: settings.useLocal }),
+        signal: controller.signal,
       });
       if (res.ok) {
         const json = await res.json();
-        const cleaned = String(json.reply || '').replace(/```json|```/g, '').trim();
-        try { parsed = JSON.parse(cleaned); } catch { parsed = null; }
+        // Robust extraction — categorize models (especially local ones
+        // like qwen-coder, or reasoning models like deepseek-r1 that
+        // emit <think>…</think> blocks) often wrap the JSON in prose,
+        // markdown fences, or chain-of-thought tags. extractFirstJsonObject
+        // strips the noise and pulls the first balanced {…}, then
+        // JSON.parse runs against that candidate. If extraction returns
+        // null, parsed stays null and the burst handler surfaces the
+        // failure cleanly instead of rendering fictional fallback data.
+        parsed = extractFirstJsonObject(String(json.reply || ''));
       }
-    } catch {/* swallow — fall through to null */}
+    } catch {/* AbortError + network errors both fall through to null */}
+    clearTimeout(timeoutId);
     // Only accept the prefetch result if its shape matches the
     // renderer's expectation. Malformed-but-parseable JSON (e.g.
     // `sections` as a string) would otherwise crash extractNodes.
