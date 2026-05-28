@@ -44,6 +44,11 @@ function makeResolver(handler: (name: string, prompt: string) => Promise<string>
         "- orchestration: planning and synthesis",
         "- action-structural: structured execution",
       ].join("\n"),
+    // listRoles is consumed by roleUsageSnapshot to walk the active
+    // resolver's chains. Tests don't care about role attribution, so
+    // return an empty list (snapshot falls back to DEFAULT_ROLES'
+    // shape via the iteration loop).
+    listRoles: () => [],
   } as unknown as import("../src/roles/resolver.js").RoleResolver;
 }
 

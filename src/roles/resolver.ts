@@ -77,6 +77,16 @@ export class RoleResolver {
     return this.roles.has(name);
   }
 
+  /**
+   * Snapshot of every role's current candidate chain. Used by the web
+   * server's `/api/usage.json` endpoint so the sidebar shows the chain
+   * for the currently-active mode (cloud vs local-prepend) rather than
+   * always reading from `DEFAULT_ROLES`.
+   */
+  listRoles(): RoleConfig[] {
+    return [...this.roles.values()];
+  }
+
   unsatisfiedRoles(): RoleName[] {
     const out: RoleName[] = [];
     for (const [name, cfg] of this.roles) {

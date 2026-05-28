@@ -3193,3 +3193,18 @@
   font: 11px/1.35 var(--mm-mono, "Geist Mono", monospace);
   color: #f5b3b3;
 }
+
+/* Local-mode rate-row tint + ∞ marker. Visually differentiates rows
+   that have been routed to the hybrid-mode Ollama daemon from cloud
+   rows that still have remote rate caps. */
+.mm-rate-row.local .mm-rate-provider {
+  color: oklch(0.78 0.10 195);
+}
+.mm-rate-gauge.mm-rate-source-local .mm-rate-gauge-fill {
+  background: linear-gradient(90deg, oklch(0.55 0.10 195 / 0.25), oklch(0.55 0.10 195 / 0.05));
+}
+.mm-rate-inf {
+  font: 12px/1 var(--mm-mono, "Geist Mono", monospace);
+  color: oklch(0.78 0.10 195);
+  letter-spacing: 0.04em;
+}

@@ -134,10 +134,18 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         // Machine-readable counterpart for the web sidebar's live gauges.
         // Exposes both RPM (rolling 60s window) and RPD (daily, UTC reset)
         // plus an accurate cooldown countdown in milliseconds.
+        //
+        // `?local=1` makes the snapshot read role candidates from the
+        // local-prepend resolver so the sidebar's per-role primary/fallback
+        // attribution reflects the hybrid-mode chains (reasoning →
+        // ollama:deepseek-r1, action-code → ollama:qwen2.5-coder).
+        const useLocal = url.searchParams.get("local") === "1";
+        const activeResolver = resolverFor(opts, useLocal);
         const snap = opts.router.snapshot();
-        const roles = roleUsageSnapshot(snap);
+        const roles = roleUsageSnapshot(snap, activeResolver);
         sendJson(res, 200, {
           mode: opts.router.getMode(),
+          useLocal,
           providers: snap.map((p) => ({
             id: p.id,
             successCount: p.successCount,
@@ -392,12 +400,29 @@ function sendText(res: ServerResponse, status: number, body: string): void {
 
 type ProviderSnapshot = ReturnType<Router["snapshot"]>[number];
 
-function roleUsageSnapshot(snap: ProviderSnapshot[]): Record<string, unknown> {
+function roleUsageSnapshot(
+  snap: ProviderSnapshot[],
+  resolver?: RoleResolver,
+): Record<string, unknown> {
   const byId = new Map(snap.map((p) => [p.id, p]));
   const now = Date.now();
   const roles: Record<string, unknown> = {};
 
-  for (const role of DEFAULT_ROLES) {
+  // When a specific resolver is supplied (e.g. the local-mode resolver),
+  // walk its role candidate list — that way the sidebar's primary +
+  // fallback attribution matches whichever resolver actually serves the
+  // current chat traffic. Without a resolver argument we fall back to
+  // DEFAULT_ROLES for backwards compat with anything that still calls
+  // this helper plainly.
+  // Prefer the resolver's chains so local-mode prepends show up in the
+  // snapshot. If the resolver supplies no roles (e.g., test stubs),
+  // fall back to DEFAULT_ROLES rather than returning an empty mapping.
+  const resolverChains = resolver?.listRoles();
+  const roleConfigs = resolverChains && resolverChains.length > 0
+    ? resolverChains
+    : DEFAULT_ROLES;
+
+  for (const role of roleConfigs) {
     const primaryId = role.candidates[0]?.providerId ?? "";
     const registered = role.candidates
       .map((c) => byId.get(c.providerId))

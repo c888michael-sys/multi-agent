@@ -186,14 +186,17 @@ function CompactNumber(n) {
 // Shared poller for /api/usage.json. Used by the sidebar (gauges +
 // cooldown countdowns) and the quota-warning banner. Polling at 3 Hz is
 // cheap and keeps the two views perfectly in sync.
-function useUsage(extraDepKey) {
+function useUsage(extraDepKey, useLocal) {
   const [usage, setUsage] = React.useState({ roles: {}, mode: 'round-robin' });
   const [usageFetchedAt, setUsageFetchedAt] = React.useState(performance.now());
+  // URL is rebuilt whenever the mode flips so the sidebar instantly
+  // mirrors local↔cloud, not on the next 3 s poll only.
+  const usageUrl = useLocal ? '/api/usage.json?local=1' : '/api/usage.json';
   React.useEffect(() => {
     let cancelled = false;
     const fetchUsage = async () => {
       try {
-        const r = await fetch('/api/usage.json');
+        const r = await fetch(usageUrl);
         if (!r.ok) return;
         const j = await r.json();
         if (!cancelled) {
@@ -205,17 +208,24 @@ function useUsage(extraDepKey) {
     fetchUsage();
     const id = setInterval(fetchUsage, 3000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [usageUrl]);
   // Optional one-shot refresh hook keyed on caller-supplied value
   // (e.g. phase change). Lets the banner refresh immediately when a
   // turn finishes, instead of waiting up to 3 s for the next poll.
   React.useEffect(() => {
     if (extraDepKey === undefined) return;
-    fetch('/api/usage.json').then((r) => r.ok && r.json().then((j) => {
+    fetch(usageUrl).then((r) => r.ok && r.json().then((j) => {
       setUsage(j); setUsageFetchedAt(performance.now());
     })).catch(() => {});
-  }, [extraDepKey]);
+  }, [extraDepKey, usageUrl]);
   return { usage, usageFetchedAt };
+}
+
+// Local-model rows show ∞ in place of "0/9999" because Ollama imposes
+// no cloud-style rate cap. Other providers fall through to the cap
+// they were configured with.
+function isLocalProvider(id) {
+  return typeof id === 'string' && id.startsWith('ollama:');
 }
 
 // QuotaBanner — one-line strip above the composer that warns when any
@@ -227,10 +237,10 @@ function useUsage(extraDepKey) {
 // banner prioritizes the LOWEST-remaining role so users see the most
 // urgent signal first; a "+N more" suffix appears if multiple roles
 // are degraded simultaneously.
-function QuotaBanner({ phase }) {
+function QuotaBanner({ phase, useLocal }) {
   // Re-fetch when the phase changes so the banner reflects post-turn
   // state without waiting for the next 3 s poll.
-  const { usage } = useUsage(phase);
+  const { usage } = useUsage(phase, useLocal);
   const issues = React.useMemo(() => {
     const out = [];
     const roles = usage.roles || {};
@@ -422,8 +432,8 @@ function settingsActiveCount(s) {
   return n;
 }
 
-function Sidebar({ phase, latestResponse, open }) {
-  const { usage, usageFetchedAt } = useUsage(phase === 'response' ? 'response-tick' : undefined);
+function Sidebar({ phase, latestResponse, open, useLocal }) {
+  const { usage, usageFetchedAt } = useUsage(phase === 'response' ? 'response-tick' : undefined, useLocal);
 
   // 1 Hz tick so the cooldown countdown advances smoothly between polls.
   const [, forceTick] = React.useState(0);
@@ -528,8 +538,12 @@ function Sidebar({ phase, latestResponse, open }) {
             : 0;
           const isCooling = liveCooldownMs > 0;
 
-          const hasRpm = role && typeof role.rpmCount === 'number' && role.rpmCap > 0;
-          const hasRpd = role && typeof role.remainingPct === 'number';
+          const localRow = isLocalProvider(role?.providerId);
+          // Local providers (Ollama) have no remote rate cap — show ∞.
+          // The cloud-style RPM/RPD gauges stay 0% filled so the user
+          // sees at a glance that this row is on local infrastructure.
+          const hasRpm = !localRow && role && typeof role.rpmCount === 'number' && role.rpmCap > 0;
+          const hasRpd = !localRow && role && typeof role.remainingPct === 'number';
           const rpmCount = role?.rpmCount ?? 0;
           const rpmCap = role?.rpmCap ?? null;
           const rpmPct = hasRpm ? Math.min(100, (rpmCount / rpmCap) * 100) : 0;
@@ -542,55 +556,64 @@ function Sidebar({ phase, latestResponse, open }) {
               key={a.id}
               className={
                 'mm-rate-row' +
-                (!hasRpm && !hasRpd ? ' unknown' : '') +
-                (isCooling ? ' cooling' : '')
+                (!hasRpm && !hasRpd && !localRow ? ' unknown' : '') +
+                (isCooling ? ' cooling' : '') +
+                (localRow ? ' local' : '')
               }
               style={{ '--c': a.color }}
               title={role?.providerId
-                ? `${role.providerId}${role.fallback ? ' (fallback)' : ''}`
+                ? `${role.providerId}${role.fallback ? ' (fallback)' : ''}${localRow ? ' — local Ollama daemon' : ''}`
                 : 'No provider registered'}
             >
               <div className="mm-rate-head">
                 <span className="mm-rate-label">{a.name.toLowerCase()}</span>
                 {isCooling
                   ? <span className="mm-rate-cooling">cooling {formatCountdown(liveCooldownMs)}</span>
-                  : <span className="mm-rate-provider">{role?.providerId || 'n/a'}</span>}
+                  : <span className="mm-rate-provider">{role?.providerId || 'n/a'}{role?.fallback && !localRow ? ' ⤳' : ''}</span>}
               </div>
               <div className="mm-rate-gauges">
                 <div
-                  className={'mm-rate-gauge mm-rate-source-' + (role?.rpmSource || 'estimated')}
-                  title={hasRpm
-                    ? `${rpmCount} requests in last 60s (cap ${rpmCap}) — ${role?.rpmSource === 'live' ? 'reported by provider header' : 'estimated from local sliding window'}`
-                    : 'No RPM cap'}
+                  className={'mm-rate-gauge mm-rate-source-' + (localRow ? 'local' : (role?.rpmSource || 'estimated'))}
+                  title={localRow
+                    ? 'Local model — no remote rate cap'
+                    : (hasRpm
+                      ? `${rpmCount} requests in last 60s (cap ${rpmCap}) — ${role?.rpmSource === 'live' ? 'reported by provider header' : 'estimated from local sliding window'}`
+                      : 'No RPM cap')}
                 >
                   <span className="mm-rate-gauge-label">RPM</span>
                   <span className="mm-rate-gauge-bar">
                     <span className="mm-rate-gauge-fill" style={{ width: rpmPct + '%' }} />
                   </span>
                   <span className="mm-rate-gauge-num">
-                    {hasRpm ? `${rpmCount}/${rpmCap}` : '–'}
-                    {role?.rpmSource && <em className="mm-rate-src">{role.rpmSource === 'live' ? 'live' : 'est'}</em>}
+                    {localRow ? <span className="mm-rate-inf">∞</span> : (hasRpm ? `${rpmCount}/${rpmCap}` : '–')}
+                    {!localRow && role?.rpmSource && <em className="mm-rate-src">{role.rpmSource === 'live' ? 'live' : 'est'}</em>}
+                    {localRow && <em className="mm-rate-src">local</em>}
                   </span>
                 </div>
                 <div
-                  className={'mm-rate-gauge mm-rate-source-' + (role?.rpdSource || 'estimated')}
-                  title={hasRpd
-                    ? `${role?.rpdSource === 'live'
-                        ? `${Math.round((100 - role.remainingPct) / 100 * dailyBudget)} of ${dailyBudget} daily quota used — reported by provider header`
-                        : `${successCount} of ${dailyBudget} successes today (estimated; resets at UTC midnight)`}`
-                    : 'No daily budget'}
+                  className={'mm-rate-gauge mm-rate-source-' + (localRow ? 'local' : (role?.rpdSource || 'estimated'))}
+                  title={localRow
+                    ? 'Local model — no daily cap'
+                    : (hasRpd
+                      ? `${role?.rpdSource === 'live'
+                          ? `${Math.round((100 - role.remainingPct) / 100 * dailyBudget)} of ${dailyBudget} daily quota used — reported by provider header`
+                          : `${successCount} of ${dailyBudget} successes today (estimated; resets at UTC midnight)`}`
+                      : 'No daily budget')}
                 >
                   <span className="mm-rate-gauge-label">RPD</span>
                   <span className="mm-rate-gauge-bar">
                     <span className="mm-rate-gauge-fill" style={{ width: rpdUsedPct + '%' }} />
                   </span>
                   <span className="mm-rate-gauge-num">
-                    {hasRpd
-                      ? (role.rpdSource === 'live'
-                          ? `${Math.round((100 - role.remainingPct) / 100 * dailyBudget)}/${dailyBudget}`
-                          : `${successCount}/${dailyBudget}`)
-                      : '–'}
-                    {role?.rpdSource && <em className="mm-rate-src">{role.rpdSource === 'live' ? 'live' : 'est'}</em>}
+                    {localRow
+                      ? <span className="mm-rate-inf">∞</span>
+                      : (hasRpd
+                          ? (role.rpdSource === 'live'
+                              ? `${Math.round((100 - role.remainingPct) / 100 * dailyBudget)}/${dailyBudget}`
+                              : `${successCount}/${dailyBudget}`)
+                          : '–')}
+                    {!localRow && role?.rpdSource && <em className="mm-rate-src">{role.rpdSource === 'live' ? 'live' : 'est'}</em>}
+                    {localRow && <em className="mm-rate-src">local</em>}
                   </span>
                 </div>
               </div>
@@ -2694,7 +2717,7 @@ function HeroMindmap() {
         </div>
       </nav>
 
-      <Sidebar phase={phase} latestResponse={newest} open={sidebarOpen} />
+      <Sidebar phase={phase} latestResponse={newest} open={sidebarOpen} useLocal={settings.useLocal} />
       {/* Mobile-only quota/stats toggle. Hidden via media query >880px. */}
       <button
         className={'mm-sidebar-toggle' + (sidebarOpen ? ' active' : '')}
@@ -2724,7 +2747,7 @@ function HeroMindmap() {
           Lives inside the stage so it overlays content without
           taking layout space when hidden.
         */}
-        <QuotaBanner phase={phase} />
+        <QuotaBanner phase={phase} useLocal={settings.useLocal} />
         {phase === 'idle' && (
           <PhaseErrorBoundary label="idle view" recoverLabel="reset" onRecover={reset}>
             <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} />
