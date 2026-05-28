@@ -48,7 +48,8 @@ function buildChatOpts(parsed: {
   thinking?: "low" | "medium" | "high" | null;
   useSearch?: boolean;
   forceRole?: string | null;
-}): { opts: CompleteOptions; routing: { forceRole?: RoleName } } {
+  routingMode?: string | null;
+}): { opts: CompleteOptions; routing: { forceRole?: RoleName; roundRobin?: boolean } } {
   const opts: CompleteOptions = {};
   if (parsed.thinking === "low" || parsed.thinking === "medium" || parsed.thinking === "high") {
     opts.thinking = parsed.thinking;
@@ -56,10 +57,17 @@ function buildChatOpts(parsed: {
   if (parsed.useSearch === true) {
     opts.useSearch = true;
   }
-  const routing: { forceRole?: RoleName } = {};
+  const routing: { forceRole?: RoleName; roundRobin?: boolean } = {};
   const fr = parsed.forceRole;
   if (typeof fr === "string" && VALID_ROLES.has(fr as RoleName)) {
     routing.forceRole = fr as RoleName;
+  }
+  // Routing mode: 'smart' (default) → orchestrator plans per turn;
+  // 'round-robin' → ChatSession forces a parallel fan-out across all
+  // four specialists, synthesizing through orchestration. The actual
+  // execution happens inside ChatSession.send via the routing arg.
+  if (parsed.routingMode === "round-robin") {
+    routing.roundRobin = true;
   }
   return { opts, routing };
 }
@@ -225,6 +233,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               useSearch?: boolean;
               forceRole?: string | null;
               useLocal?: boolean;
+              routingMode?: string | null;
             }
           | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
@@ -267,6 +276,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               useSearch?: boolean;
               forceRole?: string | null;
               useLocal?: boolean;
+              routingMode?: string | null;
             }
           | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {

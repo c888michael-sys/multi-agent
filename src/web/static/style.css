@@ -3208,3 +3208,60 @@
   color: oklch(0.78 0.10 195);
   letter-spacing: 0.04em;
 }
+
+/* BarHandle state-feedback for the categorize prefetch.
+   structuring → soft pulsing label so the user knows the prefetch is
+   in flight; failed → muted label color so the affordance still works
+   but communicates "categorization didn't produce a valid shape." */
+.mm-seam-handle.structuring .mm-seam-label {
+  opacity: 0.7;
+  animation: mm-seam-pulse 1.4s ease-in-out infinite;
+}
+.mm-seam-handle.failed .mm-seam-label {
+  color: oklch(0.78 0.10 35);
+  opacity: 0.85;
+}
+@keyframes mm-seam-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+/* Settings drawer — routing-mode radio group. Sits below the Force role
+   select; visually distinguishes the active row by accent border. */
+.mm-settings-row-radio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mm-settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mm-settings-radio {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.mm-settings-radio:has(input:checked) {
+  border-color: var(--accent, currentColor);
+  background: rgba(255, 255, 255, 0.03);
+}
+.mm-settings-radio input[type="radio"] {
+  margin: 3px 0 0;
+  accent-color: var(--accent, currentColor);
+}
+.mm-settings-radio-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mm-settings-radio-label {
+  font: 13px/1.2 var(--mm-mono, "Geist Mono", monospace);
+  color: var(--mm-fg, currentColor);
+}

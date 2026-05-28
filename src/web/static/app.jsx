@@ -408,6 +408,26 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
               Skip smart routing — every turn goes through the chosen role's chain (CLI: <code>--role=&lt;name&gt;</code>)
             </span>
           </div>
+          <div className="mm-settings-row mm-settings-row-radio">
+            <span className="mm-settings-name">Routing mode</span>
+            <div className="mm-settings-radio-group" role="radiogroup" aria-label="Routing mode">
+              {ROUTING_MODES.map((m) => (
+                <label key={m.value} className="mm-settings-radio">
+                  <input
+                    type="radio"
+                    name="routingMode"
+                    value={m.value}
+                    checked={settings.routingMode === m.value}
+                    onChange={() => onChange({ ...settings, routingMode: m.value })}
+                  />
+                  <span className="mm-settings-radio-body">
+                    <span className="mm-settings-radio-label">{m.label}</span>
+                    <span className="mm-settings-hint">{m.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
           <div className="mm-settings-foot">
             <button
               className="mm-settings-reset"
@@ -429,6 +449,7 @@ function settingsActiveCount(s) {
   if (s.search) n++;
   if (s.forceRole && s.forceRole !== 'auto') n++;
   if (s.useLocal) n++;
+  if (s.routingMode && s.routingMode !== 'smart') n++;
   return n;
 }
 
@@ -1084,11 +1105,21 @@ function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
 // + text. Hover → label brightens + chevron animates downward; drag
 // or click → fire onExpand. During the catalyst sequence (`sliding`)
 // the bar slides down toward the collision point.
-function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
+function BarHandle({ onExpand, disabled, sliding, slideDistance, dataState, errorMessage }) {
   const [dragY, setDragY] = React.useState(0);
   const startY = React.useRef(0);
   const dragging = React.useRef(false);
   const fired = React.useRef(false);
+
+  // dataState reflects the categorization pipeline:
+  //   'ready'       — entry.data validated, burst is instant
+  //   'structuring' — prefetch in flight; click still works but will await
+  //   'failed'      — prefetch returned no valid shape; we let the click
+  //                   through and the parent expand() surfaces a toast
+  //                   instead of rendering fictional fallback data
+  //   undefined     — no entry yet (shouldn't happen with current callers)
+  const isStructuring = dataState === 'structuring';
+  const isFailed = dataState === 'failed';
 
   const onPointerDown = (e) => {
     if (disabled || sliding) return;
@@ -1114,6 +1145,13 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
   };
 
   const progress = Math.min(1, dragY / 48);
+  const label = errorMessage
+    ? errorMessage
+    : isStructuring
+      ? 'structuring…'
+      : isFailed
+        ? "couldn't structure — click anyway"
+        : 'burst into mindmap';
 
   return (
     <button
@@ -1121,7 +1159,9 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
         'mm-seam-handle' +
         (disabled ? ' disabled' : '') +
         (sliding ? ' sliding' : '') +
-        (dragY > 0 ? ' active' : '')
+        (dragY > 0 ? ' active' : '') +
+        (isStructuring ? ' structuring' : '') +
+        (isFailed ? ' failed' : '')
       }
       onClick={disabled || sliding ? undefined : onExpand}
       onPointerDown={onPointerDown}
@@ -1142,7 +1182,7 @@ function BarHandle({ onExpand, disabled, sliding, slideDistance }) {
             stroke="currentColor" strokeWidth="1.6"
             strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        <span className="mm-seam-label">burst into mindmap</span>
+        <span className="mm-seam-label">{label}</span>
       </span>
       {!sliding && dragY > 0 && (
         <span className="mm-seam-progress" aria-hidden="true">
@@ -1823,7 +1863,7 @@ function LoadingView({ prompt, liveStatus, summarize }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
-  attachments, setAttachments,
+  attachments, setAttachments, burstError,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -1878,6 +1918,13 @@ function ResponseStackView({
             disabled={imploding || responses.length === 0}
             sliding={collapsing}
             slideDistance={null}
+            dataState={
+              newest?.data ? 'ready'
+                : newest?.dataLoading ? 'structuring'
+                  : newest?.dataError ? 'failed'
+                    : 'ready'
+            }
+            errorMessage={burstError}
           />
         )}
         <div className="mm-chat-list" ref={listRef}>
@@ -2231,7 +2278,16 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 //   role     → forceRole (one of RoleName) | 'auto' (let smart-routing decide)
 // All knobs persist to localStorage so refresh / new tab keeps the user's
 // chosen mode. forceRole='auto' means "no override", which is the default.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false };
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'smart' };
+// Valid routing modes the settings UI surfaces. 'smart' is the default
+// (orchestrator picks direct/single/parallel per turn). 'round-robin'
+// forces a parallel fan-out across all four specialists every turn
+// — useful for testing or when you want the multi-agent feel on every
+// reply. See chat/session.ts handling of `routing.roundRobin`.
+const ROUTING_MODES = [
+  { value: 'smart',       label: 'Smart routing', hint: 'orchestrator picks direct/single/parallel per turn (default)' },
+  { value: 'round-robin', label: 'Round-robin',   hint: 'every turn fans out to perception + reasoning + coder + structural, then synthesizes' },
+];
 const ROLE_OPTIONS = [
   { value: 'auto',              label: 'auto (smart routing)' },
   { value: 'orchestration',     label: 'orchestration' },
@@ -2252,6 +2308,7 @@ function loadSettings() {
       search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
       forceRole: ROLE_OPTIONS.some((r) => r.value === parsed.forceRole) ? parsed.forceRole : 'auto',
       useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
+      routingMode: ROUTING_MODES.some((m) => m.value === parsed.routingMode) ? parsed.routingMode : 'smart',
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -2470,6 +2527,7 @@ function HeroMindmap() {
       if (settings.search) body.useSearch = true;
       if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
       if (settings.useLocal) body.useLocal = true;
+      if (settings.routingMode && settings.routingMode !== 'smart') body.routingMode = settings.routingMode;
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2559,8 +2617,9 @@ function HeroMindmap() {
       turns: doneEvent?.turns || 0,
       warning: doneEvent?.warning || null,
       summarizedTurns: summarizedTurns || doneEvent?.summarizedTurns || 0,
-      data: null,            // lazy-loaded on burst (Cerebras prefetch)
+      data: null,            // lazy-loaded by prefetchMindmapData
       dataLoading: false,
+      dataError: false,
     };
     const next = [...responses, entry];
     setResponses(next);
@@ -2568,13 +2627,17 @@ function HeroMindmap() {
     setLiveTurn(null);
     setPhase('response');
 
-    // Background mindmap pre-fetch via Cerebras (action-repetitive role,
-    // 1M tokens/day quota) — categorize the chat answer into the
-    // template's structured shape with NO detail omitted. Stored on the
-    // entry's `data` field so a later BURST is instant. Falls back
-    // silently if it fails; expand() will then derive locally.
+    // Background mindmap pre-fetch — categorize the final answer into
+    // the template's structured shape with NO detail omitted. Stored
+    // on the entry's `data` field so the burst transition is instant.
+    // Route to qwen-coder (local) when hybrid mode is on, cerebras
+    // otherwise — see prefetchMindmapData. We keep the promise in
+    // prefetchPromisesRef so the burst handler can await it if the
+    // user clicks before categorization lands.
     if (entry.text && !entry.text.startsWith('(error')) {
-      prefetchMindmapData(entry).catch(() => {});
+      const p = prefetchMindmapData(entry);
+      prefetchPromisesRef.current.set(entry.id, p);
+      p.catch(() => {});
     }
   };
 
@@ -2583,21 +2646,31 @@ function HeroMindmap() {
   const phaseRef = React.useRef(phase);
   React.useEffect(() => { phaseRef.current = phase; }, [phase]);
 
-  // Ask Cerebras (action-repetitive role) to categorize the entry's
-  // markdown answer into the matching template JSON, preserving every
-  // detail. Updates state in-place. No-op if the entry already has
-  // data or if the request fails.
+  // In-flight prefetches keyed by entry id. The burst handler awaits
+  // the promise here when the user clicks BURST before categorization
+  // has landed, so we never have to choose between a tiny wait and
+  // showing made-up fallback data.
+  const prefetchPromisesRef = React.useRef(new Map());
+
+  // Categorize the entry's final markdown answer into the matching
+  // template JSON, preserving every detail. Routes to qwen-coder
+  // (action-code role, local) when hybrid mode is on, otherwise to
+  // Cerebras (action-repetitive role, 1M tok/day budget). Updates
+  // state in-place and returns the validated structured data — the
+  // burst handler awaits this when needed.
   const prefetchMindmapData = React.useCallback(async (entry) => {
-    if (!entry || entry.data) return;
-    // Mark loading so the UI could show a tiny indicator if it wanted.
-    setResponses((cur) => cur.map((e) => e.id === entry.id ? { ...e, dataLoading: true } : e));
+    if (!entry || entry.data) return entry?.data ?? null;
+    const role = settings.useLocal ? 'action-code' : 'action-repetitive';
+    setResponses((cur) => cur.map((e) =>
+      e.id === entry.id ? { ...e, dataLoading: true, dataError: false } : e
+    ));
     const prompt = comprehensiveCategorizePrompt(entry.template, entry.prompt, entry.text);
     let parsed = null;
     try {
       const res = await fetch('/api/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, role: 'action-repetitive', useLocal: settings.useLocal }),
+        body: JSON.stringify({ prompt, role, useLocal: settings.useLocal }),
       });
       if (res.ok) {
         const json = await res.json();
@@ -2605,48 +2678,59 @@ function HeroMindmap() {
         try { parsed = JSON.parse(cleaned); } catch { parsed = null; }
       }
     } catch {/* swallow — fall through to null */}
-    // Only accept the prefetch result if its shape matches what the
-    // renderer needs. Malformed-but-parseable JSON (e.g. `sections` as
-    // a string) would otherwise crash extractNodes and black-screen
-    // the orbital phase.
+    // Only accept the prefetch result if its shape matches the
+    // renderer's expectation. Malformed-but-parseable JSON (e.g.
+    // `sections` as a string) would otherwise crash extractNodes.
     const safe = parsed && isValidMindmapData(entry.template, parsed) ? parsed : null;
     setResponses((cur) => {
       const next = cur.map((e) =>
-        e.id === entry.id ? { ...e, dataLoading: false, data: safe || e.data } : e
+        e.id === entry.id
+          ? { ...e, dataLoading: false, data: safe, dataError: !safe }
+          : e,
       );
       savePersistedStack(next);
       return next;
     });
-  }, []);
+    return safe;
+  }, [settings.useLocal]);
 
-  // The catalyst sequence: bar slides -> tokens collide -> B shatters ->
-  // fountain settles. Mindmap categories are derived locally from the
-  // already-rendered markdown answer, so bursting does NOT spend a second
-  // model call and cannot hang waiting for a categorization request.
+  // Toast surfaced when burst is clicked but categorization failed
+  // (no fictional fallback). Auto-clears after 3.5s.
+  const [burstError, setBurstError] = React.useState(null);
+
+  // Burst: orchestrator's final answer is categorized in the background
+  // by qwen-coder (hybrid mode) or Cerebras (cloud mode). When the user
+  // clicks BURST:
+  //   • If categorization is done and valid → play the catalyst transition.
+  //   • If it's still running → await the prefetch promise; the BarHandle
+  //     surfaces "structuring…" while the user sees a brief wait. No
+  //     fictional fallback ever renders.
+  //   • If categorization failed → surface a toast so the user knows
+  //     to rephrase or retry, and stay on the chat phase.
   const expand = async () => {
     if (phase !== 'response') return;
     const newestEntry = responses[responses.length - 1];
     if (!newestEntry) return;
-    // Prefer Cerebras-prefetched data when it's valid; otherwise derive
-    // locally from the markdown answer. Both paths run through the
-    // validator so a malformed shape can never reach extractNodes.
-    let parsed = newestEntry.data;
-    if (!parsed || !isValidMindmapData(newestEntry.template, parsed)) {
-      try {
-        parsed = deriveMindmapData(newestEntry.template, newestEntry.prompt, newestEntry.text);
-      } catch (e) {
-        console.warn('[mindmap] deriveMindmapData threw:', e);
-        parsed = FALLBACK_DATA[newestEntry.template] || FALLBACK_DATA.plan;
+
+    // Wait for in-flight categorization rather than ever rendering
+    // FALLBACK_DATA. The BarHandle's "structuring…" label keeps the
+    // user informed during the wait.
+    let data = newestEntry.data;
+    if (!data && newestEntry.dataLoading) {
+      const pending = prefetchPromisesRef.current.get(newestEntry.id);
+      if (pending) {
+        try { data = await pending; } catch { data = null; }
       }
     }
-    if (!isValidMindmapData(newestEntry.template, parsed)) {
-      parsed = FALLBACK_DATA[newestEntry.template] || FALLBACK_DATA.plan;
+
+    if (!data || !isValidMindmapData(newestEntry.template, data)) {
+      setBurstError(
+        "couldn't structure this reply — try rephrasing or burst a later turn",
+      );
+      setTimeout(() => setBurstError(null), 3500);
+      return;
     }
-    const next = responses.map((e) =>
-      e.id === newestEntry.id ? { ...e, data: parsed } : e
-    );
-    setResponses(next);
-    savePersistedStack(next);
+
     setPhase('collapsing');
     setTimeout(() => setPhase('mindmap'), COLLAPSE_TIMELINE.total);
   };
@@ -2768,6 +2852,7 @@ function HeroMindmap() {
               responses={responses} expand={expand} reset={reset} phase={phase}
               liveTurn={liveTurn}
               attachments={attachments} setAttachments={setAttachments}
+              burstError={burstError}
             />
           </PhaseErrorBoundary>
         )}

@@ -201,7 +201,7 @@ export class ChatSession {
     userInput: string,
     opts?: CompleteOptions,
     onProgress?: (evt: ChatProgressEvent) => void,
-    routing?: { forceRole?: RoleName },
+    routing?: { forceRole?: RoleName; roundRobin?: boolean },
   ): Promise<SendResult> {
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
@@ -212,6 +212,7 @@ export class ChatSession {
     // bypass smart routing for this turn only and call that role directly.
     // The session's smartRouting setting is preserved for future turns.
     const forcedRole = routing?.forceRole;
+    const roundRobin = routing?.roundRobin === true;
     const emit = (evt: ChatProgressEvent) => {
       if (onProgress) {
         try { onProgress(evt); } catch {/* ignore caller errors */}
@@ -251,6 +252,24 @@ export class ChatSession {
         }
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
+      } else if (roundRobin) {
+        // Round-robin mode: bypass the orchestrator's plan-generation
+        // call entirely and force a parallel fan-out across the four
+        // specialist roles, then synthesize through orchestration.
+        // Matches the agents-CLI `--mode=parallel` shape but for chat.
+        const prebuilt: Plan = {
+          kind: "parallel",
+          tasks: [
+            { role: "perception" as RoleName, prompt: "" },
+            { role: "reasoning" as RoleName, prompt: "" },
+            { role: "action-code" as RoleName, prompt: "" },
+            { role: "action-structural" as RoleName, prompt: "" },
+          ],
+        };
+        const planned = await this.planAndExecute(effectiveOpts, emit, prebuilt);
+        reply = planned.reply;
+        servedBy = planned.servedBy;
+        plan = planned.plan;
       } else {
         const planned = await this.planAndExecute(effectiveOpts, emit);
         reply = planned.reply;
@@ -353,17 +372,28 @@ Output ONLY the summary, no preamble.`;
   private async planAndExecute(
     opts: CompleteOptions,
     emit?: (evt: ChatProgressEvent) => void,
+    prebuiltPlan?: Plan,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: Plan }> {
     const fire = emit ?? (() => {});
-    const orchHistory: ConversationPart[] = [
-      { kind: "user_text", text: PLAN_PREAMBLE },
-      { kind: "model_text", text: PLAN_ACK },
-      ...this.history,
-    ];
-    fire({ kind: "plan-start" });
-    const planRaw = await this.resolver.runRoleChat(this.role, orchHistory, opts);
-    const plan = parsePlan(planRaw);
-    fire({ kind: "plan", plan });
+    let plan: Plan;
+    if (prebuiltPlan) {
+      // Caller provided a hardcoded plan (round-robin mode): skip the
+      // orchestrator's plan-generation call to save quota AND make the
+      // routing deterministic.
+      fire({ kind: "plan-start" });
+      plan = prebuiltPlan;
+      fire({ kind: "plan", plan });
+    } else {
+      const orchHistory: ConversationPart[] = [
+        { kind: "user_text", text: PLAN_PREAMBLE },
+        { kind: "model_text", text: PLAN_ACK },
+        ...this.history,
+      ];
+      fire({ kind: "plan-start" });
+      const planRaw = await this.resolver.runRoleChat(this.role, orchHistory, opts);
+      plan = parsePlan(planRaw);
+      fire({ kind: "plan", plan });
+    }
 
     if (plan.kind === "direct") {
       // The orchestrator already has the answer in plan.answer; we still
