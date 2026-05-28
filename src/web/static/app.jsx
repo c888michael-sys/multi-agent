@@ -1975,48 +1975,81 @@ function IdleView({ draft, setDraft, submit, attachments, setAttachments }) {
 //   role-start synth    → orchestrator is "synthesizing…"
 //   role-end            → marks the agent as "done"
 function LoadingView({ prompt, liveStatus, summarize }) {
-  // Map the latest status event to a per-agent state map.
-  const agentState = React.useMemo(() => {
-    const map = Object.fromEntries(MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }]));
-    if (!liveStatus) return map;
-    const { phase, role, kind, ok, plan } = liveStatus;
-    // Prefer kind (outer event type: role-start / role-end / plan-start / plan)
-    // over phase (inner sub-phase: single / synthesis / direct / parallel).
-    // The /api/chat-stream client merges events as `{phase: evt.kind, ...evt}`,
-    // which means evt.phase ("single", "synthesis", …) clobbers the outer
-    // phase= evt.kind we just wrote. Without this inversion every role-start
-    // resolved to its inner phase string ("single"), missed every branch in
-    // the switch below, and the agent state map stayed in its initial
-    // plan-start state — so only `orchestration` ever showed as working.
-    const ph = kind || phase;
-    if (ph === 'plan-start') {
-      // Orchestrator is choosing roles
-      map['orchestration'] = { state: 'engaged', label: 'planning…' };
-    } else if (ph === 'plan') {
-      // Plan settled — annotate which specialists will run
-      map['orchestration'] = { state: 'engaged', label: `plan: ${plan?.kind || '?'}` };
-      if (plan?.kind === 'single' && plan.role) {
-        map[plan.role] = { state: 'queued', label: 'queued' };
-      } else if (plan?.kind === 'parallel' && Array.isArray(plan.tasks)) {
-        for (const t of plan.tasks) {
-          if (map[t.role]) map[t.role] = { state: 'queued', label: 'queued' };
-        }
-      }
-    } else if (ph === 'role-start' && role) {
-      if (map[role]) {
-        if (liveStatus.phase === 'synthesis') {
-          map[role] = { state: 'engaged', label: 'synthesizing…' };
-        } else if (liveStatus.phase === 'direct') {
-          map[role] = { state: 'engaged', label: 'answering directly…' };
-        } else {
-          map[role] = { state: 'engaged', label: 'thinking…' };
-        }
-      }
-    } else if (ph === 'role-end' && role) {
-      if (map[role]) map[role] = { state: ok === false ? 'failed' : 'done', label: ok === false ? 'failed' : '✓ done' };
+  // Agent state has to ACCUMULATE across events — not be recomputed from
+  // the latest event alone. The streaming handler fires one event at a
+  // time (plan-start → plan → role-start perception → role-end perception
+  // → role-start reasoning → ...), and if we derive state purely from
+  // the most recent event, every previous role flips back to 'queued'.
+  // Round-robin makes this visually obvious: by end-of-turn you only
+  // see Coder + Structural states because they were the most recent two
+  // events to touch the map. Perception, Reasoning, and Orchestrator
+  // all light up + go done in the SSE stream but you never see it.
+  //
+  // Fix: useState + useEffect that applies each event INCREMENTALLY
+  // on top of the prior state. We reset to all-queued only when the
+  // next plan-start arrives (= new turn) or when liveStatus goes null
+  // (= no turn in flight).
+  const initialMap = React.useMemo(
+    () => Object.fromEntries(MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }])),
+    []
+  );
+  const [agentState, setAgentState] = React.useState(initialMap);
+
+  React.useEffect(() => {
+    if (!liveStatus) {
+      setAgentState(initialMap);
+      return;
     }
-    return map;
-  }, [liveStatus]);
+    const { phase, role, kind, ok, plan } = liveStatus;
+    // Prefer kind (outer event type: role-start / role-end / plan-start /
+    // plan) over phase (inner sub-phase: single / synthesis / direct /
+    // parallel). The /api/chat-stream client merges events as
+    // `{phase: evt.kind, ...evt}`, which means evt.phase ("single",
+    // "synthesis", …) clobbers the outer phase= evt.kind we just wrote.
+    const ph = kind || phase;
+    setAgentState((prev) => {
+      // plan-start = new turn boundary — wipe and engage the orchestrator.
+      if (ph === 'plan-start') {
+        const fresh = { ...initialMap };
+        fresh['orchestration'] = { state: 'engaged', label: 'planning…' };
+        return fresh;
+      }
+      const next = { ...prev };
+      if (ph === 'plan') {
+        next['orchestration'] = { state: 'engaged', label: `plan: ${plan?.kind || '?'}` };
+        // Queue the specialists the plan will run — but DON'T overwrite
+        // a specialist already in 'engaged' or 'done' state from earlier
+        // (the plan event can arrive after the first role-start in some
+        // race conditions over SSE).
+        if (plan?.kind === 'single' && plan.role && next[plan.role]?.state === 'queued') {
+          next[plan.role] = { state: 'queued', label: 'queued' };
+        } else if (plan?.kind === 'parallel' && Array.isArray(plan.tasks)) {
+          for (const t of plan.tasks) {
+            if (next[t.role] && next[t.role].state === 'queued') {
+              next[t.role] = { state: 'queued', label: 'queued' };
+            }
+          }
+        }
+      } else if (ph === 'role-start' && role) {
+        if (next[role]) {
+          if (phase === 'synthesis') {
+            next[role] = { state: 'engaged', label: 'synthesizing…' };
+          } else if (phase === 'direct') {
+            next[role] = { state: 'engaged', label: 'answering directly…' };
+          } else {
+            next[role] = { state: 'engaged', label: 'thinking…' };
+          }
+        }
+      } else if (ph === 'role-end' && role) {
+        if (next[role]) {
+          next[role] = ok === false
+            ? { state: 'failed', label: 'failed' }
+            : { state: 'done', label: '✓ done' };
+        }
+      }
+      return next;
+    });
+  }, [liveStatus, initialMap]);
 
   const fallbackHint = !liveStatus ? 'routing…' : (
     summarize?.folded
