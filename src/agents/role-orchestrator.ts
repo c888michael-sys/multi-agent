@@ -203,6 +203,7 @@ const VALID_ROLE_NAMES = new Set<RoleName>([
   "action-code",
   "action-structural",
   "action-repetitive",
+  "mindmap-categorize",
 ]);
 
 function isValidRoleName(s: string): s is RoleName {

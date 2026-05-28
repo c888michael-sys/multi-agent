@@ -31,11 +31,14 @@ const GEMINI_FLASH_SHARED = [
 
 // Gemma 3 27B-it slots on every Gemini key — same project, different
 // model, separate per-model RPD quota pool (~14,400/day vs Flash's
-// 20-1,500/day). Universal safety net at the end of every chain.
+// 20-1,500/day). gemma:3 is RESERVED for the mindmap-categorize role
+// (analogous to gemini:3's perception isolation), so chat/round-robin
+// traffic can't drain the slot that powers the mindmap burst. The
+// remaining gemma:1 and gemma:2 form the universal safety net at the
+// end of every chat-facing role's chain.
 const GEMMA_FALLBACK = [
   { providerId: "gemma:1" },
   { providerId: "gemma:2" },
-  { providerId: "gemma:3" },
 ];
 
 /**
@@ -160,5 +163,29 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate: "You are the bulk-action agent. Process the task quickly and concisely.",
+  },
+  {
+    // Dedicated role for the web UI's mindmap burst — takes a finished
+    // chat reply and emits a structured-JSON view of it. Reserved
+    // chain so chat/round-robin traffic can never drain the slot
+    // that powers categorization (analogous to gemini:3's perception
+    // isolation):
+    //   1. gemma:3  — RESERVED for this role, removed from every other
+    //      chain. Independent ~14,400 RPD pool on the gemini:3 project.
+    //   2. cerebras:llama3-8b — fast, 1 M tok/day, fine for short JSON
+    //      categorization.
+    //   3. gemma:2 / gemma:1 — last-resort fallback if the reserved
+    //      slot AND Cerebras are both exhausted.
+    name: "mindmap-categorize",
+    description:
+      "Convert an assistant reply into the structured JSON the mindmap burst needs (sections/files/targets/phases). Detail-preserving, no paraphrasing.",
+    candidates: [
+      { providerId: "gemma:3" },
+      { providerId: "cerebras:llama3-8b" },
+      { providerId: "gemma:2" },
+      { providerId: "gemma:1" },
+    ],
+    systemPromptTemplate:
+      "You categorize an assistant reply into a JSON shape. Preserve every detail. Return ONLY valid JSON. No prose, no markdown fences.",
   },
 ];

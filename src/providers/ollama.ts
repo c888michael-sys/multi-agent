@@ -27,6 +27,15 @@ export interface OllamaProviderOptions {
    * test or per-deploy.
    */
   requestTimeoutMs?: number;
+  /**
+   * Context window in tokens. Ollama's hard default is 2048, which
+   * silently truncates inputs longer than that — disastrous for the
+   * categorize prefetch (which embeds the entire chat reply plus a
+   * schema in the prompt). We default to 8192 so typical round-robin
+   * syntheses fit; callers can override per-instance for models with
+   * smaller windows or memory-constrained deployments.
+   */
+  numCtx?: number;
 }
 
 interface OllamaMessage {
@@ -54,12 +63,14 @@ export class OllamaProvider implements Provider {
   private readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
   private readonly requestTimeoutMs: number;
+  private readonly numCtx: number;
 
   constructor(opts: OllamaProviderOptions) {
     this.id = opts.id;
     this.model = opts.model;
     this.baseUrl = opts.baseUrl ?? "http://localhost:11434";
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
+    this.numCtx = opts.numCtx ?? 8192;
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
   }
 
@@ -166,7 +177,14 @@ export class OllamaProvider implements Provider {
   }
 
   private buildOllamaOptions(opts?: CompleteOptions): Record<string, unknown> {
-    const o: Record<string, unknown> = {};
+    // Always send num_ctx — Ollama's daemon default is 2048 tokens, which
+    // silently truncates the categorize prefetch's prompt (it embeds the
+    // entire chat reply plus the template schema). With truncation the
+    // model emits garbage, JSON parse fails, and the mindmap surfaces
+    // "couldn't structure this reply". 8192 fits a typical long round-
+    // robin synthesis with headroom; constructor option overrides per
+    // model when needed.
+    const o: Record<string, unknown> = { num_ctx: this.numCtx };
     if (opts?.temperature !== undefined) o.temperature = opts.temperature;
     if (opts?.maxTokens !== undefined) o.num_predict = opts.maxTokens;
     return o;

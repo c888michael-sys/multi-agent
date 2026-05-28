@@ -2909,14 +2909,17 @@ function HeroMindmap() {
   const CATEGORIZE_TIMEOUT_MS = 120_000;
 
   // Categorize the entry's final markdown answer into the matching
-  // template JSON, preserving every detail. Routes to qwen-coder
-  // (action-code role, local) when hybrid mode is on, otherwise to
-  // Cerebras (action-repetitive role, 1M tok/day budget). Updates
-  // state in-place and returns the validated structured data — the
-  // burst handler awaits this when needed.
+  // template JSON, preserving every detail. Always routes to the
+  // dedicated `mindmap-categorize` role — its chain starts with the
+  // reserved gemma:3 slot (analogous to perception's gemini:3 reservation)
+  // so chat/round-robin traffic on other roles can't drain the categorize
+  // pool. Hybrid mode (qwen-coder) used to be the categorizer too, but
+  // that meant qwen-coder got hit twice per round-robin turn: once for
+  // the action-code parallel call and again for the categorize. Now it's
+  // ALWAYS the reserved Gemma path → Cerebras → other Gemma slots.
   const prefetchMindmapData = React.useCallback(async (entry) => {
     if (!entry || entry.data) return entry?.data ?? null;
-    const role = settings.useLocal ? 'action-code' : 'action-repetitive';
+    const role = 'mindmap-categorize';
     setResponses((cur) => cur.map((e) =>
       e.id === entry.id ? { ...e, dataLoading: true, dataError: false } : e
     ));

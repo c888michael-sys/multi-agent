@@ -12,7 +12,8 @@ export type RoleName =
   | "orchestration" // decide which role(s) to invoke; synthesize
   | "action-code" // code-specialized execution
   | "action-structural" // general execution; structured outputs; formatting
-  | "action-repetitive"; // bulk, high-volume tasks
+  | "action-repetitive" // bulk, high-volume tasks
+  | "mindmap-categorize"; // turn a chat reply into structured JSON for the mindmap burst
 
 /** Points at a specific provider in the Router's pool, plus any per-call mode flags. */
 export interface ProviderRef {

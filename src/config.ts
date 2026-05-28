@@ -26,10 +26,20 @@ import type { ProviderConfig } from "./pool.js";
  * Provider id format: `ollama:<short-name>` (so the role registry can
  * reference them in candidate chains). Keys are the role they primarily
  * serve so the role-builder knows which to slot where.
+ *
+ * `numCtx` is the per-model context window in tokens, in addition to
+ * Ollama's daemon default of 2048 (which is far too small for our use
+ * — even the categorize prefetch wants several thousand). Set to the
+ * model's native maximum so we never truncate; OLLAMA_NUM_CTX env var
+ * still globally overrides if the machine can't allocate that much VRAM:
+ *   - deepseek-r1:32b native context = 128 K (131072). We default to
+ *     65 K (65536) — runs on a single 40 GB-class GPU with KV cache,
+ *     bump via OLLAMA_NUM_CTX=131072 if you have the memory.
+ *   - qwen2.5-coder native context = 32 K (32768). We use the full window.
  */
 export const LOCAL_OLLAMA_MODELS = {
-  reasoning: { providerId: "ollama:deepseek-r1", model: "deepseek-r1:32b" },
-  "action-code": { providerId: "ollama:qwen2.5-coder", model: "qwen2.5-coder:latest" },
+  reasoning: { providerId: "ollama:deepseek-r1", model: "deepseek-r1:32b", numCtx: 65536 },
+  "action-code": { providerId: "ollama:qwen2.5-coder", model: "qwen2.5-coder:latest", numCtx: 32768 },
 } as const;
 
 /**
@@ -63,11 +73,24 @@ export const LOCAL_OLLAMA_MODELS = {
  * fills a role, edit that table; the role registry's `local` overlay
  * picks them up automatically.
  */
-export function loadOllamaProviders(opts?: { baseUrl?: string }): Provider[] {
+export function loadOllamaProviders(opts?: { baseUrl?: string; numCtx?: number }): Provider[] {
   const baseUrl = opts?.baseUrl ?? (process.env.OLLAMA_HOST ?? "http://localhost:11434");
-  return Object.values(LOCAL_OLLAMA_MODELS).map(
-    (m) => new OllamaProvider({ id: m.providerId, model: m.model, baseUrl }),
-  );
+  // Per-model numCtx baked into LOCAL_OLLAMA_MODELS (each at its native
+  // max). `opts.numCtx` is a hard override for all local models; the
+  // OLLAMA_NUM_CTX env var is the user-facing knob for memory-constrained
+  // hardware — set it to e.g. 8192 to fit the 32 B reasoning model on
+  // smaller GPUs without disabling local mode entirely.
+  const envCtx = process.env.OLLAMA_NUM_CTX ? Number(process.env.OLLAMA_NUM_CTX) : undefined;
+  const globalOverride = opts?.numCtx ?? (Number.isFinite(envCtx) && envCtx! > 0 ? envCtx! : undefined);
+  return Object.values(LOCAL_OLLAMA_MODELS).map((m) => {
+    const numCtx = globalOverride ?? m.numCtx;
+    return new OllamaProvider({
+      id: m.providerId,
+      model: m.model,
+      baseUrl,
+      numCtx,
+    });
+  });
 }
 
 const DEFAULT_BUDGETS: Record<string, number> = {

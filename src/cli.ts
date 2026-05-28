@@ -72,6 +72,7 @@ const VALID_ROLES: RoleName[] = [
   "action-code",
   "action-structural",
   "action-repetitive",
+  "mindmap-categorize",
 ];
 
 const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];

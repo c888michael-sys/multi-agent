@@ -36,6 +36,7 @@ const VALID_ROLES: ReadonlySet<RoleName> = new Set<RoleName>([
   "action-code",
   "action-structural",
   "action-repetitive",
+  "mindmap-categorize",
 ]);
 
 /**
