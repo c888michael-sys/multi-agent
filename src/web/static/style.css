@@ -2990,6 +2990,18 @@
 .mm-settings-row-select {
   gap: 8px;
 }
+.mm-settings-error {
+  display: block;
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-family: var(--mm-font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: oklch(0.86 0.11 30);
+  background: oklch(0.22 0.05 30 / 0.35);
+  border: 0.5px solid oklch(0.55 0.13 30 / 0.55);
+  border-radius: 6px;
+}
 .mm-settings-select {
   font-family: var(--mm-font-mono);
   font-size: 11px;

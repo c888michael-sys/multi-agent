@@ -24,6 +24,7 @@ import { ChatSession, listSessions } from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
 import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 import { DEFAULT_ROLES } from "../roles/default-registry.js";
+import { LOCAL_OLLAMA_MODELS } from "../config.js";
 import type { CompleteOptions } from "../provider.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -135,6 +136,52 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       // --- API routes ---
       if (pathname === "/api/usage" && req.method === "GET") {
         sendText(res, 200, formatUsageReport(opts.router));
+        return;
+      }
+
+      if (pathname === "/api/ollama-health" && req.method === "GET") {
+        // Pings the configured Ollama daemon and reports which of the two
+        // required hybrid-mode models are actually pulled. The web UI calls
+        // this before letting the user enable "Hybrid local models" — if
+        // the daemon isn't running OR the models aren't pulled, the toggle
+        // is refused with a clear reason rather than silently failing on
+        // the next chat turn.
+        const baseUrl = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+        const required = Object.values(LOCAL_OLLAMA_MODELS).map((m) => m.model);
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 1500);
+          const tagsRes = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
+          clearTimeout(timer);
+          if (!tagsRes.ok) {
+            sendJson(res, 200, {
+              reachable: false,
+              baseUrl,
+              required,
+              missing: required,
+              reason: `Ollama responded ${tagsRes.status}`,
+            });
+            return;
+          }
+          const json = (await tagsRes.json()) as { models?: Array<{ name?: string }> };
+          const installed = (json.models ?? []).map((m) => String(m.name ?? ""));
+          const missing = required.filter((m) => !installed.some((i) => i === m || i.startsWith(m.split(":")[0]! + ":")));
+          sendJson(res, 200, {
+            reachable: true,
+            baseUrl,
+            installed,
+            required,
+            missing,
+          });
+        } catch (err) {
+          sendJson(res, 200, {
+            reachable: false,
+            baseUrl,
+            required,
+            missing: required,
+            reason: (err as Error).message,
+          });
+        }
         return;
       }
 

@@ -327,6 +327,14 @@ function QuotaBanner({ phase, useLocal }) {
 // whether anything is currently in effect.
 function SettingsDrawer({ open, onClose, settings, onChange }) {
   const drawerRef = React.useRef(null);
+  // Hybrid-mode health gate. When the user toggles 'Hybrid local models'
+  // ON we ping /api/ollama-health; if the daemon isn't reachable OR the
+  // two required models aren't pulled, we refuse the toggle and surface
+  // a clear reason. This prevents the silent-fail state where chat turns
+  // pretend to work in hybrid mode but every local hop falls through to
+  // the cloud fallback, which is confusing.
+  const [hybridError, setHybridError] = React.useState(null);
+  const [hybridChecking, setHybridChecking] = React.useState(false);
   // Close on Escape so the drawer doesn't trap focus.
   React.useEffect(() => {
     if (!open) return;
@@ -334,6 +342,43 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+
+  const onToggleLocal = async (e) => {
+    const wantsOn = e.target.checked;
+    if (!wantsOn) {
+      setHybridError(null);
+      onChange({ ...settings, useLocal: false });
+      return;
+    }
+    setHybridChecking(true);
+    setHybridError(null);
+    try {
+      const res = await fetch('/api/ollama-health');
+      const health = res.ok ? await res.json() : { reachable: false, reason: `HTTP ${res.status}` };
+      if (!health.reachable) {
+        setHybridError(`Local Ollama daemon not detected at ${health.baseUrl || 'localhost:11434'}${health.reason ? ' — ' + health.reason : ''}. Install Ollama and pull the required models, or leave hybrid mode off.`);
+        onChange({ ...settings, useLocal: false });
+      } else if (health.missing && health.missing.length > 0) {
+        setHybridError(`Ollama is running, but these required models are missing: ${health.missing.join(', ')}. Run \`ollama pull <model>\` for each, then try again.`);
+        onChange({ ...settings, useLocal: false });
+      } else {
+        onChange({ ...settings, useLocal: true });
+      }
+    } catch (err) {
+      setHybridError(`Could not reach /api/ollama-health: ${err && err.message ? err.message : String(err)}`);
+      onChange({ ...settings, useLocal: false });
+    } finally {
+      setHybridChecking(false);
+    }
+  };
+
+  const routingValue = routingValueFromSettings(settings);
+  const onRoutingChange = (e) => {
+    const opt = ROUTING_OPTIONS.find((o) => o.value === e.target.value);
+    if (!opt) return;
+    onChange({ ...settings, forceRole: opt.forceRole, routingMode: opt.routingMode });
+  };
+
   return (
     <>
       <div
@@ -359,11 +404,18 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
               <input
                 type="checkbox"
                 checked={settings.useLocal}
-                onChange={(e) => onChange({ ...settings, useLocal: e.target.checked })}
+                disabled={hybridChecking}
+                onChange={onToggleLocal}
               />
               <span className="mm-settings-text">
-                <span className="mm-settings-name">Hybrid local models</span>
+                <span className="mm-settings-name">
+                  Hybrid local models
+                  {hybridChecking ? <span className="mm-settings-hint" style={{ marginLeft: 8 }}>checking…</span> : null}
+                </span>
                 <span className="mm-settings-hint">route reasoning → DeepSeek-R1 32B and action-code → Qwen 2.5 Coder on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
+                {hybridError ? (
+                  <span className="mm-settings-error" role="alert">{hybridError}</span>
+                ) : null}
               </span>
             </label>
           </div>
@@ -394,39 +446,19 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
             </label>
           </div>
           <div className="mm-settings-row mm-settings-row-select">
-            <span className="mm-settings-name">Force role</span>
+            <span className="mm-settings-name">Routing</span>
             <select
               className="mm-settings-select"
-              value={settings.forceRole}
-              onChange={(e) => onChange({ ...settings, forceRole: e.target.value })}
+              value={routingValue}
+              onChange={onRoutingChange}
             >
-              {ROLE_OPTIONS.map((r) => (
+              {ROUTING_OPTIONS.map((r) => (
                 <option key={r.value} value={r.value}>{r.label}</option>
               ))}
             </select>
             <span className="mm-settings-hint">
-              Skip smart routing — every turn goes through the chosen role's chain (CLI: <code>--role=&lt;name&gt;</code>)
+              <code>auto</code>: orchestrator picks direct/single/parallel per turn. <code>round-robin</code>: every turn fans out to perception + reasoning + coder + structural, then synthesizes (default). Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
             </span>
-          </div>
-          <div className="mm-settings-row mm-settings-row-radio">
-            <span className="mm-settings-name">Routing mode</span>
-            <div className="mm-settings-radio-group" role="radiogroup" aria-label="Routing mode">
-              {ROUTING_MODES.map((m) => (
-                <label key={m.value} className="mm-settings-radio">
-                  <input
-                    type="radio"
-                    name="routingMode"
-                    value={m.value}
-                    checked={settings.routingMode === m.value}
-                    onChange={() => onChange({ ...settings, routingMode: m.value })}
-                  />
-                  <span className="mm-settings-radio-body">
-                    <span className="mm-settings-radio-label">{m.label}</span>
-                    <span className="mm-settings-hint">{m.hint}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
           </div>
           <div className="mm-settings-foot">
             <button
@@ -447,9 +479,11 @@ function settingsActiveCount(s) {
   let n = 0;
   if (s.serious) n++;
   if (s.search) n++;
-  if (s.forceRole && s.forceRole !== 'auto') n++;
   if (s.useLocal) n++;
-  if (s.routingMode && s.routingMode !== 'smart') n++;
+  // Routing is now a single merged knob (routingMode + forceRole). The
+  // default is the round-robin meta-entry, so any other dropdown value
+  // counts as a non-default knob.
+  if (routingValueFromSettings(s) !== 'round-robin') n++;
   return n;
 }
 
@@ -2276,27 +2310,42 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 //   serious  → thinking: "high"  (Gemini extended reasoning on every call)
 //   search   → useSearch: true   (Google Search grounding on the perception primary)
 //   role     → forceRole (one of RoleName) | 'auto' (let smart-routing decide)
+//   routingMode → 'smart' | 'round-robin' (default round-robin)
 // All knobs persist to localStorage so refresh / new tab keeps the user's
-// chosen mode. forceRole='auto' means "no override", which is the default.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'smart' };
-// Valid routing modes the settings UI surfaces. 'smart' is the default
-// (orchestrator picks direct/single/parallel per turn). 'round-robin'
-// forces a parallel fan-out across all four specialists every turn
-// — useful for testing or when you want the multi-agent feel on every
-// reply. See chat/session.ts handling of `routing.roundRobin`.
-const ROUTING_MODES = [
-  { value: 'smart',       label: 'Smart routing', hint: 'orchestrator picks direct/single/parallel per turn (default)' },
-  { value: 'round-robin', label: 'Round-robin',   hint: 'every turn fans out to perception + reasoning + coder + structural, then synthesizes' },
+// chosen mode. The settings drawer surfaces routingMode and forceRole as
+// a single merged dropdown (see ROUTING_OPTIONS) — internally they remain
+// independent so the wire format with the server is unchanged.
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'round-robin' };
+
+// Merged dropdown that replaces the prior separate Force-role select + a
+// Smart-vs-RoundRobin radio group. Two "meta" entries on top combine the
+// routingMode field with forceRole='auto'; the rest pin a specific role
+// and use smart routing under the hood. round-robin is the default —
+// users typically want the multi-agent feel and can opt into a single
+// role or pure smart routing per session.
+const ROUTING_OPTIONS = [
+  { value: 'auto',              label: 'auto (smart routing)',         routingMode: 'smart',       forceRole: 'auto' },
+  { value: 'round-robin',       label: 'round-robin (default)',        routingMode: 'round-robin', forceRole: 'auto' },
+  { value: 'orchestration',     label: 'orchestration',                routingMode: 'smart',       forceRole: 'orchestration' },
+  { value: 'perception',        label: 'perception (search grounding)', routingMode: 'smart',      forceRole: 'perception' },
+  { value: 'reasoning',         label: 'reasoning (deliberation)',     routingMode: 'smart',       forceRole: 'reasoning' },
+  { value: 'action-code',       label: 'action-code (Codestral)',      routingMode: 'smart',       forceRole: 'action-code' },
+  { value: 'action-structural', label: 'action-structural (Llama 70B)', routingMode: 'smart',      forceRole: 'action-structural' },
+  { value: 'action-repetitive', label: 'action-repetitive (Cerebras)', routingMode: 'smart',       forceRole: 'action-repetitive' },
 ];
-const ROLE_OPTIONS = [
-  { value: 'auto',              label: 'auto (smart routing)' },
-  { value: 'orchestration',     label: 'orchestration' },
-  { value: 'perception',        label: 'perception (search grounding)' },
-  { value: 'reasoning',         label: 'reasoning (deliberation)' },
-  { value: 'action-code',       label: 'action-code (Codestral)' },
-  { value: 'action-structural', label: 'action-structural (Llama 70B)' },
-  { value: 'action-repetitive', label: 'action-repetitive (Cerebras)' },
-];
+
+// Resolve the current (routingMode, forceRole) pair to a single dropdown
+// value. Falls back to 'round-robin' (the default) when no exact match
+// exists — protects against stale localStorage from prior schema.
+function routingValueFromSettings(s) {
+  if (s.routingMode === 'round-robin') return 'round-robin';
+  if (s.routingMode === 'smart' && (!s.forceRole || s.forceRole === 'auto')) return 'auto';
+  if (s.forceRole && s.forceRole !== 'auto') return s.forceRole;
+  return 'round-robin';
+}
+
+const VALID_FORCE_ROLES = new Set(['auto', 'orchestration', 'perception', 'reasoning', 'action-code', 'action-structural', 'action-repetitive']);
+const VALID_ROUTING_MODES = new Set(['smart', 'round-robin']);
 
 function loadSettings() {
   try {
@@ -2306,9 +2355,9 @@ function loadSettings() {
     return {
       serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
       search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
-      forceRole: ROLE_OPTIONS.some((r) => r.value === parsed.forceRole) ? parsed.forceRole : 'auto',
+      forceRole: VALID_FORCE_ROLES.has(parsed.forceRole) ? parsed.forceRole : 'auto',
       useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
-      routingMode: ROUTING_MODES.some((m) => m.value === parsed.routingMode) ? parsed.routingMode : 'smart',
+      routingMode: VALID_ROUTING_MODES.has(parsed.routingMode) ? parsed.routingMode : DEFAULT_SETTINGS.routingMode,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -2445,6 +2494,44 @@ function HeroMindmap() {
     saveSettings(next);
   }, []);
   const activeSettingsCount = settingsActiveCount(settings);
+
+  // Surfaced when a stale `useLocal=true` setting from localStorage gets
+  // auto-cleared on mount because the Ollama daemon isn't reachable on
+  // the current device. The banner sits inside the response/idle phase
+  // headers so the user notices before submitting a turn.
+  const [hybridAutoOff, setHybridAutoOff] = React.useState(null);
+
+  // On mount, if the persisted setting wants hybrid mode but the local
+  // Ollama daemon isn't actually running on this device (e.g., the user
+  // saved the setting on another machine and is now on one without local
+  // models), turn the toggle back off so chat traffic stays on the cloud
+  // chain. Without this, every reasoning/action-code turn would silently
+  // fall through to the cloud fallback while the UI still suggested
+  // local-first routing.
+  React.useEffect(() => {
+    if (!settings.useLocal) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/ollama-health');
+        if (cancelled) return;
+        const health = res.ok ? await res.json() : { reachable: false };
+        if (!health.reachable || (health.missing && health.missing.length > 0)) {
+          setSettings({ ...settings, useLocal: false });
+          setHybridAutoOff(
+            !health.reachable
+              ? `Hybrid local models disabled — Ollama daemon not detected on this device.`
+              : `Hybrid local models disabled — missing models: ${health.missing.join(', ')}.`,
+          );
+          setTimeout(() => setHybridAutoOff(null), 6000);
+        }
+      } catch {/* silent — leave whatever the user picked */}
+    })();
+    return () => { cancelled = true; };
+    // Intentionally only run on mount; subsequent toggles go through the
+    // SettingsDrawer's own gate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   React.useEffect(() => {
     if (!stageRef.current) return;
@@ -2832,6 +2919,12 @@ function HeroMindmap() {
           taking layout space when hidden.
         */}
         <QuotaBanner phase={phase} useLocal={settings.useLocal} />
+        {hybridAutoOff ? (
+          <div className="mm-quota-banner mm-quota-warn" role="status" aria-live="polite">
+            <span className="mm-quota-banner-dot" />
+            <span className="mm-quota-banner-msg">{hybridAutoOff}</span>
+          </div>
+        ) : null}
         {phase === 'idle' && (
           <PhaseErrorBoundary label="idle view" recoverLabel="reset" onRecover={reset}>
             <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} />
