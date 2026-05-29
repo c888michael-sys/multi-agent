@@ -3009,7 +3009,15 @@ function HeroMindmap() {
     // Only accept the prefetch result if its shape matches the
     // renderer's expectation. Malformed-but-parseable JSON (e.g.
     // `sections` as a string) would otherwise crash extractNodes.
-    const safe = parsed && isValidMindmapData(entry.template, parsed) ? parsed : null;
+    //
+    // If the model-side categorizer fails, derive a deterministic
+    // structure from the actual assistant reply. This is not fictional
+    // fallback content: it splits the real markdown/text the user just
+    // received, so the burst can still open when a provider is down,
+    // quota-limited, or returns prose-wrapped garbage.
+    const modelSafe = parsed && isValidMindmapData(entry.template, parsed) ? parsed : null;
+    const derived = modelSafe ? null : deriveMindmapData(entry.template, entry.prompt, entry.text);
+    const safe = modelSafe || (isValidMindmapData(entry.template, derived) ? derived : null);
     setResponses((cur) => {
       const next = cur.map((e) =>
         e.id === entry.id
@@ -3048,6 +3056,20 @@ function HeroMindmap() {
       const pending = prefetchPromisesRef.current.get(newestEntry.id);
       if (pending) {
         try { data = await pending; } catch { data = null; }
+      }
+    }
+
+    if (!data || !isValidMindmapData(newestEntry.template, data)) {
+      const derived = deriveMindmapData(newestEntry.template, newestEntry.prompt, newestEntry.text);
+      if (isValidMindmapData(newestEntry.template, derived)) {
+        data = derived;
+        const next = responses.map((e) =>
+          e.id === newestEntry.id
+            ? { ...e, data, dataLoading: false, dataError: false }
+            : e,
+        );
+        setResponses(next);
+        savePersistedStack(next);
       }
     }
 
