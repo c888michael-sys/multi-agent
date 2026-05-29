@@ -221,6 +221,40 @@ describe("web server", () => {
     expect(calls).toEqual([{ name: "orchestration", prompt: "hello world" }]);
   });
 
+  it("/api/complete honors explicit useLocal false even when the server default is local", async () => {
+    const port = pickPort();
+    const calls: string[] = [];
+    const router = makeRouter([]);
+    const defaultLocal = makeResolver(async () => {
+      calls.push("default-local");
+      return "local";
+    });
+    const cloud = makeResolver(async () => {
+      calls.push("cloud");
+      return "cloud";
+    });
+    const handle = startWebServer({
+      router,
+      resolver: defaultLocal,
+      localResolver: defaultLocal,
+      cloudResolver: cloud,
+      port,
+      sessionStorageDir: sessionDir,
+    });
+    handles.push(handle);
+
+    const r = await fetch(`http://localhost:${port}/api/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "categorize", role: "mindmap-categorize", useLocal: false }),
+    });
+
+    expect(r.status).toBe(200);
+    const j: any = await r.json();
+    expect(j.reply).toBe("cloud");
+    expect(calls).toEqual(["cloud"]);
+  });
+
   it("/api/complete 500s with the resolver error message", async () => {
     const { url } = spawn({
       handler: async () => { throw new Error("upstream blew up"); },

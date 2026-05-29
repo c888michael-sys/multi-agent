@@ -99,9 +99,8 @@ function buildRouter(opts?: { local?: boolean }): Router {
 }
 
 /** Roles registry for the run — local-aware when --local is set.
- * Always routes through buildDefaultRoles so the mode-specific
- * mindmap-categorize prepend (Qwen in local, Gemini Flash in cloud)
- * applies in both modes, not just local. */
+ * Always routes through buildDefaultRoles so the mindmap-categorize
+ * cloud/reserved prepend applies in both modes, not just local. */
 function rolesFor(local: boolean) {
   return buildDefaultRoles({ local });
 }

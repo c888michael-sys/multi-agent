@@ -55,37 +55,28 @@ const GEMMA_FALLBACK = [
 const LOCAL_REASONING = { providerId: "ollama:deepseek-r1" };
 const LOCAL_ACTION_CODE = { providerId: "ollama:qwen2.5-coder" };
 // Mindmap categorization needs a strong, reliable JSON-follower at the
-// front of its chain — Gemma's free-tier slot is too flaky (intermittent
-// 404 load-shedding) to be the primary. So:
-//   • hybrid mode → local Qwen 2.5 Coder (excellent structured-output
-//     model, no rate limit). It's the same model that serves action-code,
-//     but categorize runs AFTER the chat turn completes (a manual burst),
-//     so they're never truly concurrent.
-//   • cloud mode → Gemini Flash (gemini:1). One Flash request per burst;
-//     burst is user-initiated and infrequent, so the 20-RPD cost is fine.
-// In BOTH modes the reserved gemma:3 + Cerebras stay as fallback, and the
-// 404-failover fix means a Gemma load-shed now rotates to Cerebras instead
-// of failing the burst.
-const LOCAL_CATEGORIZE = { providerId: "ollama:qwen2.5-coder" };
+// front of its chain. It stays cloud/reserved in both cloud and hybrid
+// modes: local Qwen is already used by action-code, and routing the
+// categorizer through the same local model makes the burst depend on an
+// Ollama daemon that may not exist on the current web device.
 const CLOUD_CATEGORIZE = { providerId: "gemini:1" };
 
 /**
  * Build the role registry. With `local: true`, prepend the local Ollama
- * candidates to the reasoning and action-code chains, and put Qwen at the
- * front of mindmap-categorize. With `local: false`, put Gemini Flash at
- * the front of mindmap-categorize. All other roles stay untouched.
+ * candidates to the reasoning and action-code chains. In every mode, put
+ * Gemini Flash at the front of mindmap-categorize so the mindmap burst
+ * never depends on local Ollama availability. All other roles stay
+ * untouched.
  */
 export function buildDefaultRoles(opts?: { local?: boolean }): RoleConfig[] {
   const roles = DEFAULT_ROLES.map((r) => ({ ...r, candidates: [...r.candidates] }));
   const categorize = roles.find((r) => r.name === "mindmap-categorize");
+  if (categorize) categorize.candidates.unshift(CLOUD_CATEGORIZE);
   if (opts?.local) {
     const reasoning = roles.find((r) => r.name === "reasoning");
     if (reasoning) reasoning.candidates.unshift(LOCAL_REASONING);
     const actionCode = roles.find((r) => r.name === "action-code");
     if (actionCode) actionCode.candidates.unshift(LOCAL_ACTION_CODE);
-    if (categorize) categorize.candidates.unshift(LOCAL_CATEGORIZE);
-  } else {
-    if (categorize) categorize.candidates.unshift(CLOUD_CATEGORIZE);
   }
   return roles;
 }

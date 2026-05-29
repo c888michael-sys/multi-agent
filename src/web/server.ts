@@ -235,9 +235,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         }
         try {
           // Single-shot completion through the requested role (default
-          // orchestration). The mindmap pre-fetch uses `action-repetitive`
-          // to drain Cerebras's 1M-tok/day budget for categorization
-          // work, keeping the orchestrator's Gemini quota for the chat.
+          // orchestration). The mindmap pre-fetch uses the dedicated
+          // mindmap-categorize role and passes useLocal:false so a burst
+          // never depends on local Ollama availability.
           const role = (parsed.role as RoleName) || ("orchestration" as RoleName);
           const r = resolverFor(opts, parsed.useLocal);
           const reply = await r.runRole(role, parsed.prompt);

@@ -5,6 +5,7 @@ import {
   UnknownRoleError,
   NoCandidatesAvailableError,
 } from "../src/roles/resolver.js";
+import { buildDefaultRoles } from "../src/roles/default-registry.js";
 import type { RoleConfig, RoleEvent } from "../src/roles/types.js";
 import { FakeProvider, ToolFakeProvider } from "./fixtures.js";
 
@@ -167,6 +168,25 @@ describe("RoleResolver", () => {
     const desc = resolver.rosterDescription();
     expect(desc).toContain("perception (a)");
     expect(desc).toContain("reasoning [UNAVAILABLE]");
+  });
+});
+
+describe("default role registry", () => {
+  function candidateIds(roleName: RoleConfig["name"], local: boolean): string[] {
+    return buildDefaultRoles({ local }).find((r) => r.name === roleName)!.candidates.map((c) => c.providerId);
+  }
+
+  it("hybrid mode only prepends Ollama to reasoning and action-code", () => {
+    expect(candidateIds("reasoning", true)[0]).toBe("ollama:deepseek-r1");
+    expect(candidateIds("action-code", true)[0]).toBe("ollama:qwen2.5-coder");
+
+    expect(candidateIds("orchestration", true)[0]).toBe("gemini:1");
+    expect(candidateIds("mindmap-categorize", true)[0]).toBe("gemini:1");
+    expect(candidateIds("mindmap-categorize", true)).not.toContain("ollama:qwen2.5-coder");
+  });
+
+  it("mindmap categorization uses the same cloud/reserved chain in both modes", () => {
+    expect(candidateIds("mindmap-categorize", true)).toEqual(candidateIds("mindmap-categorize", false));
   });
 });
 

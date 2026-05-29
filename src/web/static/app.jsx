@@ -2727,7 +2727,13 @@ function HeroMindmap() {
           );
           setTimeout(() => setHybridAutoOff(null), 6000);
         }
-      } catch {/* silent — leave whatever the user picked */}
+      } catch {
+        if (!cancelled) {
+          setSettings({ ...settings, useLocal: false });
+          setHybridAutoOff('Hybrid local models disabled - could not verify Ollama on this device.');
+          setTimeout(() => setHybridAutoOff(null), 6000);
+        }
+      }
     })();
     return () => { cancelled = true; };
     // Intentionally only run on mount; subsequent toggles go through the
@@ -2819,7 +2825,7 @@ function HeroMindmap() {
       if (settings.serious) body.thinking = 'high';
       if (settings.search) body.useSearch = true;
       if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
-      if (settings.useLocal) body.useLocal = true;
+      body.useLocal = settings.useLocal === true;
       if (settings.routingMode && settings.routingMode !== 'smart') body.routingMode = settings.routingMode;
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
@@ -2930,8 +2936,8 @@ function HeroMindmap() {
     // Background mindmap pre-fetch — categorize the final answer into
     // the template's structured shape with NO detail omitted. Stored
     // on the entry's `data` field so the burst transition is instant.
-    // Route to qwen-coder (local) when hybrid mode is on, cerebras
-    // otherwise — see prefetchMindmapData. We keep the promise in
+    // The categorizer is explicitly cloud/reserved even when hybrid mode
+    // is enabled. We keep the promise in
     // prefetchPromisesRef so the burst handler can await it if the
     // user clicks before categorization lands.
     if (entry.text && !entry.text.startsWith('(error')) {
@@ -2952,10 +2958,9 @@ function HeroMindmap() {
   // showing made-up fallback data.
   const prefetchPromisesRef = React.useRef(new Map());
 
-  // Categorize-prompt timeout. Local Ollama models (qwen-coder in
-  // hybrid mode) can take 30-60s on modest hardware before they emit
-  // anything; we wait up to 120s before declaring the prefetch failed
-  // so the BarHandle's "structuring…" state doesn't become permanent.
+  // Categorize-prompt timeout. We wait up to 120s before declaring the
+  // prefetch failed so the BarHandle's "structuring..." state doesn't
+  // become permanent.
   const CATEGORIZE_TIMEOUT_MS = 120_000;
 
   // Categorize the entry's final markdown answer into the matching
@@ -2984,7 +2989,7 @@ function HeroMindmap() {
       const res = await fetch('/api/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, role, useLocal: settings.useLocal }),
+        body: JSON.stringify({ prompt, role, useLocal: false }),
         signal: controller.signal,
       });
       if (res.ok) {
@@ -3015,14 +3020,14 @@ function HeroMindmap() {
       return next;
     });
     return safe;
-  }, [settings.useLocal]);
+  }, []);
 
   // Toast surfaced when burst is clicked but categorization failed
   // (no fictional fallback). Auto-clears after 3.5s.
   const [burstError, setBurstError] = React.useState(null);
 
   // Burst: orchestrator's final answer is categorized in the background
-  // by qwen-coder (hybrid mode) or Cerebras (cloud mode). When the user
+  // by the dedicated cloud/reserved mindmap-categorize role. When the user
   // clicks BURST:
   //   • If categorization is done and valid → play the catalyst transition.
   //   • If it's still running → await the prefetch promise; the BarHandle
