@@ -55,17 +55,16 @@ export class GeminiProvider implements Provider {
     const status = extractStatus(err);
     if (status === 429) return true;
     const msg = String((err as { message?: string })?.message ?? err ?? "").toLowerCase();
-    // Google's free tier returns an INTERMITTENT 404 for Gemma (and
-    // occasionally Flash) under load — the same `gemma-3-27b-it` slug
-    // returns 200 on one call and `404 ... is not found for API version
-    // v1beta, or is not supported for generateContent` moments later.
-    // It's load-shedding dressed up as not-found, not a config error
-    // (verified: ListModels reports the slug as generateContent-capable).
-    // Treat it as a transient/failover-able condition so the resolver
-    // rotates to the next candidate (e.g. Cerebras) instead of throwing
-    // out of the whole role. A genuinely wrong slug will just exhaust
-    // the chain and surface AllProvidersExhaustedError, which is the
-    // right failure mode.
+    // Defensive failover for retired/unsupported model slugs. When Google
+    // retires a model (e.g. `gemma-3-27b-it` was pulled from AI Studio by
+    // May 2026), generateContent returns `404 ... is not found for API
+    // version v1beta, or is not supported for generateContent`. Rather than
+    // throwing out of the entire role, treat it as a failover-able
+    // condition so the resolver rotates to the next candidate (e.g.
+    // Cerebras or the next Gemma slot). This means a model retirement
+    // degrades gracefully — the chain keeps serving from healthy slots
+    // until someone updates the slug. A chain whose every candidate 404s
+    // still surfaces AllProvidersExhaustedError, the correct failure mode.
     if (
       status === 404 &&
       (msg.includes("generatecontent") || msg.includes("is not found for api version"))
