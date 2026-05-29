@@ -32,6 +32,7 @@ export {
   loadAllProvidersFromEnv,
   loadAllProviderConfigsFromEnv,
   loadOllamaProviders,
+  getEnvLoadReport,
   LOCAL_OLLAMA_MODELS,
 } from "./config.js";
 export {

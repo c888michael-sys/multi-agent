@@ -7,6 +7,25 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+type EnvFileReport = {
+  path: string;
+  parsedKeys: string[];
+  appliedBlankKeys: string[];
+  error?: string;
+};
+
+type EnvLoadReport = {
+  cwd: string;
+  moduleDir: string;
+  files: EnvFileReport[];
+};
+
+const envLoadReport: EnvLoadReport = {
+  cwd: process.cwd(),
+  moduleDir: __dirname,
+  files: [],
+};
+
 // Load environment variables from the nearest project .env. We search from
 // both cwd and this module's directory so CLI, tsx, compiled dist, and
 // process managers all land on the same file. dotenv deliberately does not
@@ -24,17 +43,39 @@ function loadProjectEnv(): void {
       if (!seen.has(envPath) && existsSync(envPath)) {
         seen.add(envPath);
         const result = dotenv.config({ path: envPath });
+        const fileReport: EnvFileReport = {
+          path: envPath,
+          parsedKeys: Object.keys(result.parsed ?? {}).sort(),
+          appliedBlankKeys: [],
+          ...(result.error && { error: result.error.message }),
+        };
         for (const [key, value] of Object.entries(result.parsed ?? {})) {
           if ((process.env[key] ?? "").trim() === "") {
             process.env[key] = value;
+            fileReport.appliedBlankKeys.push(key);
           }
         }
+        fileReport.appliedBlankKeys.sort();
+        envLoadReport.files.push(fileReport);
       }
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
   }
+}
+
+export function getEnvLoadReport(): EnvLoadReport {
+  return {
+    cwd: envLoadReport.cwd,
+    moduleDir: envLoadReport.moduleDir,
+    files: envLoadReport.files.map((f) => ({
+      path: f.path,
+      parsedKeys: [...f.parsedKeys],
+      appliedBlankKeys: [...f.appliedBlankKeys],
+      ...(f.error && { error: f.error }),
+    })),
+  };
 }
 
 import { GeminiProvider } from "./providers/gemini.js";

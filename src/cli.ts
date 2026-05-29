@@ -39,6 +39,7 @@ import {
   DEFAULT_ROLES,
   buildDefaultRoles,
   loadOllamaProviders,
+  getEnvLoadReport,
   type ControllerMode,
   type CompleteOptions,
   type ThinkingLevel,
@@ -88,6 +89,7 @@ function buildRouter(opts?: { local?: boolean }): Router {
     console.error(
       "No provider keys configured. Set at least GEMINI_KEY_1 in .env (see .env.example).",
     );
+    printEnvDoctor();
     process.exit(1);
   }
   const router = new Router(configs, { stateStore: new FileStateStore() });
@@ -103,6 +105,27 @@ function buildRouter(opts?: { local?: boolean }): Router {
  * cloud/reserved prepend applies in both modes, not just local. */
 function rolesFor(local: boolean) {
   return buildDefaultRoles({ local });
+}
+
+function printEnvDoctor(): void {
+  const report = getEnvLoadReport();
+  const providers = loadAllProviderConfigsFromEnv().map((c) => c.provider.id);
+  console.error("\n--- env doctor ---");
+  console.error(`cwd: ${report.cwd}`);
+  console.error(`moduleDir: ${report.moduleDir}`);
+  if (report.files.length === 0) {
+    console.error("env files found: none");
+  } else {
+    console.error("env files found:");
+    for (const file of report.files) {
+      console.error(`  - ${file.path}`);
+      console.error(`    parsed keys: ${file.parsedKeys.length ? file.parsedKeys.join(", ") : "(none)"}`);
+      console.error(`    filled blank env vars: ${file.appliedBlankKeys.length ? file.appliedBlankKeys.join(", ") : "(none)"}`);
+      if (file.error) console.error(`    parse error: ${file.error}`);
+    }
+  }
+  console.error(`registered providers: ${providers.length ? providers.join(", ") : "(none)"}`);
+  console.error("--- end env doctor ---\n");
 }
 
 function buildDefaultAgents(router: Router): Agent[] {
@@ -322,6 +345,7 @@ Commands:
   serve                    start the local web UI on http://localhost:<port>
                            (default 7421). Also exposed as: npm run web
   usage                    print router state (counts, cooldowns, % remaining)
+  doctor                   print env/provider diagnostics without secret values
 
 Flags for 'task':
   --serious                       extended reasoning across all calls in the run
@@ -392,6 +416,11 @@ async function main(): Promise<void> {
 
   if (command === "usage") {
     cmdUsage();
+    return;
+  }
+
+  if (command === "doctor") {
+    printEnvDoctor();
     return;
   }
 
