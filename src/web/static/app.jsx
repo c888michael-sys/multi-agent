@@ -2852,7 +2852,14 @@ function HeroMindmap() {
                   || evt.kind === 'summarize-start' || evt.kind === 'summarize-end') {
             lastStatus = { phase: evt.kind, ...evt };
             if (evt.kind === 'summarize-end') summarizedTurns = evt.folded || 0;
-            setLiveTurn((prev) => prev ? { ...prev, status: lastStatus } : prev);
+            // Accumulate agent status HERE, synchronously, before React
+            // batches the rapid setLiveTurn calls. agentAcc is a plain
+            // local object so every event is applied even when a whole
+            // burst of role-start/role-end frames arrives in one chunk.
+            agentAcc = applyAgentEvent(agentAcc, lastStatus);
+            const statusSnapshot = lastStatus;
+            const agentSnapshot = agentAcc;
+            setLiveTurn((prev) => prev ? { ...prev, status: statusSnapshot, agentState: agentSnapshot } : prev);
           } else if (evt.kind === 'done') {
             doneEvent = evt;
           } else if (evt.kind === 'error') {
