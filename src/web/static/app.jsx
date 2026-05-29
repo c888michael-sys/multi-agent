@@ -30,6 +30,78 @@ const MM_AGENTS = [
   { id: 'action-structural', name: 'Structural',   color: 'oklch(0.76 0.10 35)',  quota: 128000 },
 ];
 
+// ─── Agent-status accumulation (shared, data-layer) ──────────
+// The streaming handler fires one ChatProgressEvent at a time
+// (plan-start → plan → role-start perception → role-end perception
+// → role-start reasoning → …). In round-robin mode the four
+// role-start events arrive in a single network chunk, so the SSE
+// reader's inner loop calls setLiveTurn() several times in one
+// synchronous burst — React batches those, and a render-layer
+// reducer (the old useState/useEffect approach) only ever sees the
+// LAST event of the burst, blanking the earlier roles back to
+// 'queued'. The fix is to accumulate in the DATA layer: a plain
+// `agentAcc` object is mutated once per event directly inside the
+// SSE loop (immune to React batching), and a fresh snapshot ships
+// on `liveTurn.agentState` with every setLiveTurn. LoadingView then
+// just renders that prop. These two pure helpers hold the logic so
+// the SSE loop and any future consumer share one source of truth.
+function makeInitialAgentMap() {
+  return Object.fromEntries(
+    MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }]),
+  );
+}
+
+// Apply a single status event to the prior agent map, returning a new
+// map (never mutates `prev`). `status` is the merged SSE frame shape
+// `{ phase: evt.kind, ...evt }`, so `kind` is the outer event type
+// (plan-start / plan / role-start / role-end) and `phase` is the inner
+// sub-phase (single / parallel / synthesis / direct) when present.
+function applyAgentEvent(prev, status) {
+  if (!status) return makeInitialAgentMap();
+  const { phase, role, kind, ok, plan } = status;
+  // Prefer the outer event type over the inner sub-phase.
+  const ph = kind || phase;
+  // plan-start = new turn boundary — wipe and engage the orchestrator.
+  if (ph === 'plan-start') {
+    const fresh = makeInitialAgentMap();
+    fresh['orchestration'] = { state: 'engaged', label: 'planning…' };
+    return fresh;
+  }
+  const next = { ...prev };
+  if (ph === 'plan') {
+    next['orchestration'] = { state: 'engaged', label: `plan: ${plan?.kind || '?'}` };
+    // Queue the specialists the plan will run — but DON'T overwrite a
+    // specialist already 'engaged'/'done' from an earlier event (the
+    // plan event can arrive after the first role-start over SSE).
+    if (plan?.kind === 'single' && plan.role && next[plan.role]?.state === 'queued') {
+      next[plan.role] = { state: 'queued', label: 'queued' };
+    } else if (plan?.kind === 'parallel' && Array.isArray(plan.tasks)) {
+      for (const t of plan.tasks) {
+        if (next[t.role] && next[t.role].state === 'queued') {
+          next[t.role] = { state: 'queued', label: 'queued' };
+        }
+      }
+    }
+  } else if (ph === 'role-start' && role) {
+    if (next[role]) {
+      if (phase === 'synthesis') {
+        next[role] = { state: 'engaged', label: 'synthesizing…' };
+      } else if (phase === 'direct') {
+        next[role] = { state: 'engaged', label: 'answering directly…' };
+      } else {
+        next[role] = { state: 'engaged', label: 'thinking…' };
+      }
+    }
+  } else if (ph === 'role-end' && role) {
+    if (next[role]) {
+      next[role] = ok === false
+        ? { state: 'failed', label: 'failed' }
+        : { state: 'done', label: '✓ done' };
+    }
+  }
+  return next;
+}
+
 // ─── Cursor-attracted particle constellation overlay ─────────
 function ConstellationOverlay() {
   const canvasRef = React.useRef(null);
@@ -1974,82 +2046,16 @@ function IdleView({ draft, setDraft, submit, attachments, setAttachments }) {
 //   role-start parallel → multiple specialists "thinking…" concurrently
 //   role-start synth    → orchestrator is "synthesizing…"
 //   role-end            → marks the agent as "done"
-function LoadingView({ prompt, liveStatus, summarize }) {
-  // Agent state has to ACCUMULATE across events — not be recomputed from
-  // the latest event alone. The streaming handler fires one event at a
-  // time (plan-start → plan → role-start perception → role-end perception
-  // → role-start reasoning → ...), and if we derive state purely from
-  // the most recent event, every previous role flips back to 'queued'.
-  // Round-robin makes this visually obvious: by end-of-turn you only
-  // see Coder + Structural states because they were the most recent two
-  // events to touch the map. Perception, Reasoning, and Orchestrator
-  // all light up + go done in the SSE stream but you never see it.
-  //
-  // Fix: useState + useEffect that applies each event INCREMENTALLY
-  // on top of the prior state. We reset to all-queued only when the
-  // next plan-start arrives (= new turn) or when liveStatus goes null
-  // (= no turn in flight).
-  const initialMap = React.useMemo(
-    () => Object.fromEntries(MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }])),
-    []
-  );
-  const [agentState, setAgentState] = React.useState(initialMap);
-
-  React.useEffect(() => {
-    if (!liveStatus) {
-      setAgentState(initialMap);
-      return;
-    }
-    const { phase, role, kind, ok, plan } = liveStatus;
-    // Prefer kind (outer event type: role-start / role-end / plan-start /
-    // plan) over phase (inner sub-phase: single / synthesis / direct /
-    // parallel). The /api/chat-stream client merges events as
-    // `{phase: evt.kind, ...evt}`, which means evt.phase ("single",
-    // "synthesis", …) clobbers the outer phase= evt.kind we just wrote.
-    const ph = kind || phase;
-    setAgentState((prev) => {
-      // plan-start = new turn boundary — wipe and engage the orchestrator.
-      if (ph === 'plan-start') {
-        const fresh = { ...initialMap };
-        fresh['orchestration'] = { state: 'engaged', label: 'planning…' };
-        return fresh;
-      }
-      const next = { ...prev };
-      if (ph === 'plan') {
-        next['orchestration'] = { state: 'engaged', label: `plan: ${plan?.kind || '?'}` };
-        // Queue the specialists the plan will run — but DON'T overwrite
-        // a specialist already in 'engaged' or 'done' state from earlier
-        // (the plan event can arrive after the first role-start in some
-        // race conditions over SSE).
-        if (plan?.kind === 'single' && plan.role && next[plan.role]?.state === 'queued') {
-          next[plan.role] = { state: 'queued', label: 'queued' };
-        } else if (plan?.kind === 'parallel' && Array.isArray(plan.tasks)) {
-          for (const t of plan.tasks) {
-            if (next[t.role] && next[t.role].state === 'queued') {
-              next[t.role] = { state: 'queued', label: 'queued' };
-            }
-          }
-        }
-      } else if (ph === 'role-start' && role) {
-        if (next[role]) {
-          if (phase === 'synthesis') {
-            next[role] = { state: 'engaged', label: 'synthesizing…' };
-          } else if (phase === 'direct') {
-            next[role] = { state: 'engaged', label: 'answering directly…' };
-          } else {
-            next[role] = { state: 'engaged', label: 'thinking…' };
-          }
-        }
-      } else if (ph === 'role-end' && role) {
-        if (next[role]) {
-          next[role] = ok === false
-            ? { state: 'failed', label: 'failed' }
-            : { state: 'done', label: '✓ done' };
-        }
-      }
-      return next;
-    });
-  }, [liveStatus, initialMap]);
+function LoadingView({ prompt, liveStatus, summarize, agentState }) {
+  // Agent state ACCUMULATES across events, but the accumulation now
+  // happens in the DATA layer (see `applyAgentEvent` / the SSE loop in
+  // HeroMindmap.submit) rather than here. The old render-layer reducer
+  // (useState + useEffect keyed on liveStatus) only ever saw the LAST
+  // event of a synchronous burst because React batches the setLiveTurn
+  // calls — so in round-robin mode only the final 1–2 roles ever lit up.
+  // We now receive the already-accumulated map as a prop and just render
+  // it; `makeInitialAgentMap()` covers the pre-first-event frame.
+  const agents = agentState || makeInitialAgentMap();
 
   const fallbackHint = !liveStatus ? 'routing…' : (
     summarize?.folded
@@ -2070,7 +2076,7 @@ function LoadingView({ prompt, liveStatus, summarize }) {
       </div>
       <div className="mm-dispatch">
         {MM_AGENTS.map((a) => {
-          const s = agentState[a.id] || { state: 'queued', label: 'queued' };
+          const s = agents[a.id] || { state: 'queued', label: 'queued' };
           return (
             <div key={a.id}
               className={'mm-dispatch-row mm-dispatch-' + s.state}
@@ -2796,6 +2802,10 @@ function HeroMindmap() {
     let doneEvent = null;
     let errorMsg = null;
     let aborted = false;
+    // Data-layer agent-status accumulator. Mutated once per SSE status
+    // event below (immune to React's setLiveTurn batching); a fresh
+    // snapshot ships on liveTurn.agentState for LoadingView to render.
+    let agentAcc = makeInitialAgentMap();
 
     const ac = new AbortController();
     streamAbortRef.current = ac;
