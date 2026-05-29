@@ -3161,6 +3161,7 @@ function HeroMindmap() {
             <LoadingView prompt={currentPrompt}
               liveStatus={liveTurn?.status}
               summarize={liveTurn?.summarize}
+              agentState={liveTurn?.agentState}
             />
           </PhaseErrorBoundary>
         )}
