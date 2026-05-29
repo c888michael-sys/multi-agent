@@ -98,9 +98,12 @@ function buildRouter(opts?: { local?: boolean }): Router {
   return router;
 }
 
-/** Roles registry for the run — local-aware when --local is set. */
+/** Roles registry for the run — local-aware when --local is set.
+ * Always routes through buildDefaultRoles so the mode-specific
+ * mindmap-categorize prepend (Qwen in local, Gemini Flash in cloud)
+ * applies in both modes, not just local. */
 function rolesFor(local: boolean) {
-  return local ? buildDefaultRoles({ local: true }) : DEFAULT_ROLES;
+  return buildDefaultRoles({ local });
 }
 
 function buildDefaultAgents(router: Router): Agent[] {

@@ -55,6 +55,23 @@ export class GeminiProvider implements Provider {
     const status = extractStatus(err);
     if (status === 429) return true;
     const msg = String((err as { message?: string })?.message ?? err ?? "").toLowerCase();
+    // Google's free tier returns an INTERMITTENT 404 for Gemma (and
+    // occasionally Flash) under load — the same `gemma-3-27b-it` slug
+    // returns 200 on one call and `404 ... is not found for API version
+    // v1beta, or is not supported for generateContent` moments later.
+    // It's load-shedding dressed up as not-found, not a config error
+    // (verified: ListModels reports the slug as generateContent-capable).
+    // Treat it as a transient/failover-able condition so the resolver
+    // rotates to the next candidate (e.g. Cerebras) instead of throwing
+    // out of the whole role. A genuinely wrong slug will just exhaust
+    // the chain and surface AllProvidersExhaustedError, which is the
+    // right failure mode.
+    if (
+      status === 404 &&
+      (msg.includes("generatecontent") || msg.includes("is not found for api version"))
+    ) {
+      return true;
+    }
     return (
       msg.includes("429") ||
       msg.includes("rate limit") ||
