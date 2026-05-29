@@ -36,33 +36,56 @@ loadProjectEnv();
 
 function loadProjectEnv(): void {
   const seen = new Set<string>();
+  for (const envPath of explicitEnvPaths()) {
+    loadEnvFile(envPath, seen);
+  }
   for (const start of [process.cwd(), __dirname]) {
     let dir = start;
     for (let i = 0; i < 8; i++) {
       const envPath = join(dir, ".env");
-      if (!seen.has(envPath) && existsSync(envPath)) {
-        seen.add(envPath);
-        const result = dotenv.config({ path: envPath });
-        const fileReport: EnvFileReport = {
-          path: envPath,
-          parsedKeys: Object.keys(result.parsed ?? {}).sort(),
-          appliedBlankKeys: [],
-          ...(result.error && { error: result.error.message }),
-        };
-        for (const [key, value] of Object.entries(result.parsed ?? {})) {
-          if ((process.env[key] ?? "").trim() === "") {
-            process.env[key] = value;
-            fileReport.appliedBlankKeys.push(key);
-          }
-        }
-        fileReport.appliedBlankKeys.sort();
-        envLoadReport.files.push(fileReport);
-      }
+      if (existsSync(envPath)) loadEnvFile(envPath, seen);
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
   }
+}
+
+function explicitEnvPaths(): string[] {
+  return [process.env.MULTI_AGENT_ENV, process.env.DOTENV_CONFIG_PATH]
+    .map((p) => (p ?? "").trim())
+    .filter((p): p is string => p.length > 0);
+}
+
+function loadEnvFile(envPath: string, seen: Set<string>): void {
+  if (seen.has(envPath)) return;
+  seen.add(envPath);
+
+  if (!existsSync(envPath)) {
+    envLoadReport.files.push({
+      path: envPath,
+      parsedKeys: [],
+      appliedBlankKeys: [],
+      error: "file not found",
+    });
+    return;
+  }
+
+  const result = dotenv.config({ path: envPath });
+  const fileReport: EnvFileReport = {
+    path: envPath,
+    parsedKeys: Object.keys(result.parsed ?? {}).sort(),
+    appliedBlankKeys: [],
+    ...(result.error && { error: result.error.message }),
+  };
+  for (const [key, value] of Object.entries(result.parsed ?? {})) {
+    if ((process.env[key] ?? "").trim() === "") {
+      process.env[key] = value;
+      fileReport.appliedBlankKeys.push(key);
+    }
+  }
+  fileReport.appliedBlankKeys.sort();
+  envLoadReport.files.push(fileReport);
 }
 
 export function getEnvLoadReport(): EnvLoadReport {
