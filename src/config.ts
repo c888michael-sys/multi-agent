@@ -211,13 +211,18 @@ export function loadGeminiProvidersFromEnv(opts?: { model?: string }): Provider[
  * 3.5 Flash's ~20-1,500 RPD, so adding these slots gives every role a
  * huge low-priority safety net for "all Flash keys cooled" days.
  *
- * Default model: `gemma-3-27b-it`. Override via `opts.model` (e.g. when
- * Gemma 4 ships on AI Studio, point this at the new slug).
+ * Default model: `gemma-4-31b-it`. (Gemma 3 — `gemma-3-27b-it` — was
+ * retired from AI Studio by May 2026: it returns a hard 404 on
+ * generateContent and no longer appears in ListModels. The current
+ * Gemma 4 slugs are `gemma-4-31b-it` (dense, the 27B's successor) and
+ * `gemma-4-26b-a4b-it` (MoE, ~4B active — faster, lighter). We default
+ * to the 31B for the safety-net role's JSON-following quality; override
+ * via `opts.model` for the MoE variant or any future Gemma slug.)
  */
 export function loadGemmaProvidersFromEnv(opts?: { model?: string }): Provider[] {
   const providers: Provider[] = [];
   const seen = new Set<string>();
-  const model = opts?.model ?? "gemma-3-27b-it";
+  const model = opts?.model ?? "gemma-4-31b-it";
 
   for (const [name, raw] of Object.entries(process.env)) {
     const m = name.match(/^GEMINI_KEY_(\d+)$/);
