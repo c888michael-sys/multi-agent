@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,11 +7,35 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load the environment variables from the absolute path of the project root's .env.
-// This guarantees key loading succeeds even if the process is launched from outside
-// the project directory (e.g. hosting via PM2, system service, or different directory).
-dotenv.config({ path: join(__dirname, "..", ".env") });
-dotenv.config({ path: join(__dirname, "..", "..", ".env") });
+// Load environment variables from the nearest project .env. We search from
+// both cwd and this module's directory so CLI, tsx, compiled dist, and
+// process managers all land on the same file. dotenv deliberately does not
+// override existing environment variables; for this local app, an empty shell
+// variable should not mask a populated .env value, so blank values are filled
+// from the parsed file.
+loadProjectEnv();
+
+function loadProjectEnv(): void {
+  const seen = new Set<string>();
+  for (const start of [process.cwd(), __dirname]) {
+    let dir = start;
+    for (let i = 0; i < 8; i++) {
+      const envPath = join(dir, ".env");
+      if (!seen.has(envPath) && existsSync(envPath)) {
+        seen.add(envPath);
+        const result = dotenv.config({ path: envPath });
+        for (const [key, value] of Object.entries(result.parsed ?? {})) {
+          if ((process.env[key] ?? "").trim() === "") {
+            process.env[key] = value;
+          }
+        }
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+}
 
 import { GeminiProvider } from "./providers/gemini.js";
 import { GroqProvider } from "./providers/groq.js";
