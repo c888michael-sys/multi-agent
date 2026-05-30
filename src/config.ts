@@ -224,7 +224,7 @@ const DEFAULT_BUDGETS: Record<string, number> = {
   gemma: 14400,
   groq: 1000,
   openrouter: 50,
-  cerebras: 1440,
+  cerebras: 2400,  // live-verified May 2026: x-ratelimit-limit-requests-day=2400 on gpt-oss-120b
   mistral: 500,
   // Local Ollama models — no daily cap. Display gauge as 9999 so the
   // sidebar shows them as effectively unlimited without special-casing.
@@ -244,7 +244,7 @@ const DEFAULT_BUDGETS: Record<string, number> = {
  *   gemma:     30 RPM (Gemma's per-model pool, distinct from Flash)
  *   groq:      30 RPM account-wide
  *   openrouter: 20 RPM on `:free` models (shared pool)
- *   cerebras:  30 RPM
+ *   cerebras:   5 RPM (live-verified May 2026 on gpt-oss-120b; was incorrectly set to 30)
  *   mistral:   60 RPM (1 RPS soft limit on Experiment plan)
  */
 const DEFAULT_RPM: Record<string, number> = {
@@ -252,7 +252,7 @@ const DEFAULT_RPM: Record<string, number> = {
   gemma: 30,
   groq: 30,
   openrouter: 20,
-  cerebras: 30,
+  cerebras: 5,
   mistral: 60,
   // Local Ollama — bounded only by the machine; pick a generous cap so
   // the RPM gauge effectively shows headroom rather than throttling.
