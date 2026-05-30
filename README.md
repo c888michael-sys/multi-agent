@@ -776,7 +776,7 @@ broad autonomy unless you're prepared for the consequences.
 
 ## Mindmap catalyst v4 (center-split rip) — implemented
 
-**Status:** Done. See roadmap entry above for the summary. Spec preserved below for reference.
+**Status:** Done. Visual refinements applied post-launch: animation starts dark (root stays dark during rip; white canvas revealed by torn panels only), arms scaled to ~32vw per arm with humanoid proportions, two-prong claw replaced with 4-finger hand-grip, MathJax typesetting added to OrbitalNode and FocusedNodeView for math in mindmap cards.
 
 ### What the user approved (locked, do not re-litigate)
 

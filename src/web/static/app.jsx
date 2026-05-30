@@ -1753,11 +1753,14 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const cy0 = stageRect ? stageRect.h / 2 : 0;
 
   // ── Arm render helper (shared by both arms) ─────────────────────
-  // mirrorX=true applies scaleX(-1) so the left arm's claw points RIGHT.
-  // The base rotate(90deg) turns the vertical arm horizontal (claw → left);
-  // scaleX(-1) then flips that so claw → right for the left arm.
+  // mirrorX=true applies scaleX(-1) so the left arm's grip points RIGHT.
+  // rotate(90deg) turns the vertical SVG horizontal: SVG −y → screen +x
+  // (shoulder extends away from center); SVG +y → screen −x (grip toward
+  // center). Arm is sized via CSS (width=thickness, height=length after
+  // rotation). viewBox −200..+200 in both axes; wrist at y=0, finger
+  // tips at y≈76 so armX≈90 places the grip essentially at screen center.
   const renderArm = (armX, armY, armRot, clawOpen, mirrorX) => {
-    const ang = 4 + clawOpen * 20;
+    const fAng = 2 + clawOpen * 20;  // 2=closed grip, 22=open hand
     return (
       <svg
         className="mm-robot-arm"
@@ -1770,32 +1773,71 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         }}
         aria-hidden="true"
       >
-        <ellipse cx="0" cy="0" rx="60" ry="6" fill="rgba(0,0,0,0.35)" />
-        <rect x="-12" y="-180" width="24" height="60" rx="3"
-          fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
-        <rect x="-8" y="-130" width="16" height="80" rx="2"
-          fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
-        <circle cx="0" cy="-50" r="9"
-          fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
-        <circle cx="0" cy="-50" r="3" fill="oklch(0.20 0.01 240)" />
-        <rect x="-7" y="-50" width="14" height="42" rx="2"
-          fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
-        <circle cx="0" cy="-8" r="6"
-          fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.3" />
-        <rect x="-2" y="-6" width="4" height="20" rx="1.2"
-          transform={`rotate(${-ang} 0 -8)`}
-          fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
-        <rect x="-2" y="-6" width="4" height="20" rx="1.2"
-          transform={`rotate(${ang} 0 -8)`}
-          fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
-        <circle
-          cx={Math.sin(-ang * Math.PI / 180) * 18}
-          cy={-8 + Math.cos(-ang * Math.PI / 180) * 18}
-          r="2.6" fill="oklch(0.85 0.03 65)" />
-        <circle
-          cx={Math.sin(ang * Math.PI / 180) * 18}
-          cy={-8 + Math.cos(ang * Math.PI / 180) * 18}
-          r="2.6" fill="oklch(0.85 0.03 65)" />
+        {/* Ground shadow */}
+        <ellipse cx="0" cy="0" rx="90" ry="9" fill="rgba(0,0,0,0.32)" />
+
+        {/* Shoulder mount */}
+        <rect x="-26" y="-195" width="52" height="52" rx="8"
+          fill="oklch(0.28 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
+        <rect x="-16" y="-187" width="32" height="4" rx="2"
+          fill="oklch(0.18 0.01 240)" opacity="0.7" />
+        <rect x="-16" y="-179" width="32" height="3" rx="1.5"
+          fill="oklch(0.18 0.01 240)" opacity="0.4" />
+
+        {/* Piston rod (shoulder → upper arm) */}
+        <rect x="-6" y="-143" width="12" height="18" rx="3"
+          fill="oklch(0.28 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
+
+        {/* Upper arm (bicep) */}
+        <rect x="-34" y="-143" width="68" height="90" rx="16"
+          fill="oklch(0.46 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
+        <rect x="-24" y="-136" width="48" height="76" rx="10"
+          fill="none" stroke="oklch(0.62 0.02 240)" strokeWidth="0.9" opacity="0.40" />
+        <line x1="-28" y1="-112" x2="28" y2="-112"
+          stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
+
+        {/* Elbow joint */}
+        <circle cx="0" cy="-53" r="30"
+          fill="oklch(0.32 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2.5" />
+        <circle cx="0" cy="-53" r="13"
+          fill="oklch(0.20 0.01 240)" />
+        <circle cx="0" cy="-53" r="5"
+          fill="oklch(0.56 0.18 250)" />
+
+        {/* Forearm (tapered elbow → wrist) */}
+        <path d="M -30 -53 L -22 0 L 22 0 L 30 -53 Z"
+          fill="oklch(0.50 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
+        <rect x="-8" y="-38" width="16" height="28" rx="4"
+          fill="oklch(0.34 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.2" />
+        {[-25, -12, 1].map((hy, hi) => (
+          <line key={hi} x1="-8" y1={hy} x2="8" y2={hy}
+            stroke="oklch(0.60 0.02 240)" strokeWidth="0.9" opacity="0.55" />
+        ))}
+
+        {/* Wrist joint */}
+        <circle cx="0" cy="0" r="20"
+          fill="oklch(0.32 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
+        <circle cx="0" cy="0" r="8"
+          fill="oklch(0.20 0.01 240)" />
+
+        {/* Palm */}
+        <rect x="-30" y="8" width="60" height="30" rx="10"
+          fill="oklch(0.46 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
+        <line x1="-26" y1="18" x2="26" y2="18"
+          stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
+
+        {/* 4 fingers — fan out by fAng from knuckle pivot */}
+        {[-21, -7, 7, 21].map((fx, fi) => (
+          <rect key={fi}
+            x={fx - 7} y="14" width="14" height="62" rx="6"
+            transform={`rotate(${(fi - 1.5) * fAng * 0.4} ${fx} 14)`}
+            fill="oklch(0.42 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
+        ))}
+
+        {/* Thumb */}
+        <rect x="30" y="-4" width="22" height="14" rx="6"
+          transform={`rotate(${fAng * 0.55} 30 3)`}
+          fill="oklch(0.42 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
       </svg>
     );
   };
@@ -1872,10 +1914,10 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
 
   return (
     <div className="mm-catalyst-overlay" aria-hidden="true">
-      {/* White canvas underneath — revealed as halves slide apart.
-          No radial wipe needed: the canvas is simply visible behind
-          the dark panels as they exit to opposite screen edges. */}
-      <div className="mm-canvas-under" />
+      {/* White canvas — only rendered from puncture onward. Torn dark
+          panels immediately cover it; it is revealed as they slide apart.
+          Not rendered during anticipation so the root stays visually dark. */}
+      {t >= COLLAPSE_TIMELINE.puncture.start && <div className="mm-canvas-under" />}
 
       {/* Torn dark half panels. Appear at puncture, follow arm grip
           positions so the grip reads as physically attached to the chat. */}
@@ -2411,8 +2453,16 @@ function OrbitalLines({ positions, size }) {
 }
 
 function OrbitalNode({ node, pos, index, onFocus }) {
+  const nodeRef = React.useRef(null);
+  React.useEffect(() => {
+    const mj = window.MathJax;
+    if (mj?.typesetPromise && nodeRef.current) {
+      mj.typesetPromise([nodeRef.current]).catch(() => {});
+    }
+  }, [node]);
   return (
     <div
+      ref={nodeRef}
       className={'mm-orbit-node mm-orbit-node-' + node.kind}
       style={{
         left: pos.x,
@@ -2455,6 +2505,13 @@ function OrbitalNode({ node, pos, index, onFocus }) {
 // slides up to the bottom strip and is pre-filled so the next message
 // is scoped to this specific category.
 function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attachments, setAttachments }) {
+  const bodyRef = React.useRef(null);
+  React.useEffect(() => {
+    const mj = window.MathJax;
+    if (mj?.typesetPromise && bodyRef.current) {
+      mj.typesetPromise([bodyRef.current]).catch(() => {});
+    }
+  }, [node]);
   return (
     <div className="mm-focus-overlay" style={{ '--accent': accent }}>
       <div className="mm-focus-bar">
@@ -2474,7 +2531,7 @@ function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attach
         <CopyButton getText={() => node.copyText} />
       </div>
       <div className={'mm-focus-card mm-orbit-node-' + node.kind}>
-        <div className="mm-focus-body-scroll">
+        <div className="mm-focus-body-scroll" ref={bodyRef}>
           {node.body}
         </div>
       </div>

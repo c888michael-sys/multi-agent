@@ -3278,17 +3278,12 @@
   color: var(--mm-fg, currentColor);
 }
 
-/* ─── v3 catalyst: robot arm + persistent canvas dimension ─────────
-   The catalyst plays as the parent phase moves chat → mindmap. The
-   white canvas STAYS during the mindmap phase; only an explicit
-   COLLAPSE TO THREAD action (which sets phase=imploding) restores
-   the atelier theme.
-
-   Palette override is scoped via [data-phase="collapsing"] and
-   [data-phase="mindmap"] on the .mm-root container. We override
-   the existing CSS custom properties (which the rest of the UI
-   already consumes) rather than touching individual rules. */
-.mm-root[data-phase="collapsing"],
+/* ─── Catalyst: robot arm + persistent canvas dimension ─────────
+   The rip animation starts dark. The white canvas is revealed by the
+   torn panels sliding apart — it comes from mm-canvas-under, NOT from
+   the root background. The root only turns white once phase="mindmap"
+   (after the animation completes). Keeping the root dark during
+   "collapsing" prevents the jarring white flash on animation start. */
 .mm-root[data-phase="mindmap"] {
   --mm-bg: oklch(0.97 0.005 95);
   --mm-fg: oklch(0.20 0.01 240);
@@ -3366,15 +3361,17 @@
 }
 
 /* Robot arm — positioned by inline style; z-index above everything
-   else so it visually owns the moment. */
+   else so it visually owns the moment. CSS width = arm vertical thickness
+   on screen (SVG x-axis after rotate90); CSS height = arm horizontal
+   length on screen (SVG y-axis after rotate90). */
 .mm-robot-arm {
   position: absolute;
-  width: 200px;
-  height: 240px;
+  width: min(18vw, 220px);
+  height: min(32vw, 460px);
   pointer-events: none;
   z-index: 60;
   overflow: visible;
-  filter: drop-shadow(0 4px 14px rgba(15, 25, 50, 0.35));
+  filter: drop-shadow(0 6px 20px rgba(15, 25, 50, 0.50));
 }
 
 /* Rip-flash variant — slightly cooler color than the v2 impact ring
