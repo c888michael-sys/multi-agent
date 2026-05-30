@@ -190,6 +190,7 @@ The candidate order each role uses today, after live calibration against the act
 - [x] **Mindmap categorization survives prose-wrapped JSON + adds timeouts.** The categorizer prefetch used to parse responses with `String(reply).replace(/```json|```/g, '').trim()` + `JSON.parse`. Some models reliably broke that by prefixing JSON with prose or wrapping output in `<think>…</think>` chain-of-thought blocks, and either case caused the parser to bail → `dataError=true` → mindmap refused to activate. Replaced with `extractFirstJsonObject(text)` which (1) strips `<think>…</think>` blocks (multi-line, case-insensitive), (2) strips `` ```json ``  and bare `` ``` ``  fences, (3) walks the cleaned text tracking brace depth and JSON-string state (so braces inside string literals don't confuse the scan), and (4) returns the first balanced `{…}` block. Also added a 120 s `AbortController` timeout on `prefetchMindmapData`'s fetch and a 180 s default `requestTimeoutMs` on every `OllamaProvider` call. See `extractFirstJsonObject` near the top of [src/web/static/app.jsx](src/web/static/app.jsx), `prefetchMindmapData` further down, and `fetchWithTimeout` in [src/providers/ollama.ts](src/providers/ollama.ts).
 - [x] **File attachments in the web composer.** Paperclip button next to send opens the OS file picker; selected text files (max 256 KB each, 1 MB total) appear as removable chips above the textarea. On submit, file contents are prepended to the message as fenced blocks (`### filename\n\`\`\`ext\n...\n\`\`\``) so the model can read them inline. Binary detection rejects non-text uploads. Per-file content is fenced with an auto-extended backtick fence so files containing their own \`\`\` aren't broken. See `Composer` in [src/web/static/app.jsx](src/web/static/app.jsx).
 - [x] **Router fix — chat backoff respects role allow-list.** `Router.completeChat` and `Router.completeChatStream` previously computed their wait-until-recovery using `pool.earliestAvailable()` instead of `earliestAvailableIn(providerIds)`, which meant role-constrained chat calls (the entire web UI hot path) would spin-retry against a cooled, allow-listed provider while unrelated healthy providers showed wait=0. Fixed by switching both call sites to the filtered variant, matching the existing `Router.complete` and `Router.completeWithTools` behavior. See [src/router.ts:250](src/router.ts), [src/router.ts:310](src/router.ts).
+- [ ] **Mindmap catalyst v4 — "arm punches through from the right, drags chat off, canvas revealed underneath" (HANDOFF SPEC BELOW).** The current v3 catalyst (arm enters upper-right, yanks LEFT, white radial-wipe paints over the chat) is **wrong** and should be replaced. See the [v4 catalyst handoff spec](#planned-mindmap-catalyst-v4) for the full implementation plan — a fresh agent should be able to build it cold from that section.
 - [ ] Stage 5b: optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
 - [x] **Web UI: mindmap transition v3 — robot arm rips the door + persistent canvas dimension.** Replaced the prior v2 catalyst (horizontal seam rip → `output`/`mindmap` tokens collide → shatter → fountain) with a cinematic robot-arm sequence ending on a persistent ivory workspace:
@@ -770,6 +771,79 @@ SIGKILL on Unix); 50KB output cap with truncation note.
 files, push to git, install packages. The `--allow-bash` flag (separate from
 `--tools`) is the only gate. Don't pair it with prompts that grant the model
 broad autonomy unless you're prepared for the consequences.
+
+---
+
+## Planned: Mindmap catalyst v4
+
+**Status:** Not started. The current v3 catalyst is wrong and must be replaced. This section is a self-contained implementation spec — a fresh agent should be able to build it cold without re-deriving context.
+
+### The visual (4-beat storyboard, approved by the user)
+
+A 2D robotic arm comes in **from the RIGHT**, punches **through** the chat surface, grabs it, and drags the whole chat panel **off-screen to the right** — peeling it away like a poster off a wall to reveal the white mindmap canvas already sitting underneath. The arm then retracts off-screen right. A ragged torn edge is left along the right side of the revealed canvas.
+
+| Beat | Name | What happens |
+|---|---|---|
+| 1 | **ANTICIPATION** | Arm slides in from off-canvas right, claw open, approaches the chat surface. Hovers/builds up — a beat of tension before contact. |
+| 2 | **GRIP + PUNCTURE** | Claw closes and the arm **punctures through the chat surface** at the grip point (right-ish, vertically centered). Cracks/debris radiate from the puncture point. The chat is still full-screen here, just broken at the entry wound. |
+| 3 | **PULL APART** | Arm drags the chat **rightward**. The chat panel slides right and off-screen; as it peels away, the **white canvas is revealed underneath, left-to-right** (it was always there, the chat was just on top). A jagged/torn paper edge follows the boundary between "chat still visible (right)" and "canvas revealed (left)". Debris flecks scatter. |
+| 4 | **REVEALED: CLEAN CANVAS** | Chat is fully gone (it's being replaced by the mindmap, so its content is discarded — NOT retained). Arm retracts off-screen right. The canvas is clean white. A subtle ragged torn edge remains on the **right** side where the arm came through. Then the existing shatter + fountain particle sequence plays on the white canvas to build the orbital nodes. |
+
+**User's explicit answers to clarifying questions:**
+- Arm **retracts off-screen right** after the pull (not just vanishing).
+- Chat content **is discarded** — it's switching to the mindmap, so the chat doesn't need to be preserved or fly off with the arm intact. The chat panel sliding right off-screen is fine.
+- **Effects wanted:** puncture cracks/debris at beat 2, scattered debris during the drag at beat 3, and a natural-looking **ragged/torn edge** along the peel boundary and on the final canvas right edge. "Make it look natural."
+- The arm can stay **2D** (flat vector, like the storyboard sketch) — does NOT need to be photorealistic. Keeping it stylized/2D is explicitly fine as long as it looks clean.
+
+### How v3 differs from v4 (what to change)
+
+The current v3 in `CatalystOverlay` ([src/web/static/app.jsx](src/web/static/app.jsx), ~line 1564) does the OPPOSITE of what's wanted:
+- v3 arm enters **upper-right** and descends to center; **v4 enters from the right at vertical center**, roughly horizontal.
+- v3 yanks **LEFT**; **v4 drags RIGHT**.
+- v3 reveals canvas via a **radial white wipe that paints OVER** everything (`.mm-canvas-reveal` radial-gradient); **v4 reveals canvas by the chat sliding away to expose white sitting UNDERNEATH** — a left-to-right reveal driven by the chat's rightward position, not a radial paint.
+- v3 has no puncture/crack/torn-edge effects; **v4 needs puncture cracks (beat 2), drag debris (beat 3), and a ragged torn edge**.
+
+### Implementation plan
+
+**1. Z-ordering / layering (the core structural change).**
+The white canvas must sit BEHIND the chat, and the chat slides right to reveal it. Current z-indexes (from `style.css`): `.mm-canvas` z-index 1, `.mm-stage` z-index 2, `.mm-catalyst-overlay` z-index 20. Plan:
+- Add a **white canvas layer** behind the chat during `collapsing` (z-index between the stage background and the chat list). Simplest: a full-bleed `.mm-canvas-under` div (`position:absolute; inset:0; background: oklch(0.98 0.005 95)`) mounted during `collapsing`/`mindmap`, z-index just below `.mm-chat-list`.
+- The chat list (`.mm-chat-list`) gets a **rightward slide-off** animation during `collapsing` (replace the current `mm-chat-tear` keyframes which go LEFT). New keyframe: `translateX(0) → translateX(110vw)` with a slight `skewY`/rotate for the "peeling" feel, timed to beat 3.
+- The torn edge is a **mask or SVG clip-path** on the right edge of the sliding chat (jagged polyline). As the chat slides right, the jagged left boundary of the chat is what the user sees tearing away.
+
+**2. Arm motion (rewrite the `armX/armY/armRotZ/clawOpen` interpolation block, ~lines 1619-1650).**
+New timeline (suggest ~2400ms total, same as v3):
+- `anticipation` (0–500ms): arm slides in from off-canvas right (`armX: +600 → +120`), claw open, roughly horizontal (`armRotZ ≈ 90°` so it points left — the arm body is horizontal coming from the right). Ease-out so it decelerates approaching the surface.
+- `puncture` (500–750ms): claw snaps closed (`clawOpen: 1 → 0`), small forward jab (`armX` dips slightly more negative/left to "stab in"), trigger the crack effect at the grip point. Tiny recoil for impact feel.
+- `pull` (750–1500ms): arm drags right (`armX: +120 → +700`), pulling the chat with it (the chat-slide animation is synced to this window). Ease-in (accelerating drag). This is the longest beat.
+- `retreat` (1500–1800ms): arm continues off-screen right (`armX: +700 → +1300`), claw can open to "release". 
+- `shatter`/`fountain` (1800–2400ms): UNCHANGED from v3 — keep the existing particle fountain that builds the orbital nodes on the white canvas. Just re-time the `shatter`/`fountain` start offsets to begin after `retreat`.
+
+The arm SVG itself (shoulder→upper-arm→elbow→forearm→wrist→two-finger claw) can be **reused from v3 with minimal change** — it's already a clean 2D vector group. Main change: orient it horizontal (entering from the right) rather than vertical (descending from top). Adjust the `viewBox`/rotation so the claw points LEFT toward the chat. Keep the 2D ink-blue palette (`oklch(0.42 0.02 240)` etc.) — it reads fine and matches the storyboard's grey-metal look.
+
+**3. Effects.**
+- **Puncture cracks (beat 2):** an SVG group of 6–10 jagged line segments radiating from the grip point, drawn with `stroke-dasharray` animated from 0→full length over ~150ms so they "shoot out" on impact. Fade slightly as the drag begins. Reference the storyboard panel 2 — cracks radiate outward from where the arm enters.
+- **Debris (beats 2–3):** 15–25 small dark polygon flecks (`<polygon>` triangles) that spawn at the grip point on puncture and scatter with simple ballistic motion (initial velocity + gravity) during the drag. Each gets a random size/rotation/velocity. Fade out by end of `pull`. Can be plain absolutely-positioned divs or SVG — SVG is cleaner for the angular flecks.
+- **Torn edge:** the boundary between the sliding-away chat and the revealed canvas. Implement as a `clip-path: polygon(...)` on `.mm-chat-list` with a jagged left edge (zigzag points), OR an SVG mask. The jaggedness should look like torn paper — irregular, not a clean sawtooth. A handful of points with slight random horizontal offsets reads as "torn". The final canvas keeps a faint ragged edge on the right (a thin SVG torn-paper strip positioned at the right edge during `mindmap` phase — can be subtle/optional).
+
+**4. Palette switch (mostly reuse v3).**
+The `[data-phase="collapsing"]` and `[data-phase="mindmap"]` palette overrides in `style.css` (~line 3287) already flip `--mm-bg`/`--mm-fg`/`--accent` to the ivory/charcoal/ink-blue triplet and restore on `imploding`. **Keep this** — it's correct. The only change is that the white now comes from the `.mm-canvas-under` layer being revealed rather than the radial `.mm-canvas-reveal` wipe. Delete `.mm-canvas-reveal` and the `revealRadius`/`revealP` logic; delete the v3 `mm-chat-tear` (left) and `mm-seam-snatched` keyframes; delete the `mm-rip-flash` if it doesn't fit the new beats.
+
+### Files to touch
+- [src/web/static/app.jsx](src/web/static/app.jsx): `COLLAPSE_TIMELINE` (~1553), `CatalystOverlay` (~1564) — rewrite the arm interpolation + reveal logic + add crack/debris SVG; the shatter/fountain block below it stays. Also check `ResponseStackView` (~2106) where `collapsing` is consumed and the chat list lives.
+- [src/web/static/style.css](src/web/static/style.css): replace `.mm-canvas-reveal`, `mm-chat-tear`, `mm-seam-snatched` (~3316-3335) with the new rightward chat-slide keyframes + `.mm-canvas-under` layer + torn-edge clip-path. Keep the `[data-phase=...]` palette overrides (~3287-3375).
+
+### Verification
+- `npm run web`, open `http://localhost:7421`, send any prompt, wait for a response, click **BURST INTO MINDMAP**.
+- Expect: arm enters from right → punctures (cracks appear) → drags chat rightward off-screen revealing white underneath (torn edge follows) → arm retreats right → particle fountain builds orbital nodes on white canvas.
+- Phase progression must still be `response → collapsing → mindmap → (COLLAPSE TO THREAD) → response`, and the atelier charcoal theme must still restore on collapse-to-thread (the `imploding` phase).
+- `npm run typecheck` and `npm test` must stay green (230 tests). The catalyst is pure frontend JSX/CSS so no TS types change, but run both anyway.
+- **Watch for:** the chat content is in `.mm-chat-list`; make sure sliding it doesn't break the `liveTurn`/`responses` React state — the slide is a CSS transform on a still-mounted element, then the parent unmounts it when `phase` flips to `mindmap`. Don't unmount mid-animation.
+
+### Notes for the implementing agent
+- The whole catalyst is driven by a single `requestAnimationFrame` loop in `CatalystOverlay` that sets `t` (elapsed ms). All motion is computed from `t` against `COLLAPSE_TIMELINE` windows. Follow that pattern — don't introduce CSS-animation/JS-timing split-brain for the arm (the chat-slide CAN be a CSS keyframe since it's a simple one-shot, but the arm + effects should stay rAF-driven for sync).
+- Keep it performant: the storyboard is busy but it's a ~2.4s one-shot. SVG with a few dozen elements is fine. Don't spawn hundreds of debris particles.
+- The user is fine with 2D/stylized. Don't over-engineer realism. Clean, readable, natural-looking tear > photoreal arm.
 
 ---
 
