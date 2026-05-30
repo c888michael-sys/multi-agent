@@ -1597,56 +1597,49 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const easeInCubic  = (u) => u * u * u;
   const easeOutCubic = (u) => 1 - Math.pow(1 - u, 3);
 
-  // ── Right arm (enters from right; rotate(90deg) makes claw point LEFT) ──
+  // ── Both arms — enter simultaneously during anticipation ──────────────
   // armX: px offset of arm SVG center from screen center, positive = rightward.
-  // Home position armX≈+90 puts the claw tip at approximately screen center.
+  // Knuckle face sits at SVG y≈77 which after rotate(90deg) is ~88px from SVG
+  // center → armX_home=90 puts the knuckle face ≈ at screen center (x≈2px off).
+  // Jab direction: right arm punches LEFT (armX decreases) so knuckles slam
+  // through center; left arm punches RIGHT (armX increases, mirrored).
   let armX_r = 700, armY_r = 0, armRot_r = 0, clawOpen_r = 1;
+  let armX_l = -700, armY_l = 0, armRot_l = 0, clawOpen_l = 1;
   if (t < COLLAPSE_TIMELINE.anticipation.start + COLLAPSE_TIMELINE.anticipation.dur) {
     const u = easeOutCubic(progress('anticipation'));
-    armX_r = 700 - 610 * u;   // +700 → +90 (easeOut decel)
+    armX_r =  700 - 610 * u;   // +700 → +90 (easeOut decel, open hand approaching)
+    armX_l = -700 + 610 * u;   // -700 → -90 (symmetric from left)
     clawOpen_r = 1;
+    clawOpen_l = 1;
   } else if (t < COLLAPSE_TIMELINE.puncture.start + COLLAPSE_TIMELINE.puncture.dur) {
     const u = progress('puncture');
-    armX_r = 90 + Math.sin(u * Math.PI) * 10;  // jab: +10px in then back
-    clawOpen_r = 1 - u;
-  } else if (t < COLLAPSE_TIMELINE.pull.start + COLLAPSE_TIMELINE.pull.dur) {
-    const u = easeInCubic(progress('pull'));
-    armX_r = 90 + u * 670;   // +90 → +760 (accelerates right)
-    armRot_r = u * 6;          // slight CW as it pulls
-    clawOpen_r = 0;
-  } else if (t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur) {
-    const u = progress('retreat');
-    armX_r = 760 + u * 540;  // +760 → +1300 off-screen
-    armRot_r = 6 * (1 - u);
-    clawOpen_r = u;
-  } else {
-    armX_r = 1300; clawOpen_r = 1;
-  }
-  const armVis_r = t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur + 80;
-
-  // ── Left arm (enters at puncture from left; scaleX(-1) mirrors claw → RIGHT) ──
-  let armX_l = -700, armY_l = 0, armRot_l = 0, clawOpen_l = 1;
-  if (t < COLLAPSE_TIMELINE.puncture.start) {
-    armX_l = -700; clawOpen_l = 1;
-  } else if (t < COLLAPSE_TIMELINE.puncture.start + COLLAPSE_TIMELINE.puncture.dur) {
-    const u = easeOutCubic(progress('puncture'));
-    armX_l = -700 + 610 * u;  // -700 → -90 (fast entry)
+    // Punch TOWARD center: knuckles slam past zero, grip closes on contact
+    armX_r =  90 - Math.sin(u * Math.PI) * 25;  // +90 → +65 → +90 (jab 25px through)
+    armX_l = -90 + Math.sin(u * Math.PI) * 25;  // -90 → -65 → -90 (mirrored)
+    clawOpen_r = 1 - u;  // hand closes during jab
     clawOpen_l = 1 - u;
   } else if (t < COLLAPSE_TIMELINE.pull.start + COLLAPSE_TIMELINE.pull.dur) {
     const u = easeInCubic(progress('pull'));
-    armX_l = -90 - u * 670;  // -90 → -760 (accelerates left)
+    armX_r =  90 + u * 670;   // +90 → +760 (accelerates outward)
+    armX_l = -90 - u * 670;   // -90 → -760
+    armRot_r =  u * 6;
     armRot_l = -u * 6;
+    clawOpen_r = 0;
     clawOpen_l = 0;
   } else if (t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur) {
     const u = progress('retreat');
+    armX_r =  760 + u * 540;  // → +1300 off-screen
     armX_l = -760 - u * 540;
+    armRot_r =  6 * (1 - u);
     armRot_l = -6 * (1 - u);
+    clawOpen_r = u;
     clawOpen_l = u;
   } else {
+    armX_r =  1300; clawOpen_r = 1;
     armX_l = -1300; clawOpen_l = 1;
   }
-  const armVis_l = t >= COLLAPSE_TIMELINE.puncture.start &&
-                   t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur + 80;
+  const armVis_r = t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur + 80;
+  const armVis_l = armVis_r;  // both arms visible from t=0
 
   // ── Torn dark half panels ──────────────────────────────────────
   // Appear at puncture; translateX tracks arm grip so grip looks attached.
@@ -1753,14 +1746,18 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   const cy0 = stageRect ? stageRect.h / 2 : 0;
 
   // ── Arm render helper (shared by both arms) ─────────────────────
-  // mirrorX=true applies scaleX(-1) so the left arm's grip points RIGHT.
   // rotate(90deg) turns the vertical SVG horizontal: SVG −y → screen +x
-  // (shoulder extends away from center); SVG +y → screen −x (grip toward
-  // center). Arm is sized via CSS (width=thickness, height=length after
-  // rotation). viewBox −200..+200 in both axes; wrist at y=0, finger
-  // tips at y≈76 so armX≈90 places the grip essentially at screen center.
+  // (shoulder extends away from center); SVG +y → screen −x (fist toward
+  // center). mirrorX=true (left arm) flips so fist faces rightward.
+  //
+  // Knuckle-forward fist: palm block y=5..77 with knuckle bumps at y=77
+  // (leading face). Fingers pivot from knuckle base y=77, extend further
+  // toward center (+y). Closed grip → fingers bunched tight at face;
+  // open hand → fingers fan in SVG x direction (= vertical on screen).
+  // Knuckle face at y=77 maps to ~89px from arm center →
+  // armX≈90 puts knuckle face ≈ 1px right/left of screen center.
   const renderArm = (armX, armY, armRot, clawOpen, mirrorX) => {
-    const fAng = 2 + clawOpen * 20;  // 2=closed grip, 22=open hand
+    const fAng = 2 + clawOpen * 22;  // 2=closed fist, 24=full open
     return (
       <svg
         className="mm-robot-arm"
@@ -1773,8 +1770,8 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         }}
         aria-hidden="true"
       >
-        {/* Ground shadow */}
-        <ellipse cx="0" cy="0" rx="90" ry="9" fill="rgba(0,0,0,0.32)" />
+        {/* Shadow */}
+        <ellipse cx="0" cy="40" rx="94" ry="10" fill="rgba(0,0,0,0.30)" />
 
         {/* Shoulder mount */}
         <rect x="-26" y="-195" width="52" height="52" rx="8"
@@ -1784,11 +1781,11 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         <rect x="-16" y="-179" width="32" height="3" rx="1.5"
           fill="oklch(0.18 0.01 240)" opacity="0.4" />
 
-        {/* Piston rod (shoulder → upper arm) */}
+        {/* Piston rod */}
         <rect x="-6" y="-143" width="12" height="18" rx="3"
           fill="oklch(0.28 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
 
-        {/* Upper arm (bicep) */}
+        {/* Upper arm */}
         <rect x="-34" y="-143" width="68" height="90" rx="16"
           fill="oklch(0.46 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
         <rect x="-24" y="-136" width="48" height="76" rx="10"
@@ -1796,15 +1793,13 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         <line x1="-28" y1="-112" x2="28" y2="-112"
           stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
 
-        {/* Elbow joint */}
+        {/* Elbow */}
         <circle cx="0" cy="-53" r="30"
           fill="oklch(0.32 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2.5" />
-        <circle cx="0" cy="-53" r="13"
-          fill="oklch(0.20 0.01 240)" />
-        <circle cx="0" cy="-53" r="5"
-          fill="oklch(0.56 0.18 250)" />
+        <circle cx="0" cy="-53" r="13" fill="oklch(0.20 0.01 240)" />
+        <circle cx="0" cy="-53" r="5"  fill="oklch(0.56 0.18 250)" />
 
-        {/* Forearm (tapered elbow → wrist) */}
+        {/* Forearm (tapered) */}
         <path d="M -30 -53 L -22 0 L 22 0 L 30 -53 Z"
           fill="oklch(0.50 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
         <rect x="-8" y="-38" width="16" height="28" rx="4"
@@ -1814,30 +1809,38 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
             stroke="oklch(0.60 0.02 240)" strokeWidth="0.9" opacity="0.55" />
         ))}
 
-        {/* Wrist joint */}
+        {/* Wrist */}
         <circle cx="0" cy="0" r="20"
           fill="oklch(0.32 0.02 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
-        <circle cx="0" cy="0" r="8"
-          fill="oklch(0.20 0.01 240)" />
+        <circle cx="0" cy="0" r="8" fill="oklch(0.20 0.01 240)" />
 
-        {/* Palm */}
-        <rect x="-30" y="8" width="60" height="30" rx="10"
-          fill="oklch(0.46 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2" />
-        <line x1="-26" y1="18" x2="26" y2="18"
+        {/* Thumb — extends sideways from palm, fans outward when open */}
+        <rect x="36" y="12" width="28" height="16" rx="8"
+          transform={`rotate(${fAng * 0.45} 36 20)`}
+          fill="oklch(0.42 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
+
+        {/* Palm / fist body — knuckle-forward: leading face is at y=77 */}
+        <rect x="-36" y="5" width="72" height="72" rx="15"
+          fill="oklch(0.46 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="2.2" />
+        {/* Metacarpal crease across mid-palm */}
+        <line x1="-30" y1="22" x2="30" y2="22"
           stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
 
-        {/* 4 fingers — fan out by fAng from knuckle pivot */}
+        {/* 4 fingers — pivot at knuckle face (y=77), fan in SVG x when open.
+            Closed: bunched straight down (large +y = toward center side).
+            Open:   fan ±(fi-1.5)*fAng*1.1 degrees in SVG x direction. */}
         {[-21, -7, 7, 21].map((fx, fi) => (
           <rect key={fi}
-            x={fx - 7} y="14" width="14" height="62" rx="6"
-            transform={`rotate(${(fi - 1.5) * fAng * 0.4} ${fx} 14)`}
-            fill="oklch(0.42 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
+            x={fx - 8} y="77" width="16" height="52" rx="8"
+            transform={`rotate(${(fi - 1.5) * fAng * 1.1} ${fx} 77)`}
+            fill="oklch(0.40 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.8" />
         ))}
 
-        {/* Thumb */}
-        <rect x="30" y="-4" width="22" height="14" rx="6"
-          transform={`rotate(${fAng * 0.55} 30 3)`}
-          fill="oklch(0.42 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.5" />
+        {/* Knuckle bumps on leading fist face (y≈77) */}
+        {[-21, -7, 7, 21].map((fx, fi) => (
+          <ellipse key={fi} cx={fx} cy="77" rx="10" ry="6.5"
+            fill="oklch(0.36 0.025 240)" stroke="oklch(0.18 0.01 240)" strokeWidth="1.4" />
+        ))}
       </svg>
     );
   };

@@ -3366,7 +3366,7 @@
    length on screen (SVG y-axis after rotate90). */
 .mm-robot-arm {
   position: absolute;
-  width: min(18vw, 220px);
+  width: min(22vw, 280px);
   height: min(32vw, 460px);
   pointer-events: none;
   z-index: 60;
