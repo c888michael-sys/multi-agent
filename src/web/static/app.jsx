@@ -1538,26 +1538,23 @@ function lineFromBoxToBox(cx, cy, nx, ny, compHalfW, compHalfH, nodeHalfW, nodeH
   };
 }
 
-// COLLAPSE_TIMELINE — v3 "robot arm rips the door" catalyst.
-//   armEnter:   arm slides in from off-canvas right, claw open, descends
-//               toward the seam at horizontal center.
-//   armClamp:   claw closes on the seam line. Short anticipation beat.
-//   armYank:    arm violently jerks LEFT. The chat scroll list tears
-//               with it (translateX + skew + opacity fade). Behind the
-//               torn chat, the white "canvas dimension" reveals via a
-//               radial wipe from the impact point.
-//   armRetreat: arm continues off-screen left. Brief flash at center.
-//   shatter:    particles spawn from a center cluster on the white canvas.
-//   fountain:   particles arc to their final orbital positions, then
-//               hand off to the OrbitalNode mounts.
+// COLLAPSE_TIMELINE — v4 "center-split rip" catalyst.
+//   anticipation: right arm slides in horizontally from off-canvas right,
+//                 claw open, decelerating toward screen center.
+//   puncture:     claws snap shut; both arms jab in; crack-flash + debris
+//                 spawn. Left arm enters simultaneously from left.
+//   pull:         both halves split to opposite edges revealing white canvas
+//                 from center out. Real chat hidden via CSS at puncture start.
+//   retreat:      both arms continue off-screen; claws open.
+//   shatter:      particles spawn from center cluster on white canvas. (re-timed)
+//   fountain:     particles arc to their final orbital positions. (re-timed)
 const COLLAPSE_TIMELINE = {
-  armEnter:   { start:    0, dur:  450 },
-  armClamp:   { start:  450, dur:  180 },
-  armYank:    { start:  630, dur:  470 },
-  armRetreat: { start: 1100, dur:  260 },
-  impact:     { start: 1100, dur:   90 },  // legacy alias kept for "flash" code that other branches still reference
-  shatter:    { start: 1360, dur:  180 },
-  fountain:   { start: 1540, dur:  860 },
+  anticipation: { start:    0, dur: 520 },
+  puncture:     { start:  520, dur: 200 },
+  pull:         { start:  720, dur: 720 },
+  retreat:      { start: 1440, dur: 300 },
+  shatter:      { start: 1740, dur: 200 },
+  fountain:     { start: 1940, dur: 460 },
   total: 2400,
 };
 
@@ -1597,77 +1594,136 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   );
   const n = nodes.length;
 
-  // ─── v3 catalyst: robot arm rips the door ──────────────────────
-  //
-  // The arm enters from off-canvas right, descends to the horizontal
-  // seam line at vertical center, claw clamps, then violently yanks
-  // LEFT. The chat scroll list tears with the yank (translateX/skew/
-  // fade — driven by CSS data-phase=collapsing). Behind the torn
-  // chat, the white canvas dimension reveals via a radial wipe from
-  // the seam-attack point. The arm continues off-screen left; a brief
-  // ring flash marks the rip moment; then the existing shatter +
-  // fountain plays on the WHITE canvas.
-
-  // Easings used below.
-  const easeInCubic = (u) => u * u * u;
+  const easeInCubic  = (u) => u * u * u;
   const easeOutCubic = (u) => 1 - Math.pow(1 - u, 3);
 
-  // Arm position. We render the arm as a single group translated by
-  // (armX, armY) px from a "home" position centered on the rip-point.
-  // armRotZ controls a slight rotation around the wrist during yank
-  // so the wrench reads as "wrenching" not "skidding."
-  let armX = 0, armY = -160, armRotZ = 0;
-  let clawOpen = 1; // 1 = fully open, 0 = fully closed
-  if (t < COLLAPSE_TIMELINE.armEnter.start + COLLAPSE_TIMELINE.armEnter.dur) {
-    // Sliding in from upper-right. We use a cubic ease-out so the arm
-    // decelerates as it nears the seam — feels deliberate, not floppy.
-    const u = easeOutCubic(progress('armEnter'));
-    armX = 380 - 380 * u;          // 380 → 0
-    armY = -160 + 160 * u;          // -160 → 0
-  } else if (t < COLLAPSE_TIMELINE.armClamp.start + COLLAPSE_TIMELINE.armClamp.dur) {
-    // Clamp beat — claw closes, brief overshoot in X for visual snap.
-    const u = progress('armClamp');
-    armX = 0 + Math.sin(u * Math.PI) * 4;  // tiny anticipation
-    armY = 0;
-    clawOpen = 1 - u;
-  } else if (t < COLLAPSE_TIMELINE.armYank.start + COLLAPSE_TIMELINE.armYank.dur) {
-    // Yank — accelerates LEFT. Wrist rotates slightly to imply force.
-    const u = easeInCubic(progress('armYank'));
-    armX = -u * 520;                // 0 → -520
-    armY = u * 18;                  // slight downward bite
-    armRotZ = -u * 12;              // tilt counter-clockwise as it pulls
-    clawOpen = 0;
-  } else if (t < COLLAPSE_TIMELINE.armRetreat.start + COLLAPSE_TIMELINE.armRetreat.dur) {
-    // Retreat — continues off-screen, claw opens (releases torn fabric).
-    const u = progress('armRetreat');
-    armX = -520 - u * 600;          // -520 → -1120
-    armY = 18 + u * 20;
-    armRotZ = -12 - u * 8;
-    clawOpen = u;
+  // ── Right arm (enters from right; rotate(90deg) makes claw point LEFT) ──
+  // armX: px offset of arm SVG center from screen center, positive = rightward.
+  // Home position armX≈+90 puts the claw tip at approximately screen center.
+  let armX_r = 700, armY_r = 0, armRot_r = 0, clawOpen_r = 1;
+  if (t < COLLAPSE_TIMELINE.anticipation.start + COLLAPSE_TIMELINE.anticipation.dur) {
+    const u = easeOutCubic(progress('anticipation'));
+    armX_r = 700 - 610 * u;   // +700 → +90 (easeOut decel)
+    clawOpen_r = 1;
+  } else if (t < COLLAPSE_TIMELINE.puncture.start + COLLAPSE_TIMELINE.puncture.dur) {
+    const u = progress('puncture');
+    armX_r = 90 + Math.sin(u * Math.PI) * 10;  // jab: +10px in then back
+    clawOpen_r = 1 - u;
+  } else if (t < COLLAPSE_TIMELINE.pull.start + COLLAPSE_TIMELINE.pull.dur) {
+    const u = easeInCubic(progress('pull'));
+    armX_r = 90 + u * 670;   // +90 → +760 (accelerates right)
+    armRot_r = u * 6;          // slight CW as it pulls
+    clawOpen_r = 0;
+  } else if (t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur) {
+    const u = progress('retreat');
+    armX_r = 760 + u * 540;  // +760 → +1300 off-screen
+    armRot_r = 6 * (1 - u);
+    clawOpen_r = u;
   } else {
-    armX = -1120; armY = 38; armRotZ = -20; clawOpen = 1;
+    armX_r = 1300; clawOpen_r = 1;
   }
-  const armVisible = t < COLLAPSE_TIMELINE.armRetreat.start + COLLAPSE_TIMELINE.armRetreat.dur + 80;
+  const armVis_r = t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur + 80;
 
-  // Door / canvas reveal — a radial wipe centered on the rip-point.
-  // Sized 0 during armEnter, ramps to full coverage during yank, holds
-  // through fountain. The white canvas stays put until the parent
-  // phase flips back to 'imploding' (i.e. user clicks COLLAPSE TO
-  // THREAD); CSS keys off [data-phase] so the parent does the revert.
-  const revealStart = COLLAPSE_TIMELINE.armClamp.start;
-  const revealDur = 360;
-  const revealP = Math.max(0, Math.min(1, (t - revealStart) / revealDur));
-  const revealRadius = easeOutCubic(revealP) * Math.max(stageRect?.w || 0, stageRect?.h || 0) * 1.4;
+  // ── Left arm (enters at puncture from left; scaleX(-1) mirrors claw → RIGHT) ──
+  let armX_l = -700, armY_l = 0, armRot_l = 0, clawOpen_l = 1;
+  if (t < COLLAPSE_TIMELINE.puncture.start) {
+    armX_l = -700; clawOpen_l = 1;
+  } else if (t < COLLAPSE_TIMELINE.puncture.start + COLLAPSE_TIMELINE.puncture.dur) {
+    const u = easeOutCubic(progress('puncture'));
+    armX_l = -700 + 610 * u;  // -700 → -90 (fast entry)
+    clawOpen_l = 1 - u;
+  } else if (t < COLLAPSE_TIMELINE.pull.start + COLLAPSE_TIMELINE.pull.dur) {
+    const u = easeInCubic(progress('pull'));
+    armX_l = -90 - u * 670;  // -90 → -760 (accelerates left)
+    armRot_l = -u * 6;
+    clawOpen_l = 0;
+  } else if (t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur) {
+    const u = progress('retreat');
+    armX_l = -760 - u * 540;
+    armRot_l = -6 * (1 - u);
+    clawOpen_l = u;
+  } else {
+    armX_l = -1300; clawOpen_l = 1;
+  }
+  const armVis_l = t >= COLLAPSE_TIMELINE.puncture.start &&
+                   t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur + 80;
 
-  // Brief ring flash right after the arm finishes its yank — same
-  // visual beat the v2 'impact' moment served, but here it represents
-  // "the seam pops open and the canvas dimension finishes revealing."
-  const flashStart = COLLAPSE_TIMELINE.armRetreat.start;
-  const flashVisible = t >= flashStart && t < flashStart + 280;
-  const flashP = (t - flashStart) / 240;
-  const flashScale = 0.6 + flashP * 0.7;
-  const flashOpacity = Math.max(0, 1 - flashP) * (flashP > 0 ? 1 : 0);
+  // ── Torn dark half panels ──────────────────────────────────────
+  // Appear at puncture; translateX tracks arm grip so grip looks attached.
+  const halvesVisible = t >= COLLAPSE_TIMELINE.puncture.start && stageRect?.w;
+  const rightHalfX = halvesVisible ? armX_r - 90 : 0;  // 0 at puncture, grows →
+  const leftHalfX  = halvesVisible ? armX_l + 90 : 0;  // 0 at puncture, grows ←
+  const pullRot    = progress('pull') * 4;              // ±4° peel during pull
 
+  // Stable jagged inner-edge points — useMemo so they NEVER re-randomize.
+  // Re-randomizing per-frame would make the torn edge "boil."
+  const tornEdge = React.useMemo(() => {
+    const numPts = 12;
+    return Array.from({ length: numPts }, (_, i) => ({
+      y:  (i / (numPts - 1)) * 100,
+      rx: Math.random() * 14 - 7,   // px jitter for right panel's left (inner) edge
+      lx: Math.random() * 14 - 7,   // px jitter for left panel's right (inner) edge
+    }));
+  }, []);
+
+  let rightClipPath = 'none', leftClipPath = 'none';
+  if (stageRect?.w) {
+    const cx = stageRect.w / 2;
+    // Right panel: jagged inner (left) edge near center, straight right edge
+    rightClipPath = `polygon(${
+      tornEdge.map(p => `${(cx + p.rx).toFixed(1)}px ${p.y.toFixed(1)}%`).join(', ')
+    }, 100% 100%, 100% 0%)`;
+    // Left panel: straight left edge, jagged inner (right) edge near center
+    leftClipPath = `polygon(0% 0%, 0% 100%, ${
+      [...tornEdge].reverse().map(p => `${(cx + p.lx).toFixed(1)}px ${p.y.toFixed(1)}%`).join(', ')
+    })`;
+  }
+
+  // ── Crack lines (SVG polylines radiating from center at puncture) ──
+  const crackLines = React.useMemo(() => {
+    const NUM = 9;
+    return Array.from({ length: NUM }, (_, i) => {
+      const base = (i / NUM) * Math.PI * 2;
+      const ang  = base + (Math.random() * 0.5 - 0.25);
+      const len  = 45 + Math.random() * 55;
+      return [
+        [0, 0],
+        [Math.cos(ang + (Math.random() * 0.3 - 0.15)) * len * 0.32,
+         Math.sin(ang + (Math.random() * 0.3 - 0.15)) * len * 0.32],
+        [Math.cos(ang + (Math.random() * 0.2 - 0.10)) * len * 0.66,
+         Math.sin(ang + (Math.random() * 0.2 - 0.10)) * len * 0.66],
+        [Math.cos(ang) * len, Math.sin(ang) * len],
+      ];
+    });
+  }, []);
+
+  const crackRevP  = Math.max(0, Math.min(1, (t - COLLAPSE_TIMELINE.puncture.start) / 160));
+  const crackFadeP = Math.max(0, 1 - Math.max(0, (t - (COLLAPSE_TIMELINE.puncture.start + 280)) / 480));
+
+  // ── Debris (small SVG polygon chips, ballistic + gravity) ──────
+  const debris = React.useMemo(() => {
+    const NUM = 20;
+    return Array.from({ length: NUM }, () => ({
+      vx: (Math.random() - 0.5) * 400,
+      vy: -(60 + Math.random() * 200),  // upward bias
+      sz: 3 + Math.random() * 6,
+      r0: Math.random() * 360,
+      rv: (Math.random() - 0.5) * 600,
+    }));
+  }, []);
+
+  const G  = 280;  // gravity px/s²
+  const τ  = Math.max(0, (t - COLLAPSE_TIMELINE.puncture.start) / 1000);
+  const debrisAlpha = τ > 0 ? Math.max(0, 1 - Math.max(0, (τ - 0.45) / 0.55)) : 0;
+
+  // ── Rip flash — re-timed to puncture start (masks the content swap) ──
+  const flashStart   = COLLAPSE_TIMELINE.puncture.start;
+  const flashVisible = t >= flashStart && t < flashStart + 220;
+  const flashP       = Math.max(0, Math.min(1, (t - flashStart) / 200));
+  const flashScale   = 0.5 + flashP * 0.8;
+  const flashOpacity = Math.max(0, 1 - flashP);
+
+  // ── Fountain particle finals ────────────────────────────────────
   // Particle final positions — call the SAME shared layout function as
   // useOrbitalPositions so every particle lands at exactly the resting
   // position of its corresponding OrbitalNode (including any nudges from
@@ -1679,7 +1735,6 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
     const cy = stageRect.h / 2;
     const layout = computeOrbitalLayout(nodes, stageRect.w, stageRect.h);
     return layout.map((p) => {
-      // Bezier midpoint biased outward so the trajectory arcs naturally.
       const dx = p.x - cx;
       const dy = p.y - cy;
       return {
@@ -1691,11 +1746,59 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
     });
   }, [n, stageRect?.w, stageRect?.h, nodes]);
 
-  const fountainP = progress('fountain');
+  const fountainP     = progress('fountain');
   const fountainEased = 1 - Math.pow(1 - fountainP, 2.6);  // ease-out
 
   const cx0 = stageRect ? stageRect.w / 2 : 0;
   const cy0 = stageRect ? stageRect.h / 2 : 0;
+
+  // ── Arm render helper (shared by both arms) ─────────────────────
+  // mirrorX=true applies scaleX(-1) so the left arm's claw points RIGHT.
+  // The base rotate(90deg) turns the vertical arm horizontal (claw → left);
+  // scaleX(-1) then flips that so claw → right for the left arm.
+  const renderArm = (armX, armY, armRot, clawOpen, mirrorX) => {
+    const ang = 4 + clawOpen * 20;
+    return (
+      <svg
+        className="mm-robot-arm"
+        viewBox="-200 -200 400 400"
+        style={{
+          left: `calc(50% + ${armX}px)`,
+          top:  `calc(50% + ${armY}px)`,
+          transform: `translate(-50%, -50%) ${mirrorX ? 'scaleX(-1) ' : ''}rotate(${(90 + armRot).toFixed(2)}deg)`,
+          transformOrigin: 'center center',
+        }}
+        aria-hidden="true"
+      >
+        <ellipse cx="0" cy="0" rx="60" ry="6" fill="rgba(0,0,0,0.35)" />
+        <rect x="-12" y="-180" width="24" height="60" rx="3"
+          fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
+        <rect x="-8" y="-130" width="16" height="80" rx="2"
+          fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
+        <circle cx="0" cy="-50" r="9"
+          fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
+        <circle cx="0" cy="-50" r="3" fill="oklch(0.20 0.01 240)" />
+        <rect x="-7" y="-50" width="14" height="42" rx="2"
+          fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
+        <circle cx="0" cy="-8" r="6"
+          fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.3" />
+        <rect x="-2" y="-6" width="4" height="20" rx="1.2"
+          transform={`rotate(${-ang} 0 -8)`}
+          fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
+        <rect x="-2" y="-6" width="4" height="20" rx="1.2"
+          transform={`rotate(${ang} 0 -8)`}
+          fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
+        <circle
+          cx={Math.sin(-ang * Math.PI / 180) * 18}
+          cy={-8 + Math.cos(-ang * Math.PI / 180) * 18}
+          r="2.6" fill="oklch(0.85 0.03 65)" />
+        <circle
+          cx={Math.sin(ang * Math.PI / 180) * 18}
+          cy={-8 + Math.cos(ang * Math.PI / 180) * 18}
+          r="2.6" fill="oklch(0.85 0.03 65)" />
+      </svg>
+    );
+  };
 
   // Helper — partial quadratic Bezier from t=0 to t=u via de Casteljau.
   // Trims BOTH ends so the visible line sits between the source box's
@@ -1769,87 +1872,96 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
 
   return (
     <div className="mm-catalyst-overlay" aria-hidden="true">
-      {/* Canvas-dimension reveal: a circular white wipe centered on
-          the rip-point. Grows to fill the stage as the arm yanks. The
-          CSS uses radial-gradient with a positioned hard edge so this
-          renders cheaply (no canvas, no big SVG). When the parent
-          phase flips to 'mindmap' the whole stage stays white via
-          [data-phase="mindmap"] styling — this overlay then unmounts
-          but the white background persists. */}
-      <div
-        className="mm-canvas-reveal"
-        style={{
-          // Radial gradient with a hard edge at revealRadius pixels.
-          // Inside: pure canvas-ivory. Outside: transparent so the
-          // underlying atelier theme bleeds through during the wipe.
-          background: `radial-gradient(circle at 50% 50%, oklch(0.98 0.005 95) 0, oklch(0.98 0.005 95) ${revealRadius}px, transparent ${revealRadius + 2}px)`,
-          opacity: revealP > 0 ? 1 : 0,
-        }}
-      />
+      {/* White canvas underneath — revealed as halves slide apart.
+          No radial wipe needed: the canvas is simply visible behind
+          the dark panels as they exit to opposite screen edges. */}
+      <div className="mm-canvas-under" />
 
-      {/* Robot arm — single SVG group, transformed via inline style so
-          requestAnimationFrame updates from React drive the motion.
-          Anatomy: shoulder anchor → upper-arm bar → elbow joint → forearm
-          bar → wrist joint → two-finger claw. The claw open/close is
-          driven by `clawOpen` (1 = open, 0 = clamped). */}
-      {armVisible && stageRect && (
+      {/* Torn dark half panels. Appear at puncture, follow arm grip
+          positions so the grip reads as physically attached to the chat. */}
+      {halvesVisible && (
+        <>
+          <div
+            className="mm-torn-half"
+            style={{
+              clipPath: rightClipPath,
+              transform: `translateX(${rightHalfX.toFixed(1)}px) rotate(${pullRot.toFixed(2)}deg)`,
+              transformOrigin: 'left center',
+            }}
+          />
+          <div
+            className="mm-torn-half"
+            style={{
+              clipPath: leftClipPath,
+              transform: `translateX(${leftHalfX.toFixed(1)}px) rotate(${(-pullRot).toFixed(2)}deg)`,
+              transformOrigin: 'right center',
+            }}
+          />
+        </>
+      )}
+
+      {/* Crack lines: SVG polylines shoot out from center at puncture. */}
+      {crackRevP > 0 && crackFadeP > 0 && stageRect && (
         <svg
-          className="mm-robot-arm"
-          viewBox="-200 -200 400 400"
-          style={{
-            left: `calc(50% + ${armX}px)`,
-            top: `calc(50% + ${armY}px)`,
-            transform: `translate(-50%, -100%) rotate(${armRotZ.toFixed(2)}deg)`,
-            transformOrigin: '50% 100%',
-          }}
-          aria-hidden="true"
+          className="mm-crack-svg"
+          width={stageRect.w} height={stageRect.h}
+          viewBox={`0 0 ${stageRect.w} ${stageRect.h}`}
         >
-          {/* Shadow under the arm for depth */}
-          <ellipse cx="0" cy="0" rx="60" ry="6" fill="rgba(0,0,0,0.35)" />
-          {/* Shoulder mount (off-screen anchor — rendered as a chunky bar) */}
-          <rect x="-12" y="-180" width="24" height="60" rx="3"
-            fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.5" />
-          {/* Upper arm — vertical-ish bar from shoulder down toward elbow */}
-          <rect x="-8" y="-130" width="16" height="80" rx="2"
-            fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
-          {/* Elbow joint */}
-          <circle cx="0" cy="-50" r="9"
-            fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
-          <circle cx="0" cy="-50" r="3" fill="oklch(0.20 0.01 240)" />
-          {/* Forearm — angled slightly inward toward the wrist */}
-          <rect x="-7" y="-50" width="14" height="42" rx="2"
-            fill="oklch(0.50 0.025 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.4" />
-          {/* Wrist joint */}
-          <circle cx="0" cy="-8" r="6"
-            fill="oklch(0.32 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.3" />
-          {/* Claw — two fingers pivoting around the wrist. Rotation
-              interpolates between 24° (open) and 4° (clamped). */}
-          {(() => {
-            const ang = 4 + clawOpen * 20;
-            return (
-              <>
-                <rect x="-2" y="-6" width="4" height="20" rx="1.2"
-                  transform={`rotate(${-ang} 0 -8)`}
-                  fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
-                <rect x="-2" y="-6" width="4" height="20" rx="1.2"
-                  transform={`rotate(${ang} 0 -8)`}
-                  fill="oklch(0.42 0.02 240)" stroke="oklch(0.20 0.01 240)" strokeWidth="1.2" />
-                {/* Tip nubs */}
-                <circle cx={Math.sin(-ang * Math.PI / 180) * 18}
-                        cy={-8 + Math.cos(-ang * Math.PI / 180) * 18}
-                        r="2.6" fill="oklch(0.85 0.03 65)" />
-                <circle cx={Math.sin(ang * Math.PI / 180) * 18}
-                        cy={-8 + Math.cos(ang * Math.PI / 180) * 18}
-                        r="2.6" fill="oklch(0.85 0.03 65)" />
-              </>
+          {crackLines.map((pts, i) => {
+            const segLens = pts.slice(1).map((p, j) =>
+              Math.hypot(p[0] - pts[j][0], p[1] - pts[j][1])
             );
-          })()}
+            const totalLen = segLens.reduce((a, b) => a + b, 0) || 1;
+            const drawLen  = crackRevP * totalLen;
+            return (
+              <polyline
+                key={i}
+                points={pts.map(p => `${(cx0 + p[0]).toFixed(1)},${(cy0 + p[1]).toFixed(1)}`).join(' ')}
+                stroke="oklch(0.28 0.01 60)"
+                strokeWidth="1.5"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={totalLen}
+                strokeDashoffset={(totalLen - drawLen).toFixed(2)}
+                opacity={crackFadeP}
+              />
+            );
+          })}
         </svg>
       )}
 
-      {/* Rip flash — short radial pop right after the arm finishes
-          its yank, marking the moment the canvas dimension finishes
-          opening up. */}
+      {/* Debris: small polygon chips with ballistic motion + gravity. */}
+      {τ > 0 && debrisAlpha > 0 && stageRect && (
+        <svg
+          className="mm-crack-svg mm-debris-svg"
+          width={stageRect.w} height={stageRect.h}
+          viewBox={`0 0 ${stageRect.w} ${stageRect.h}`}
+        >
+          {debris.map((d, i) => {
+            const x   = cx0 + d.vx * τ;
+            const y   = cy0 + d.vy * τ + 0.5 * G * τ * τ;
+            const rot = d.r0 + d.rv * τ;
+            return (
+              <polygon
+                key={i}
+                points={`0,${(-d.sz).toFixed(1)} ${(d.sz*0.7).toFixed(1)},${(d.sz*0.5).toFixed(1)} ${(-d.sz*0.7).toFixed(1)},${(d.sz*0.5).toFixed(1)}`}
+                transform={`translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(${rot.toFixed(1)})`}
+                fill="oklch(0.22 0.01 60)"
+                opacity={debrisAlpha}
+              />
+            );
+          })}
+        </svg>
+      )}
+
+      {/* Right arm */}
+      {armVis_r && stageRect && renderArm(armX_r, armY_r, armRot_r, clawOpen_r, false)}
+
+      {/* Left arm (mirrored via scaleX(-1) so claw points right) */}
+      {armVis_l && stageRect && renderArm(armX_l, armY_l, armRot_l, clawOpen_l, true)}
+
+      {/* Rip flash — white radial pop at puncture, masks the content swap. */}
       {flashVisible && (
         <div
           className="mm-impact-flash mm-rip-flash"
@@ -1860,11 +1972,8 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
         />
       )}
 
-      {/* Center anchor on the white canvas — same labeled-box that the
-          OrbitalNode rest position uses for the composer A. Appears
-          when the canvas finishes revealing so the user sees "this is
-          where the mindmap will be." */}
-      {t >= COLLAPSE_TIMELINE.armRetreat.start && (
+      {/* Center anchor on white canvas — appears after arms retreat. */}
+      {t >= COLLAPSE_TIMELINE.retreat.start && (
         <div className="mm-collide-token mm-token-a mm-anchor-a"
           style={{ left: '50%', top: '50%', opacity: 1, transform: 'translate(-50%, -50%)' }}
         >
