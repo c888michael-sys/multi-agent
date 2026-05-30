@@ -435,8 +435,8 @@ function QuotaBanner({ phase, useLocal }) {
 // CLI's runtime flags as web UI toggles:
 //   • Serious / powerful mode  → adds `thinking: "high"` to every
 //     underlying call (CLI: --serious / --thinking=high).
-//   • Live web search          → adds `useSearch: true` so the perception
-//     primary uses Google Search grounding (CLI: --search).
+//   • Google Search grounding  → adds `useSearch: true`; Gemini uses native
+//     grounding, and perception fallback models get web_search results.
 //   • Force role               → bypasses smart routing for the next turn
 //     and pins the call to a specific role's chain (CLI: --role=<name>).
 // Settings persist to localStorage; HeroMindmap reads them per submit and
@@ -558,8 +558,8 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                 onChange={(e) => onChange({ ...settings, search: e.target.checked })}
               />
               <span className="mm-settings-text">
-                <span className="mm-settings-name">Live web search</span>
-                <span className="mm-settings-hint">Google Search grounding on every call that supports it (CLI: <code>--search</code>)</span>
+                <span className="mm-settings-name">Google Search grounding</span>
+                <span className="mm-settings-hint">Gemini uses native grounding; perception fallbacks get Brave/DuckDuckGo context (CLI: <code>--search</code>)</span>
               </span>
             </label>
           </div>

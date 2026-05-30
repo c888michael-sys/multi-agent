@@ -138,6 +138,23 @@ export class RoleResolver {
   }
 
   /**
+   * Chat through a role, but let callers adjust the history per concrete
+   * candidate. Used for perception fallback: Gemini primary keeps native
+   * grounding, while Gemma/non-native fallbacks can receive pre-fetched
+   * Brave/DuckDuckGo search results.
+   */
+  async runRoleChatWithCandidateHistory(
+    name: RoleName,
+    history: ConversationPart[],
+    transform: (candidate: ProviderRef, history: ConversationPart[]) => Promise<ConversationPart[]> | ConversationPart[],
+    callerOpts?: CompleteOptions,
+  ): Promise<string> {
+    return this.runWithStrategy<string>(name, callerOpts, async (allowList, opts, attribution, candidate) =>
+      this.router.completeChat(await transform(candidate, history), opts, allowList, attribution),
+    );
+  }
+
+  /**
    * Streaming variant — same fallback logic as runRoleChat, but emits
    * incremental tokens via onToken. Falls back to non-streaming
    * completeChat + one final onToken when the chosen provider does
@@ -151,6 +168,24 @@ export class RoleResolver {
   ): Promise<string> {
     return this.runWithStrategy<string>(name, callerOpts, (allowList, opts, attribution) =>
       this.router.completeChatStream(history, opts, allowList, attribution, onToken),
+    );
+  }
+
+  async runRoleChatStreamWithCandidateHistory(
+    name: RoleName,
+    history: ConversationPart[],
+    transform: (candidate: ProviderRef, history: ConversationPart[]) => Promise<ConversationPart[]> | ConversationPart[],
+    onToken: (text: string) => void,
+    callerOpts?: CompleteOptions,
+  ): Promise<string> {
+    return this.runWithStrategy<string>(name, callerOpts, async (allowList, opts, attribution, candidate) =>
+      this.router.completeChatStream(
+        await transform(candidate, history),
+        opts,
+        allowList,
+        attribution,
+        onToken,
+      ),
     );
   }
 
@@ -182,6 +217,7 @@ export class RoleResolver {
       allowList: ReadonlySet<string>,
       opts: CompleteOptions,
       attribution: CallAttribution,
+      candidate: ProviderRef,
     ) => Promise<T>,
   ): Promise<T> {
     const cfg = this.requireRole(name);
@@ -195,7 +231,7 @@ export class RoleResolver {
       const mergedOpts: CompleteOptions = { ...candidate.mode, ...callerOpts };
       const attribution: CallAttribution = {};
       try {
-        const result = await attempt(allowList, mergedOpts, attribution);
+        const result = await attempt(allowList, mergedOpts, attribution, candidate);
         if (i > 0) {
           this.onEvent({
             type: "fallback-within-role",
@@ -222,7 +258,12 @@ export class RoleResolver {
         const subOpts: CompleteOptions = { ...eligible[0]!.mode, ...callerOpts };
         const attribution: CallAttribution = {};
         try {
-          const result = await attempt(new Set(foreignIds), subOpts, attribution);
+          const result = await attempt(
+            new Set(foreignIds),
+            subOpts,
+            attribution,
+            eligible[0]!,
+          );
           this.onEvent({
             type: "cross-role-substitution",
             role: name,

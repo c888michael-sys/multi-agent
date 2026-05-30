@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Router } from "../src/router.js";
 import { RoleResolver } from "../src/roles/resolver.js";
 import { ChatSession, listSessions } from "../src/chat/session.js";
-import { FakeProvider } from "./fixtures.js";
+import { FakeProvider, RateLimitedError } from "./fixtures.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
 /**
@@ -351,6 +351,56 @@ describe("ChatSession smart routing (plan-based)", () => {
     ]);
     expect(result.reply).toBe("synthesized brainstorm");
     expect(p.calls[0]!.prompt).toContain("research-based perspective");
+  });
+
+  it("uses Brave/DuckDuckGo search context when perception falls back from Gemini", async () => {
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.startsWith("https://api.duckduckgo.com/")) {
+        return Response.json({
+          AbstractText: "Duck result says fallback search is live.",
+          AbstractURL: "https://example.com/fallback-search",
+          Heading: "Fallback Search",
+          RelatedTopics: [],
+        });
+      }
+      return new Response("unexpected fetch", { status: 500 });
+    }) as typeof fetch;
+
+    const gemini = chatProvider([], "gemini:3");
+    (gemini as unknown as { completeChat: () => Promise<string> }).completeChat = async () => {
+      throw new RateLimitedError("gemini cooled", 0);
+    };
+    const gemma = chatProvider(["fallback perception answer"], "gemma:1");
+    const router = new Router([gemini, gemma], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      {
+        name: "perception",
+        description: "x",
+        candidates: [
+          { providerId: "gemini:3", mode: { useSearch: true } },
+          { providerId: "gemma:1" },
+        ],
+      },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "fallback-search",
+      storagePath: storage,
+      role: "perception",
+      smartRouting: false,
+    });
+
+    try {
+      const result = await s.send("latest thing?", { useSearch: true });
+      expect(result.reply).toBe("fallback perception answer");
+      const fallbackHistory = JSON.parse(gemma.calls[0]!.prompt) as ConversationPart[];
+      expect(fallbackHistory.some((p) => p.kind === "user_text" && p.text.includes("Fallback web_search results"))).toBe(true);
+      expect(fallbackHistory.some((p) => p.kind === "user_text" && p.text.includes("Duck result says fallback search is live"))).toBe(true);
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
   });
 });
 

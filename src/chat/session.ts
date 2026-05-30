@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { RoleResolver } from "../roles/resolver.js";
-import type { RoleName } from "../roles/types.js";
+import type { ProviderRef, RoleName } from "../roles/types.js";
 import type { CompleteOptions } from "../provider.js";
 import type { ConversationPart } from "../tools/types.js";
+import { WebSearchTool } from "../tools/web-search.js";
 import { parsePlan, type Plan } from "../agents/role-orchestrator.js";
 import {
   brainstormingTasks,
@@ -252,13 +253,13 @@ export class ChatSession {
         const directRole = forcedRole ?? this.role;
         emit({ kind: "role-start", role: directRole, phase: "single" });
         if (onProgress) {
-          reply = await this.resolver.runRoleChatStream(
+          reply = await this.runRoleChatStreamMaybeFallbackSearch(
             directRole, this.history,
             (text) => emit({ kind: "token", text }),
             effectiveOpts,
           );
         } else {
-          reply = await this.resolver.runRoleChat(directRole, this.history, effectiveOpts);
+          reply = await this.runRoleChatMaybeFallbackSearch(directRole, this.history, effectiveOpts);
         }
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
@@ -365,6 +366,70 @@ Output ONLY the summary, no preamble.`;
     }
   }
 
+  private shouldUseFallbackWebSearch(role: RoleName, opts: CompleteOptions): boolean {
+    return role === "perception" && opts.useSearch === true;
+  }
+
+  private async addFallbackWebSearch(
+    candidate: ProviderRef,
+    history: ConversationPart[],
+  ): Promise<ConversationPart[]> {
+    // Gemini candidates already receive native Google Search grounding via
+    // useSearch:true. Only inject Brave/DDG results for non-native fallback
+    // models such as Gemma.
+    if (candidate.providerId.startsWith("gemini:")) return history;
+
+    const query =
+      [...history].reverse().find((p): p is Extract<ConversationPart, { kind: "user_text" }> =>
+        p.kind === "user_text",
+      )?.text ?? "";
+    const tool = new WebSearchTool().tool();
+    const results = await tool.execute({ query });
+    return [
+      ...history,
+      {
+        kind: "user_text",
+        text:
+          `[Fallback web_search results from Brave/DuckDuckGo. Gemini native Google Search grounding was unavailable for this perception call, so use these live results as source context.]\n\n` +
+          `Query:\n${query}\n\nResults:\n${results}`,
+      },
+    ];
+  }
+
+  private runRoleChatMaybeFallbackSearch(
+    role: RoleName,
+    history: ConversationPart[],
+    opts: CompleteOptions,
+  ): Promise<string> {
+    if (!this.shouldUseFallbackWebSearch(role, opts)) {
+      return this.resolver.runRoleChat(role, history, opts);
+    }
+    return this.resolver.runRoleChatWithCandidateHistory(
+      role,
+      history,
+      (candidate, h) => this.addFallbackWebSearch(candidate, h),
+      opts,
+    );
+  }
+
+  private runRoleChatStreamMaybeFallbackSearch(
+    role: RoleName,
+    history: ConversationPart[],
+    onToken: (text: string) => void,
+    opts: CompleteOptions,
+  ): Promise<string> {
+    if (!this.shouldUseFallbackWebSearch(role, opts)) {
+      return this.resolver.runRoleChatStream(role, history, onToken, opts);
+    }
+    return this.resolver.runRoleChatStreamWithCandidateHistory(
+      role,
+      history,
+      (candidate, h) => this.addFallbackWebSearch(candidate, h),
+      onToken,
+      opts,
+    );
+  }
+
   /**
    * Smart-routing turn: ask orchestrator for a plan, then execute.
    * The plan preamble is injected into the planning call's history but never
@@ -399,7 +464,7 @@ Output ONLY the summary, no preamble.`;
         ...this.history,
       ];
       fire({ kind: "plan-start" });
-      const planRaw = await this.resolver.runRoleChat(this.role, orchHistory, opts);
+      const planRaw = await this.runRoleChatMaybeFallbackSearch(this.role, orchHistory, opts);
       plan = parsePlan(planRaw);
       fire({ kind: "plan", plan });
     }
@@ -419,13 +484,13 @@ Output ONLY the summary, no preamble.`;
       let reply: string;
       try {
         if (emit) {
-          reply = await this.resolver.runRoleChatStream(
+          reply = await this.runRoleChatStreamMaybeFallbackSearch(
             plan.role, specialistHistory,
             (text) => emit({ kind: "token", text }),
             opts,
           );
         } else {
-          reply = await this.resolver.runRoleChat(plan.role, specialistHistory, opts);
+          reply = await this.runRoleChatMaybeFallbackSearch(plan.role, specialistHistory, opts);
         }
       } catch (err) {
         fire({ kind: "role-end", role: plan.role, ok: false, error: (err as Error).message });
@@ -442,7 +507,7 @@ Output ONLY the summary, no preamble.`;
       plan.tasks.map(async (t) => {
         fire({ kind: "role-start", role: t.role, phase: "parallel", framing: t.prompt });
         try {
-          const out = await this.resolver.runRoleChat(
+          const out = await this.runRoleChatMaybeFallbackSearch(
             t.role, this.historyWithFraming(t.prompt), opts,
           );
           fire({ kind: "role-end", role: t.role, ok: true });
@@ -481,13 +546,13 @@ Output ONLY the summary, no preamble.`;
     let finalReply: string;
     try {
       if (emit) {
-        finalReply = await this.resolver.runRoleChatStream(
+        finalReply = await this.runRoleChatStreamMaybeFallbackSearch(
           this.role, synthesisHistory,
           (text) => emit({ kind: "token", text }),
           opts,
         );
       } else {
-        finalReply = await this.resolver.runRoleChat(this.role, synthesisHistory, opts);
+        finalReply = await this.runRoleChatMaybeFallbackSearch(this.role, synthesisHistory, opts);
       }
     } catch (err) {
       fire({ kind: "role-end", role: this.role, ok: false, error: (err as Error).message });
@@ -509,9 +574,9 @@ Output ONLY the summary, no preamble.`;
     const workflow = await runMultiAgentWorkflow(userInput, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
-        this.resolver.runRoleChat(role, this.historyWithFraming(prompt), opts),
+        this.runRoleChatMaybeFallbackSearch(role, this.historyWithFraming(prompt), opts),
       streamRole: (role, prompt, onToken) =>
-        this.resolver.runRoleChatStream(role, this.historyWithFraming(prompt), onToken, opts),
+        this.runRoleChatStreamMaybeFallbackSearch(role, this.historyWithFraming(prompt), onToken, opts),
     });
     return {
       reply: workflow.finalOutput,
