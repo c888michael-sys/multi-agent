@@ -3,7 +3,7 @@ import type { Tool } from "./types.js";
 /**
  * Web search tool — primarily for the perception role when its native-grounding
  * primary (Gemini Flash with `useSearch:true`) is exhausted and the resolver
- * falls over to Gemma 3 (or any other model that lacks Google Search grounding).
+ * falls over to Gemma 4 (or any other model that lacks Google Search grounding).
  *
  * Backend selection (transparent to the model):
  *

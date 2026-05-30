@@ -45,6 +45,7 @@ import {
   type ThinkingLevel,
   type RoleName,
   type RoleEvent,
+  type RoutingMode,
 } from "./index.js";
 
 /** Stderr warning printer for role-resolution events. */
@@ -233,7 +234,34 @@ async function cmdAgents(
 ): Promise<void> {
   const router = buildRouter({ local });
   const subs = buildDefaultAgents(router);
-  const controller = new Controller({ router, subAgents: subs, mode });
+  console.error(
+    mode === "parallel"
+      ? `agents: running ${subs.length} agents in parallel, then synthesizing...`
+      : "agents: choosing one specialist...",
+  );
+  const controller = new Controller({
+    router,
+    subAgents: subs,
+    mode,
+    onProgress: (event) => {
+      switch (event.type) {
+        case "agent-start":
+          console.error(`agents: ${event.agentId} started`);
+          break;
+        case "agent-end":
+          console.error(
+            `agents: ${event.agentId} ${event.ok ? "done" : `failed (${event.error ?? "unknown error"})`}`,
+          );
+          break;
+        case "synthesis-start":
+          console.error("agents: synthesizing...");
+          break;
+        case "synthesis-end":
+          console.error(`agents: synthesis ${event.ok ? "done" : "failed"}`);
+          break;
+      }
+    },
+  });
   const result = await controller.runWithTrace(prompt, opts);
 
   if (trace) {
@@ -250,16 +278,169 @@ async function cmdAgents(
   console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
 }
 
-function cmdUsage(): void {
-  const router = buildRouter();
+function cmdUsage(local: boolean): void {
+  const router = buildRouter({ local });
   console.log(formatUsageReport(router));
 }
 
-async function cmdChat(sessionId: string, powerful: boolean, local: boolean): Promise<void> {
+function truncateOneLine(text: string, max = 140): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+function routeMap(label: string, local: boolean): void {
+  const router = buildRouter({ local });
+  const resolver = new RoleResolver(router, rolesFor(local));
+  const snap = router.snapshot();
+  const byId = new Map(snap.map((p) => [p.id, p]));
+  const registeredIds = new Set(router.registeredProviderIds());
+  const now = Date.now();
+
+  console.log(`\n--- ${label} route map ---`);
+  console.log(`registered providers: ${router.registeredProviderIds().join(", ")}`);
+  for (const role of resolver.listRoles()) {
+    const primary = role.candidates[0]?.providerId ?? "(none)";
+    const registered = role.candidates.filter((c) => registeredIds.has(c.providerId));
+    const ready = registered.find((c) => (byId.get(c.providerId)?.cooldownUntil ?? 0) <= now);
+    const selected = ready?.providerId ?? registered[0]?.providerId ?? "(unavailable)";
+    let status = "primary";
+    if (selected === "(unavailable)") status = "unavailable";
+    else if (selected !== primary) status = "fallback-ready";
+    else if (!ready && registered.length > 0) status = "primary-cooling";
+    console.log(
+      `${role.name.padEnd(19)} primary=${primary.padEnd(28)} selected=${selected.padEnd(28)} status=${status}`,
+    );
+  }
+}
+
+async function printOllamaHealth(): Promise<void> {
+  const baseUrl = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+  const required = loadOllamaProviders().map((p) => ({ id: p.id, model: p.model }));
+  console.log("\n--- ollama health ---");
+  console.log(`baseUrl: ${baseUrl}`);
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      console.log(`status: FAIL (${res.status})`);
+      console.log(`required: ${required.map((r) => `${r.id}=${r.model}`).join(", ")}`);
+      return;
+    }
+    const json = (await res.json()) as { models?: Array<{ name?: string }> };
+    const installed = (json.models ?? []).map((m) => String(m.name ?? "")).filter(Boolean);
+    const missing = required.filter((r) => !installed.some((m) => m === r.model || m.startsWith(`${r.model}-`)));
+    console.log(`status: ${missing.length === 0 ? "PASS" : "FAIL"}`);
+    console.log(`required: ${required.map((r) => `${r.id}=${r.model}`).join(", ")}`);
+    console.log(`installed: ${installed.join(", ") || "(none)"}`);
+    console.log(`missing: ${missing.map((m) => `${m.id}=${m.model}`).join(", ") || "(none)"}`);
+  } catch (err) {
+    console.log(`status: FAIL (${(err as Error).message})`);
+    console.log(`required: ${required.map((r) => `${r.id}=${r.model}`).join(", ")}`);
+  }
+}
+
+async function printCerebrasHealth(): Promise<void> {
+  const key = (process.env.CEREBRAS_KEY ?? "").trim();
+  console.log("\n--- cerebras health ---");
+  if (!key) {
+    console.log("status: SKIP (CEREBRAS_KEY unset)");
+    return;
+  }
+  try {
+    const res = await fetch("https://api.cerebras.ai/v1/models", {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.log(`status: FAIL (${res.status})`);
+      console.log(truncateOneLine(text));
+      return;
+    }
+    const json = JSON.parse(text) as { data?: Array<{ id?: string }> };
+    const models = (json.data ?? []).map((m) => String(m.id ?? "")).filter(Boolean);
+    const hasDefault = models.includes("gpt-oss-120b");
+    console.log(`status: ${hasDefault ? "PASS" : "WARN"}`);
+    console.log(`models: ${models.join(", ") || "(none)"}`);
+    if (!hasDefault) console.log("warning: expected gpt-oss-120b is not in the model list");
+  } catch (err) {
+    console.log(`status: FAIL (${(err as Error).message})`);
+  }
+}
+
+function diagnosticPrompt(role: RoleName): string {
+  if (role === "action-code") {
+    return "Routing diagnostic. Return one JavaScript statement: console.log(\"OK\");";
+  }
+  if (role === "mindmap-categorize") {
+    return 'Routing diagnostic. Return exactly this JSON: {"title":"OK","nodes":[]}';
+  }
+  return "Routing diagnostic. Reply with exactly: OK";
+}
+
+async function liveProbeMode(label: string, local: boolean): Promise<void> {
+  console.log(`\n--- ${label} live role probes ---`);
+  const router = buildRouter({ local });
+  const events: RoleEvent[] = [];
+  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: (e) => events.push(e) });
+  for (const role of VALID_ROLES) {
+    const primary = resolver.resolveCandidate(role)?.providerId ?? "(unavailable)";
+    const before = events.length;
+    const started = Date.now();
+    try {
+      const reply = await resolver.runRole(role, diagnosticPrompt(role), {
+        maxTokens: role === "reasoning" ? 256 : 128,
+        temperature: 0,
+      });
+      const roleEvents = events.slice(before).filter((e) => e.role === role);
+      const fallback = roleEvents.find(
+        (e) => e.type === "fallback-within-role" || e.type === "cross-role-substitution",
+      );
+      const servedBy = fallback && "usedProviderId" in fallback ? fallback.usedProviderId : primary;
+      const status = fallback ? "WARN fallback" : "PASS";
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      console.log(
+        `${status.padEnd(13)} ${role.padEnd(19)} primary=${primary.padEnd(28)} served=${servedBy.padEnd(28)} ${elapsed}s reply=${JSON.stringify(truncateOneLine(reply, 90))}`,
+      );
+    } catch (err) {
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      console.log(
+        `FAIL          ${role.padEnd(19)} primary=${primary.padEnd(28)} ${elapsed}s error=${truncateOneLine((err as Error).message, 160)}`,
+      );
+    }
+  }
+  console.log(`\n${formatUsageReport(router)}`);
+}
+
+async function cmdDiagnoseRouting(live: boolean): Promise<void> {
+  const report = getEnvLoadReport();
+  console.log("--- routing diagnostic ---");
+  console.log(`cwd: ${report.cwd}`);
+  console.log(`moduleDir: ${report.moduleDir}`);
+  console.log(`env files: ${report.files.map((f) => f.path).join(", ") || "(none)"}`);
+  routeMap("cloud", false);
+  routeMap("hybrid-local", true);
+  await printOllamaHealth();
+  await printCerebrasHealth();
+  if (!live) {
+    console.log("\nLive probes skipped. Run `npm run cli -- diagnose-routing --live` to call every role.");
+    return;
+  }
+  await liveProbeMode("cloud", false);
+  await liveProbeMode("hybrid-local", true);
+}
+
+async function cmdChat(
+  sessionId: string,
+  powerful: boolean,
+  local: boolean,
+  mode: RoutingMode,
+): Promise<void> {
   const router = buildRouter({ local });
   const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
   const session = new ChatSession({ resolver, id: sessionId, powerful });
-  const repl = new ChatRepl({ session, router });
+  const repl = new ChatRepl({ session, router, mode });
   await repl.run();
 }
 
@@ -302,7 +483,13 @@ function cmdSessions(): void {
   for (const id of ids) console.log(id);
 }
 
-async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions, local: boolean): Promise<void> {
+async function cmdTask(
+  prompt: string,
+  trace: boolean,
+  opts: CompleteOptions,
+  local: boolean,
+  mode: RoutingMode,
+): Promise<void> {
   const router = buildRouter({ local });
   const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
   const unsat = resolver.unsatisfiedRoles();
@@ -312,10 +499,11 @@ async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions, lo
     );
   }
   const orchestrator = new RoleOrchestrator({ resolver });
-  const result = await orchestrator.runWithTrace(prompt, opts);
+  const result = await orchestrator.runWithTrace(prompt, opts, mode);
 
   if (trace) {
-    console.error(`--- plan: ${result.plan.kind} ---`);
+    console.error(`--- mode: ${mode} ---`);
+    console.error(`--- plan: ${mode === "multi-agent" ? "multi-agent" : result.plan.kind} ---`);
     if (result.plan.kind === "single") console.error(`role: ${result.plan.role}`);
     if (result.plan.kind === "parallel") {
       for (const t of result.plan.tasks) console.error(`  ${t.role}: ${t.prompt}`);
@@ -331,36 +519,57 @@ async function cmdTask(prompt: string, trace: boolean, opts: CompleteOptions, lo
   console.error(`\n--- usage ---\n${formatUsageReport(router)}`);
 }
 
+function parseRoutingMode(value: unknown): RoutingMode {
+  if (value === undefined || value === null || value === "multi-agent") return "multi-agent";
+  if (value === "smart" || value === "auto") return "auto";
+  if (value === "round-robin" || value === "brainstorming") return "brainstorming";
+  console.error(
+    `Error: --mode must be one of auto|multi-agent|brainstorming (got: ${String(value)})`,
+  );
+  process.exit(2);
+}
+
 function printHelp(): void {
   console.log(`multi-agent CLI
 
 Commands:
   ask <prompt>             single completion through the router
   agents <prompt>          orchestrate fixed sub-agents (parallel/specialist modes)
-  task <prompt>            roster-aware orchestrator picks roles automatically
+  task <prompt>            multi-agent workflow (default) or another routing mode
   chat <session-name>      interactive multi-turn REPL with persistent history
-                           (smart-routing on by default; orchestrator picks
-                            direct/single specialist/parallel per turn)
+                           (multi-agent mode by default)
   sessions                 list saved chat session names
   serve                    start the local web UI on http://localhost:<port>
                            (default 7421). Also exposed as: npm run web
   usage                    print router state (counts, cooldowns, % remaining)
   doctor                   print env/provider diagnostics without secret values
+  diagnose-routing         print route maps, local/cloud health, and optional
+                           live probes for every role
 
 Flags for 'task':
+  --mode=auto|multi-agent|brainstorming
+                                  default: multi-agent. auto lets the orchestrator
+                                  choose a short route; brainstorming gathers
+                                  multiple model perspectives in parallel.
   --serious                       extended reasoning across all calls in the run
   --thinking=minimal|low|medium|high
   --trace                         print the plan + per-role outputs before synthesis
 
 Flags for 'chat':
+  --mode=auto|multi-agent|brainstorming
+                                  default: multi-agent
   --powerful                      start in powerful mode (Gemini thinking=high
                                   on every call this session). Also toggleable
                                   mid-session via /power.
 
+Flags for 'diagnose-routing':
+  --live                          actually call every role in cloud and hybrid mode.
+                                  Omit for a cheap config-only diagnostic.
+
 Flags for 'serve':
   --port=<n>                      port to bind (default 7421)
   --local                         default the web UI into hybrid local-model mode
-                                  (DeepSeek-R1 32B for reasoning, Qwen 2.5 Coder for
+                                  (DeepSeek-R1 14B for reasoning, Qwen 2.5 Coder 14B for
                                   action-code via Ollama at localhost:11434). The web
                                   UI can still toggle modes per request; this flag
                                   only sets the initial default.
@@ -415,7 +624,15 @@ async function main(): Promise<void> {
   }
 
   if (command === "usage") {
-    cmdUsage();
+    const { values: uv } = parseArgs({
+      args: argv.slice(1),
+      options: {
+        local: { type: "boolean", default: false },
+      },
+      allowPositionals: false,
+      strict: true,
+    });
+    cmdUsage(Boolean(uv.local));
     return;
   }
 
@@ -424,11 +641,25 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "diagnose-routing") {
+    const { values: dv } = parseArgs({
+      args: argv.slice(1),
+      options: {
+        live: { type: "boolean", default: false },
+      },
+      allowPositionals: false,
+      strict: true,
+    });
+    await cmdDiagnoseRouting(Boolean(dv.live));
+    return;
+  }
+
   if (command === "chat") {
     const { values: cv, positionals: cp } = parseArgs({
       args: argv.slice(1),
       options: {
         powerful: { type: "boolean", default: false },
+        mode: { type: "string", default: "multi-agent" },
         local: { type: "boolean", default: false },
       },
       allowPositionals: true,
@@ -440,7 +671,7 @@ async function main(): Promise<void> {
       printHelp();
       process.exit(2);
     }
-    await cmdChat(sessionId, Boolean(cv.powerful), Boolean(cv.local));
+    await cmdChat(sessionId, Boolean(cv.powerful), Boolean(cv.local), parseRoutingMode(cv.mode));
     return;
   }
 
@@ -475,6 +706,7 @@ async function main(): Promise<void> {
         trace: { type: "boolean", default: false },
         serious: { type: "boolean", default: false },
         thinking: { type: "string" },
+        mode: { type: "string", default: "multi-agent" },
         local: { type: "boolean", default: false },
       },
       allowPositionals: true,
@@ -498,7 +730,13 @@ async function main(): Promise<void> {
       thinking2 = "high";
     }
     const taskOpts: CompleteOptions = thinking2 !== undefined ? { thinking: thinking2 } : {};
-    await cmdTask(taskPrompt, Boolean(tv.trace), taskOpts, Boolean(tv.local));
+    await cmdTask(
+      taskPrompt,
+      Boolean(tv.trace),
+      taskOpts,
+      Boolean(tv.local),
+      parseRoutingMode(tv.mode),
+    );
     return;
   }
 

@@ -100,6 +100,51 @@ describe("Router", () => {
       expect(ids).toEqual(["a", "b"]);
     }
   });
+
+  it("times out a stalled provider request and fails over", async () => {
+    let signalAborted = false;
+    const stalled = {
+      id: "stalled",
+      model: "fake-model",
+      complete: (_prompt: string, opts?: { signal?: AbortSignal }) =>
+        new Promise<string>((_resolve) => {
+          opts?.signal?.addEventListener("abort", () => {
+            signalAborted = true;
+          });
+        }),
+      isRateLimitError: () => false,
+      retryAfterMs: () => null,
+    };
+    const fallback = new FakeProvider("fallback", [{ kind: "ok", text: "fallback ok" }]);
+    const r = new Router([stalled, fallback], { requestTimeoutMs: 20 });
+
+    await expect(r.complete("hi")).resolves.toBe("fallback ok");
+    expect(signalAborted).toBe(true);
+  });
+
+  it("uses provider-specific request timeouts when supplied", async () => {
+    let signalAborted = false;
+    const stalled = {
+      id: "slow-local",
+      model: "fake-local-model",
+      requestTimeoutMs: 60,
+      complete: (_prompt: string, opts?: { signal?: AbortSignal }) =>
+        new Promise<string>((_resolve) => {
+          opts?.signal?.addEventListener("abort", () => {
+            signalAborted = true;
+          });
+        }),
+      isRateLimitError: () => false,
+      retryAfterMs: () => null,
+    };
+    const fallback = new FakeProvider("fallback", [{ kind: "ok", text: "fallback ok" }]);
+    const r = new Router([stalled, fallback], { requestTimeoutMs: 10 });
+
+    const started = Date.now();
+    await expect(r.complete("hi")).resolves.toBe("fallback ok");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(45);
+    expect(signalAborted).toBe(true);
+  });
 });
 
 describe("Router — backoff retry when all providers cooled", () => {

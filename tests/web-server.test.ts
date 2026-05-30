@@ -180,6 +180,45 @@ describe("web server", () => {
     expect(j.roles.reasoning.cooling).toBe(true);
   });
 
+  it("/api/ollama-health does not treat an installed 32b tag as satisfying the 14b default", async () => {
+    const oldFetch = globalThis.fetch;
+    const oldReasoning = process.env.OLLAMA_REASONING_MODEL;
+    const oldCoder = process.env.OLLAMA_CODER_MODEL;
+    const oldHost = process.env.OLLAMA_HOST;
+    delete process.env.OLLAMA_REASONING_MODEL;
+    delete process.env.OLLAMA_CODER_MODEL;
+    process.env.OLLAMA_HOST = "http://localhost:11434";
+
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      const url = String(input);
+      if (url === "http://localhost:11434/api/tags") {
+        return Response.json({
+          models: [{ name: "deepseek-r1:14b" }, { name: "qwen2.5-coder:32b" }],
+        });
+      }
+      return oldFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const { url } = spawn();
+      const r = await fetch(`${url}/api/ollama-health`);
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.reachable).toBe(true);
+      expect(j.required).toEqual(["deepseek-r1:14b", "qwen2.5-coder:14b"]);
+      expect(j.missing).toEqual(["qwen2.5-coder:14b"]);
+    } finally {
+      globalThis.fetch = oldFetch;
+      if (oldReasoning === undefined) delete process.env.OLLAMA_REASONING_MODEL;
+      else process.env.OLLAMA_REASONING_MODEL = oldReasoning;
+      if (oldCoder === undefined) delete process.env.OLLAMA_CODER_MODEL;
+      else process.env.OLLAMA_CODER_MODEL = oldCoder;
+      if (oldHost === undefined) delete process.env.OLLAMA_HOST;
+      else process.env.OLLAMA_HOST = oldHost;
+    }
+  });
+
   it("/api/complete 400s without prompt", async () => {
     const { url } = spawn();
     const r = await fetch(`${url}/api/complete`, {
@@ -213,7 +252,7 @@ describe("web server", () => {
     const r = await fetch(`${url}/api/complete`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "hello world" }),
+      body: JSON.stringify({ prompt: "hello world", mode: "auto" }),
     });
     expect(r.status).toBe(200);
     const j: any = await r.json();
@@ -287,7 +326,7 @@ describe("web server", () => {
     const r = await fetch(`${url}/api/task`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "hello world" }),
+      body: JSON.stringify({ prompt: "hello world", mode: "auto" }),
     });
     expect(r.status).toBe(200);
     const j: any = await r.json();

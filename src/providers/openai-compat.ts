@@ -33,6 +33,7 @@ export interface ChatCompletionOptions {
   apiKey: string;
   baseUrl: string;
   body: Record<string, unknown>;
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   extraHeaders?: Record<string, string>;
   /** Used in error class name + message. */
@@ -62,6 +63,7 @@ export async function chatCompletion(
       ...opts.extraHeaders,
     },
     body: JSON.stringify(opts.body),
+    signal: opts.signal,
   });
   const text = await res.text();
   const headers: Record<string, string> = {};

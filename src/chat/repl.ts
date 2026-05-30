@@ -2,10 +2,12 @@ import { createInterface, Interface as ReadlineInterface } from "node:readline";
 import type { Router } from "../router.js";
 import type { ChatSession } from "./session.js";
 import { startSpinner } from "./spinner.js";
+import type { RoutingMode } from "../agents/multi-agent-workflow.js";
 
 export interface ReplOptions {
   session: ChatSession;
   router: Router;
+  mode?: RoutingMode;
   /** stdin/stdout override for tests. */
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
@@ -34,6 +36,7 @@ const HELP_TEXT = `Slash commands (accept / or \\ prefix):
 export class ChatRepl {
   private readonly session: ChatSession;
   private readonly router: Router;
+  private readonly mode: RoutingMode;
   private readonly rl: ReadlineInterface;
   private readonly output: NodeJS.WritableStream;
   private exiting = false;
@@ -41,6 +44,7 @@ export class ChatRepl {
   constructor(opts: ReplOptions) {
     this.session = opts.session;
     this.router = opts.router;
+    this.mode = opts.mode ?? "multi-agent";
     this.output = opts.output ?? process.stdout;
     this.rl = createInterface({
       input: opts.input ?? process.stdin,
@@ -167,7 +171,7 @@ export class ChatRepl {
       process.stderr,
     );
     try {
-      result = await this.session.send(message);
+      result = await this.session.send(message, undefined, undefined, { mode: this.mode });
     } catch (err) {
       stopSpinner();
       this.println(`error: ${(err as Error).message}`);
@@ -214,7 +218,7 @@ export class ChatRepl {
       case "/info":
         this.println(
           `session id: ${this.session.id}\n` +
-            `role: ${this.session.role}, smart-routing: ${this.session.smartRouting ? "on" : "off"}, powerful: ${this.session.isPowerful() ? "on" : "off"}\n` +
+            `role: ${this.session.role}, mode: ${this.mode}, smart-routing: ${this.session.smartRouting ? "on" : "off"}, powerful: ${this.session.isPowerful() ? "on" : "off"}\n` +
             `turns: ${this.session.turnCount()}, est. tokens: ${this.session.estimateTokens()} / ${this.session.tokenBudget}\n` +
             `storage: ${this.session.storagePath}`,
         );

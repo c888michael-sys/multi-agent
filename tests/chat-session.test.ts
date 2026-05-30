@@ -271,6 +271,87 @@ describe("ChatSession smart routing (plan-based)", () => {
     expect(p.calls).toHaveLength(1); // no planning step
     expect(result.plan).toBeUndefined();
   });
+
+  it("routing mode multi-agent uses reasoning plan, optional checker, and structural formatting", async () => {
+    const p = chatProvider([
+      JSON.stringify({
+        needsResearch: false,
+        researchPrompt: "",
+        actions: [{ role: "action-code", prompt: "draft answer" }],
+        useChecker: true,
+        checkerPrompt: "check it",
+        maxRepairAttempts: 0,
+      }),
+      "draft answer",
+      JSON.stringify({ status: "ok", issues: [], summary: "clean" }),
+      "formatted answer",
+    ]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "reasoning", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "action-code", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "action-repetitive", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "action-structural", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const events: string[] = [];
+    const s = new ChatSession({ resolver, id: "ma", storagePath: storage });
+
+    const result = await s.send(
+      "build something",
+      undefined,
+      (evt) => {
+        if (evt.kind === "role-start") events.push(`${evt.role}:${evt.phase}`);
+      },
+      { mode: "multi-agent" },
+    );
+
+    expect(result.plan?.kind).toBe("multi-agent");
+    expect(result.servedBy).toEqual([
+      "reasoning",
+      "action-code",
+      "action-repetitive",
+      "action-structural",
+    ]);
+    expect(result.reply).toBe("formatted answer");
+    expect(events).toEqual([
+      "reasoning:planning",
+      "action-code:action",
+      "action-repetitive:check",
+      "action-structural:format",
+    ]);
+  });
+
+  it("routing mode brainstorming uses the research-oriented perception panel", async () => {
+    const p = chatProvider([
+      "research opinion",
+      "reasoning opinion",
+      "code opinion",
+      "structure opinion",
+      "synthesized brainstorm",
+    ]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "perception", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "reasoning", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "action-code", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "action-structural", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "brain", storagePath: storage });
+
+    const result = await s.send("ideate", undefined, undefined, { mode: "brainstorming" });
+
+    expect(result.plan?.kind).toBe("parallel");
+    expect(result.servedBy).toEqual([
+      "perception",
+      "reasoning",
+      "action-code",
+      "action-structural",
+      "orchestration",
+    ]);
+    expect(result.reply).toBe("synthesized brainstorm");
+    expect(p.calls[0]!.prompt).toContain("research-based perspective");
+  });
 });
 
 describe("ChatSession powerful mode", () => {

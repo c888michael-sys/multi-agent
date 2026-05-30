@@ -24,6 +24,12 @@ export interface CompleteOptions {
 export interface Provider {
   readonly id: string;
   readonly model: string;
+  /**
+   * Optional provider-specific router timeout. Local models can need much
+   * longer cold-load/generation windows than cloud APIs, while cloud calls
+   * should keep the router's shorter default guardrail.
+   */
+  readonly requestTimeoutMs?: number;
   complete(prompt: string, opts?: CompleteOptions): Promise<string>;
   isRateLimitError(err: unknown): boolean;
   retryAfterMs(err: unknown): number | null;

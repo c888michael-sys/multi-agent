@@ -530,7 +530,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                   Hybrid local models
                   {hybridChecking ? <span className="mm-settings-hint" style={{ marginLeft: 8 }}>checking…</span> : null}
                 </span>
-                <span className="mm-settings-hint">route reasoning → DeepSeek-R1 32B and action-code → Qwen 2.5 Coder on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
+                <span className="mm-settings-hint">route reasoning → DeepSeek-R1 14B and action-code → Qwen 2.5 Coder 14B on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
                 {hybridError ? (
                   <span className="mm-settings-error" role="alert">{hybridError}</span>
                 ) : null}
@@ -575,7 +575,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
               ))}
             </select>
             <span className="mm-settings-hint">
-              <code>auto</code>: orchestrator picks direct/single/parallel per turn. <code>round-robin</code>: every turn fans out to perception + reasoning + coder + structural, then synthesizes (default). Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
+              <code>auto</code>: orchestrator picks the shortest useful route. <code>multi-agent</code>: plan, research/action, check/repair when needed, then format (default). <code>brainstorming</code>: multiple model perspectives in parallel. Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
             </span>
           </div>
           <div className="mm-settings-foot">
@@ -601,7 +601,7 @@ function settingsActiveCount(s) {
   // Routing is now a single merged knob (routingMode + forceRole). The
   // default is the round-robin meta-entry, so any other dropdown value
   // counts as a non-default knob.
-  if (routingValueFromSettings(s) !== 'round-robin') n++;
+  if (routingValueFromSettings(s) !== 'multi-agent') n++;
   return n;
 }
 
@@ -1081,9 +1081,15 @@ function statusLabel(status) {
   if (ph === 'plan-start') return 'orchestrator planning…';
   if (ph === 'plan') return `plan: ${status.plan?.kind || '?'}`;
   if (ph === 'role-start') {
-    if (status.phase === 'synthesis') return 'synthesizing…';
-    if (status.phase === 'direct') return 'orchestrator answering…';
-    return `${status.role || 'agent'}: thinking…`;
+    if (status.phase === 'synthesis') return 'synthesizing...';
+    if (status.phase === 'direct') return 'orchestrator answering...';
+    if (status.phase === 'planning') return 'reasoning planning...';
+    if (status.phase === 'research') return 'perception researching...';
+    if (status.phase === 'action') return `${status.role || 'agent'}: acting...`;
+    if (status.phase === 'check') return 'checking result...';
+    if (status.phase === 'repair') return 'reasoning repair...';
+    if (status.phase === 'format') return 'formatting response...';
+    return `${status.role || 'agent'}: thinking...`;
   }
   if (ph === 'role-end') return `${status.role || 'agent'}: done`;
   if (ph === 'summarize-start') return 'summarizing older turns…';
@@ -2517,7 +2523,7 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 // chosen mode. The settings drawer surfaces routingMode and forceRole as
 // a single merged dropdown (see ROUTING_OPTIONS) — internally they remain
 // independent so the wire format with the server is unchanged.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'round-robin' };
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'multi-agent' };
 
 // Merged dropdown that replaces the prior separate Force-role select + a
 // Smart-vs-RoundRobin radio group. Two "meta" entries on top combine the
@@ -2526,8 +2532,9 @@ const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', use
 // users typically want the multi-agent feel and can opt into a single
 // role or pure smart routing per session.
 const ROUTING_OPTIONS = [
-  { value: 'auto',              label: 'auto (smart routing)',         routingMode: 'smart',       forceRole: 'auto' },
-  { value: 'round-robin',       label: 'round-robin (default)',        routingMode: 'round-robin', forceRole: 'auto' },
+  { value: 'auto',              label: 'auto',                         routingMode: 'smart',       forceRole: 'auto' },
+  { value: 'multi-agent',       label: 'multi-agent (default)',        routingMode: 'multi-agent', forceRole: 'auto' },
+  { value: 'brainstorming',     label: 'brainstorming',                routingMode: 'brainstorming', forceRole: 'auto' },
   { value: 'orchestration',     label: 'orchestration',                routingMode: 'smart',       forceRole: 'orchestration' },
   { value: 'perception',        label: 'perception (search grounding)', routingMode: 'smart',      forceRole: 'perception' },
   { value: 'reasoning',         label: 'reasoning (deliberation)',     routingMode: 'smart',       forceRole: 'reasoning' },
@@ -2540,14 +2547,16 @@ const ROUTING_OPTIONS = [
 // value. Falls back to 'round-robin' (the default) when no exact match
 // exists — protects against stale localStorage from prior schema.
 function routingValueFromSettings(s) {
-  if (s.routingMode === 'round-robin') return 'round-robin';
+  if (s.routingMode === 'round-robin') return 'brainstorming';
+  if (s.routingMode === 'brainstorming') return 'brainstorming';
+  if (s.routingMode === 'multi-agent') return 'multi-agent';
   if (s.routingMode === 'smart' && (!s.forceRole || s.forceRole === 'auto')) return 'auto';
   if (s.forceRole && s.forceRole !== 'auto') return s.forceRole;
-  return 'round-robin';
+  return 'multi-agent';
 }
 
 const VALID_FORCE_ROLES = new Set(['auto', 'orchestration', 'perception', 'reasoning', 'action-code', 'action-structural', 'action-repetitive']);
-const VALID_ROUTING_MODES = new Set(['smart', 'round-robin']);
+const VALID_ROUTING_MODES = new Set(['smart', 'round-robin', 'multi-agent', 'brainstorming']);
 
 function loadSettings() {
   try {

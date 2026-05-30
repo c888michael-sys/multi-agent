@@ -192,4 +192,95 @@ describe("RoleOrchestrator", () => {
     expect(result.finalOutput).toBe("solo result");
     expect(p.calls).toHaveLength(2); // plan + 1 role, no synthesis
   });
+
+  it("brainstorming mode gathers research, reasoning, code, and structure perspectives", async () => {
+    const p = new FakeProvider("x", [
+      { kind: "ok", text: "research opinion" },
+      { kind: "ok", text: "reasoning opinion" },
+      { kind: "ok", text: "implementation opinion" },
+      { kind: "ok", text: "structure opinion" },
+      { kind: "ok", text: "blended brainstorm" },
+    ]);
+    const orch = new RoleOrchestrator({
+      resolver: makeResolver(p),
+      dispatchStaggerMs: 0,
+    });
+
+    const result = await orch.runWithTrace("generate product ideas", undefined, "brainstorming");
+
+    expect(result.plan.kind).toBe("parallel");
+    expect(result.perRole?.map((r) => r.role)).toEqual([
+      "perception",
+      "reasoning",
+      "action-code",
+      "action-structural",
+    ]);
+    expect(p.calls[0]!.prompt).toContain("research-based perspective");
+    expect(result.finalOutput).toBe("blended brainstorm");
+  });
+
+  it("multi-agent mode lets reasoning plan the checker and repair loop", async () => {
+    const p = new FakeProvider("x", [
+      {
+        kind: "ok",
+        text: JSON.stringify({
+          needsResearch: false,
+          researchPrompt: "",
+          actions: [{ role: "action-code", prompt: "write the fix" }],
+          useChecker: true,
+          checkerPrompt: "check for bugs",
+          maxRepairAttempts: 1,
+        }),
+      },
+      { kind: "ok", text: "draft with bug" },
+      { kind: "ok", text: JSON.stringify({ status: "issues", issues: ["bug remains"], summary: "bad" }) },
+      { kind: "ok", text: "repair the bug" },
+      { kind: "ok", text: "fixed draft" },
+      { kind: "ok", text: JSON.stringify({ status: "ok", issues: [], summary: "clean" }) },
+      { kind: "ok", text: "formatted final" },
+    ]);
+    const orch = new RoleOrchestrator({ resolver: makeResolver(p) });
+
+    const result = await orch.runWithTrace("fix this code", undefined, "multi-agent");
+
+    expect(result.finalOutput).toBe("formatted final");
+    expect(result.servedBy).toEqual([
+      "reasoning",
+      "action-code",
+      "action-repetitive",
+      "reasoning",
+      "action-code",
+      "action-repetitive",
+      "action-structural",
+    ]);
+    expect(p.calls).toHaveLength(7);
+    expect(p.calls[2]!.prompt).toContain("Output EXACTLY JSON");
+    expect(p.calls[3]!.prompt).toContain("checker found issues");
+  });
+
+  it("multi-agent mode skips the checker when the reasoning plan says to skip it", async () => {
+    const p = new FakeProvider("x", [
+      {
+        kind: "ok",
+        text: JSON.stringify({
+          needsResearch: false,
+          researchPrompt: "",
+          actions: [{ role: "action-structural", prompt: "answer simply" }],
+          useChecker: false,
+          checkerPrompt: "",
+          maxRepairAttempts: 2,
+        }),
+      },
+      { kind: "ok", text: "simple answer" },
+      { kind: "ok", text: "formatted simple answer" },
+    ]);
+    const orch = new RoleOrchestrator({ resolver: makeResolver(p) });
+
+    const result = await orch.runWithTrace("say hello", undefined, "multi-agent");
+
+    expect(result.finalOutput).toBe("formatted simple answer");
+    expect(result.servedBy).toEqual(["reasoning", "action-structural", "action-structural"]);
+    expect(p.calls).toHaveLength(3);
+    expect(p.calls.map((c) => c.prompt).join("\n")).not.toContain("You are the checker");
+  });
 });

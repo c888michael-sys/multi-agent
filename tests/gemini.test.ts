@@ -24,6 +24,8 @@ describe("GeminiProvider.isRateLimitError", () => {
 
   it("detects rate-limit message strings", () => {
     expect(p.isRateLimitError(new Error("429 Too Many Requests"))).toBe(true);
+    expect(p.isRateLimitError({ status: 503 })).toBe(true);
+    expect(p.isRateLimitError(new Error("503 Service Unavailable: high demand"))).toBe(true);
     expect(p.isRateLimitError(new Error("Rate limit exceeded"))).toBe(true);
     expect(p.isRateLimitError(new Error("Quota exceeded for model"))).toBe(true);
     expect(p.isRateLimitError(new Error("RESOURCE_EXHAUSTED"))).toBe(true);

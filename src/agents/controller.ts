@@ -21,6 +21,8 @@ export interface ControllerOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Override for tests. */
   jitterMs?: () => number;
+  /** Optional progress hook for CLI/UI callers that need visible liveness. */
+  onProgress?: (event: ControllerProgressEvent) => void;
 }
 
 export interface RunTrace {
@@ -29,6 +31,12 @@ export interface RunTrace {
   perAgent?: { id: string; output: string }[];
   finalOutput: string;
 }
+
+export type ControllerProgressEvent =
+  | { type: "agent-start"; agentId: string }
+  | { type: "agent-end"; agentId: string; ok: boolean; error?: string }
+  | { type: "synthesis-start" }
+  | { type: "synthesis-end"; ok: boolean };
 
 /**
  * The orchestrator. Two modes behind a runtime flag, per the build spec:
@@ -50,6 +58,7 @@ export class Controller {
   private readonly dispatchStaggerMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly jitter: () => number;
+  private readonly onProgress: (event: ControllerProgressEvent) => void;
 
   constructor(opts: ControllerOptions) {
     if (opts.subAgents.length === 0) throw new Error("Controller requires at least one sub-agent");
@@ -61,6 +70,7 @@ export class Controller {
     this.dispatchStaggerMs = opts.dispatchStaggerMs ?? 300;
     this.sleep = opts.sleep ?? DEFAULT_SLEEP;
     this.jitter = opts.jitterMs ?? DEFAULT_JITTER;
+    this.onProgress = opts.onProgress ?? (() => {});
   }
 
   async run(task: string, opts?: CompleteOptions): Promise<string> {
@@ -100,7 +110,15 @@ export class Controller {
       if (i > 0 && this.dispatchStaggerMs > 0) {
         await this.sleep(i * this.dispatchStaggerMs + this.jitter());
       }
-      return agent.run(task, opts);
+      this.onProgress({ type: "agent-start", agentId: agent.id });
+      try {
+        const output = await agent.run(task, opts);
+        this.onProgress({ type: "agent-end", agentId: agent.id, ok: true });
+        return output;
+      } catch (err) {
+        this.onProgress({ type: "agent-end", agentId: agent.id, ok: false, error: String(err) });
+        throw err;
+      }
     });
     const settled = await Promise.allSettled(dispatched);
     const perAgent: { id: string; output: string }[] = [];
@@ -114,6 +132,15 @@ export class Controller {
       }
     });
 
+    if (perAgent.every((p) => p.output.startsWith("[error:"))) {
+      throw new Error(
+        [
+          "All parallel agents failed before synthesis:",
+          ...perAgent.map((p) => `- ${p.id}: ${p.output}`),
+        ].join("\n"),
+      );
+    }
+
     if (perAgent.length === 1) {
       // Synthesis adds no value with a single agent; pass through.
       return { mode: "parallel", perAgent, finalOutput: perAgent[0]!.output };
@@ -123,7 +150,14 @@ export class Controller {
       task,
       perAgent.map((p) => ({ id: p.id, text: p.output })),
     );
-    const final = await this.router.complete(synthesisPrompt, opts);
-    return { mode: "parallel", perAgent, finalOutput: final };
+    this.onProgress({ type: "synthesis-start" });
+    try {
+      const final = await this.router.complete(synthesisPrompt, opts);
+      this.onProgress({ type: "synthesis-end", ok: true });
+      return { mode: "parallel", perAgent, finalOutput: final };
+    } catch (err) {
+      this.onProgress({ type: "synthesis-end", ok: false });
+      throw err;
+    }
   }
 }

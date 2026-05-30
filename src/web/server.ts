@@ -26,6 +26,7 @@ import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 import { DEFAULT_ROLES } from "../roles/default-registry.js";
 import { LOCAL_OLLAMA_MODELS } from "../config.js";
 import type { CompleteOptions } from "../provider.js";
+import type { RoutingMode } from "../agents/multi-agent-workflow.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -51,7 +52,7 @@ function buildChatOpts(parsed: {
   useSearch?: boolean;
   forceRole?: string | null;
   routingMode?: string | null;
-}): { opts: CompleteOptions; routing: { forceRole?: RoleName; roundRobin?: boolean } } {
+}): { opts: CompleteOptions; routing: { forceRole?: RoleName; mode?: RoutingMode } } {
   const opts: CompleteOptions = {};
   if (parsed.thinking === "low" || parsed.thinking === "medium" || parsed.thinking === "high") {
     opts.thinking = parsed.thinking;
@@ -59,7 +60,7 @@ function buildChatOpts(parsed: {
   if (parsed.useSearch === true) {
     opts.useSearch = true;
   }
-  const routing: { forceRole?: RoleName; roundRobin?: boolean } = {};
+  const routing: { forceRole?: RoleName; mode?: RoutingMode } = {};
   const fr = parsed.forceRole;
   if (typeof fr === "string" && VALID_ROLES.has(fr as RoleName)) {
     routing.forceRole = fr as RoleName;
@@ -68,8 +69,12 @@ function buildChatOpts(parsed: {
   // 'round-robin' → ChatSession forces a parallel fan-out across all
   // four specialists, synthesizing through orchestration. The actual
   // execution happens inside ChatSession.send via the routing arg.
-  if (parsed.routingMode === "round-robin") {
-    routing.roundRobin = true;
+  if (parsed.routingMode === "smart" || parsed.routingMode === "auto") {
+    routing.mode = "auto";
+  } else if (parsed.routingMode === "round-robin" || parsed.routingMode === "brainstorming") {
+    routing.mode = "brainstorming";
+  } else if (parsed.routingMode === "multi-agent") {
+    routing.mode = "multi-agent";
   }
   return { opts, routing };
 }
@@ -88,6 +93,13 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
   ".png": "image/png",
 };
+
+function normalizeRoutingMode(value: unknown): RoutingMode {
+  if (value === "smart" || value === "auto") return "auto";
+  if (value === "round-robin" || value === "brainstorming") return "brainstorming";
+  if (value === "multi-agent") return "multi-agent";
+  return "multi-agent";
+}
 
 export interface ServerOptions {
   router: Router;
@@ -148,7 +160,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         // is refused with a clear reason rather than silently failing on
         // the next chat turn.
         const baseUrl = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-        const required = Object.values(LOCAL_OLLAMA_MODELS).map((m) => m.model);
+        const required = Object.values(LOCAL_OLLAMA_MODELS).map(
+          (m) => process.env[m.modelEnv]?.trim() || m.model,
+        );
         try {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 1500);
@@ -166,7 +180,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           }
           const json = (await tagsRes.json()) as { models?: Array<{ name?: string }> };
           const installed = (json.models ?? []).map((m) => String(m.name ?? ""));
-          const missing = required.filter((m) => !installed.some((i) => i === m || i.startsWith(m.split(":")[0]! + ":")));
+          const missing = required.filter((m) => !installed.some((i) => i === m || i.startsWith(`${m}-`)));
           sendJson(res, 200, {
             reachable: true,
             baseUrl,
@@ -250,7 +264,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/task" && req.method === "POST") {
         const body = await readBody(req);
-        const parsed = safeJsonParse(body) as { prompt?: string } | null;
+        const parsed = safeJsonParse(body) as { prompt?: string; mode?: string | null } | null;
         if (typeof parsed?.prompt !== "string" || !parsed.prompt.trim()) {
           sendJson(res, 400, { error: "prompt (non-empty string) required" });
           return;
@@ -259,10 +273,11 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           // Same orchestration path as `npm run cli -- task <prompt>`:
           // plan -> optional specialist role calls -> synthesis.
           const orchestrator = new RoleOrchestrator({ resolver: opts.resolver });
-          const result = await orchestrator.runWithTrace(parsed.prompt);
+          const mode = normalizeRoutingMode(parsed.mode);
+          const result = await orchestrator.runWithTrace(parsed.prompt, undefined, mode);
           sendJson(res, 200, {
             reply: result.finalOutput,
-            plan: result.plan.kind,
+            plan: mode === "multi-agent" ? "multi-agent" : result.plan.kind,
             perRole: result.perRole ?? [],
           });
         } catch (err) {

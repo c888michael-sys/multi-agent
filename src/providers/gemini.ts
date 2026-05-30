@@ -53,7 +53,7 @@ export class GeminiProvider implements Provider {
 
   isRateLimitError(err: unknown): boolean {
     const status = extractStatus(err);
-    if (status === 429) return true;
+    if (status === 429 || status === 503) return true;
     const msg = String((err as { message?: string })?.message ?? err ?? "").toLowerCase();
     // Defensive failover for retired/unsupported model slugs. When Google
     // retires a model (e.g. `gemma-3-27b-it` was pulled from AI Studio by
@@ -73,6 +73,9 @@ export class GeminiProvider implements Provider {
     }
     return (
       msg.includes("429") ||
+      msg.includes("503") ||
+      msg.includes("service unavailable") ||
+      msg.includes("high demand") ||
       msg.includes("rate limit") ||
       msg.includes("quota") ||
       msg.includes("resource_exhausted")

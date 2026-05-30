@@ -1,6 +1,11 @@
 import type { RoleResolver } from "../roles/resolver.js";
 import type { RoleName } from "../roles/types.js";
 import type { CompleteOptions } from "../provider.js";
+import {
+  brainstormingTasks,
+  runMultiAgentWorkflow,
+  type RoutingMode,
+} from "./multi-agent-workflow.js";
 
 export interface RoleOrchestratorOptions {
   resolver: RoleResolver;
@@ -20,6 +25,7 @@ export interface RoleRunTrace {
   plan: Plan;
   perRole?: { role: RoleName; output: string }[];
   finalOutput: string;
+  servedBy?: RoleName[];
 }
 
 const DEFAULT_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -45,11 +51,42 @@ export class RoleOrchestrator {
     this.sleep = opts.sleep ?? DEFAULT_SLEEP;
   }
 
-  async run(task: string, opts?: CompleteOptions): Promise<string> {
-    return (await this.runWithTrace(task, opts)).finalOutput;
+  async run(task: string, opts?: CompleteOptions, mode: RoutingMode = "auto"): Promise<string> {
+    return (await this.runWithTrace(task, opts, mode)).finalOutput;
   }
 
-  async runWithTrace(task: string, opts?: CompleteOptions): Promise<RoleRunTrace> {
+  async runWithTrace(
+    task: string,
+    opts?: CompleteOptions,
+    mode: RoutingMode = "auto",
+  ): Promise<RoleRunTrace> {
+    if (mode === "multi-agent") {
+      const result = await runMultiAgentWorkflow(task, {
+        runRole: (role, prompt) => this.resolver.runRole(role, prompt, opts),
+      });
+      return {
+        plan: { kind: "single", role: "reasoning", prompt: "multi-agent workflow" },
+        perRole: result.perRole,
+        finalOutput: result.finalOutput,
+        servedBy: result.servedBy,
+      };
+    }
+
+    if (mode === "brainstorming") {
+      const plan: Plan = {
+        kind: "parallel",
+        tasks: brainstormingTasks(task),
+      };
+      const perRole = await this.executeParallel(plan, opts);
+      const final = await this.synthesize(task, perRole, opts);
+      return {
+        plan,
+        perRole,
+        finalOutput: final,
+        servedBy: [...perRole.map((p) => p.role), "orchestration"],
+      };
+    }
+
     const plan = await this.makePlan(task, opts);
 
     if (plan.kind === "direct") {
@@ -62,17 +99,7 @@ export class RoleOrchestrator {
     }
 
     // parallel
-    const perRole: { role: RoleName; output: string }[] = [];
-    const dispatched = plan.tasks.map(async (t, i) => {
-      if (i > 0 && this.dispatchStaggerMs > 0) await this.sleep(i * this.dispatchStaggerMs);
-      try {
-        return { role: t.role, output: await this.resolver.runRole(t.role, t.prompt, opts) };
-      } catch (err) {
-        return { role: t.role, output: `[error: ${(err as Error).message}]` };
-      }
-    });
-    const settled = await Promise.all(dispatched);
-    perRole.push(...settled);
+    const perRole = await this.executeParallel(plan, opts);
 
     // Single-role-in-parallel doesn't need synthesis.
     if (perRole.length === 1) {
@@ -81,6 +108,21 @@ export class RoleOrchestrator {
 
     const final = await this.synthesize(task, perRole, opts);
     return { plan, perRole, finalOutput: final };
+  }
+
+  private async executeParallel(
+    plan: Extract<Plan, { kind: "parallel" }>,
+    opts?: CompleteOptions,
+  ): Promise<{ role: RoleName; output: string }[]> {
+    const dispatched = plan.tasks.map(async (t, i) => {
+      if (i > 0 && this.dispatchStaggerMs > 0) await this.sleep(i * this.dispatchStaggerMs);
+      try {
+        return { role: t.role, output: await this.resolver.runRole(t.role, t.prompt, opts) };
+      } catch (err) {
+        return { role: t.role, output: `[error: ${(err as Error).message}]` };
+      }
+    });
+    return Promise.all(dispatched);
   }
 
   /** Plan-generation: ask orchestration role for a structured plan as JSON. */

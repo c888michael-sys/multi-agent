@@ -116,19 +116,35 @@ import type { ProviderConfig } from "./pool.js";
  * reference them in candidate chains). Keys are the role they primarily
  * serve so the role-builder knows which to slot where.
  *
- * `numCtx` is the per-model context window in tokens, in addition to
- * Ollama's daemon default of 2048 (which is far too small for our use
- * — even the categorize prefetch wants several thousand). Set to the
- * model's native maximum so we never truncate; OLLAMA_NUM_CTX env var
- * still globally overrides if the machine can't allocate that much VRAM:
- *   - deepseek-r1:32b native context = 128 K (131072). We default to
- *     65 K (65536) — runs on a single 40 GB-class GPU with KV cache,
- *     bump via OLLAMA_NUM_CTX=131072 if you have the memory.
- *   - qwen2.5-coder native context = 32 K (32768). We use the full window.
+ * `numCtx` is the per-model context window in tokens. Ollama's daemon
+ * default of 2048 is too small for our prompts, but forcing a huge
+ * window on 32B models can exhaust VRAM/RAM because KV cache grows
+ * with context. The default pair is intentionally 14B + 14B so both
+ * local roles can use a useful 32K context on consumer hardware. Users
+ * can opt up to larger models with OLLAMA_REASONING_MODEL /
+ * OLLAMA_CODER_MODEL and tune memory with per-role *_NUM_CTX vars.
+ *
+ * `requestTimeoutMs` is intentionally long for local 32B models: a
+ * cold model load can be slow, and waiting is better than skipping
+ * local reasoning just because it took a few minutes.
  */
 export const LOCAL_OLLAMA_MODELS = {
-  reasoning: { providerId: "ollama:deepseek-r1", model: "deepseek-r1:32b", numCtx: 65536 },
-  "action-code": { providerId: "ollama:qwen2.5-coder", model: "qwen2.5-coder:latest", numCtx: 32768 },
+  reasoning: {
+    providerId: "ollama:deepseek-r1",
+    model: "deepseek-r1:14b",
+    numCtx: 32_768,
+    requestTimeoutMs: 15 * 60_000,
+    modelEnv: "OLLAMA_REASONING_MODEL",
+    numCtxEnv: "OLLAMA_REASONING_NUM_CTX",
+  },
+  "action-code": {
+    providerId: "ollama:qwen2.5-coder",
+    model: "qwen2.5-coder:14b",
+    numCtx: 32_768,
+    requestTimeoutMs: 10 * 60_000,
+    modelEnv: "OLLAMA_CODER_MODEL",
+    numCtxEnv: "OLLAMA_CODER_NUM_CTX",
+  },
 } as const;
 
 /**
@@ -162,22 +178,36 @@ export const LOCAL_OLLAMA_MODELS = {
  * fills a role, edit that table; the role registry's `local` overlay
  * picks them up automatically.
  */
-export function loadOllamaProviders(opts?: { baseUrl?: string; numCtx?: number }): Provider[] {
+export function loadOllamaProviders(opts?: {
+  baseUrl?: string;
+  numCtx?: number;
+  requestTimeoutMs?: number;
+}): Provider[] {
   const baseUrl = opts?.baseUrl ?? (process.env.OLLAMA_HOST ?? "http://localhost:11434");
-  // Per-model numCtx baked into LOCAL_OLLAMA_MODELS (each at its native
-  // max). `opts.numCtx` is a hard override for all local models; the
-  // OLLAMA_NUM_CTX env var is the user-facing knob for memory-constrained
-  // hardware — set it to e.g. 8192 to fit the 32 B reasoning model on
-  // smaller GPUs without disabling local mode entirely.
+  // Per-model numCtx is baked into LOCAL_OLLAMA_MODELS. opts.numCtx and
+  // OLLAMA_NUM_CTX set the global value; role-specific *_NUM_CTX vars win
+  // when mixing model sizes, e.g. 32B reasoner + 14B coder.
+  // OLLAMA_REQUEST_TIMEOUT_MS can override local-model patience globally.
   const envCtx = process.env.OLLAMA_NUM_CTX ? Number(process.env.OLLAMA_NUM_CTX) : undefined;
+  const envTimeout = process.env.OLLAMA_REQUEST_TIMEOUT_MS
+    ? Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS)
+    : undefined;
   const globalOverride = opts?.numCtx ?? (Number.isFinite(envCtx) && envCtx! > 0 ? envCtx! : undefined);
+  const timeoutOverride =
+    opts?.requestTimeoutMs ??
+    (Number.isFinite(envTimeout) && envTimeout! > 0 ? envTimeout! : undefined);
   return Object.values(LOCAL_OLLAMA_MODELS).map((m) => {
-    const numCtx = globalOverride ?? m.numCtx;
+    const roleCtx = process.env[m.numCtxEnv] ? Number(process.env[m.numCtxEnv]) : undefined;
+    const numCtx =
+      (Number.isFinite(roleCtx) && roleCtx! > 0 ? roleCtx! : undefined) ??
+      globalOverride ??
+      m.numCtx;
     return new OllamaProvider({
       id: m.providerId,
-      model: m.model,
+      model: process.env[m.modelEnv]?.trim() || m.model,
       baseUrl,
       numCtx,
+      requestTimeoutMs: timeoutOverride ?? m.requestTimeoutMs,
     });
   });
 }
@@ -189,7 +219,7 @@ const DEFAULT_BUDGETS: Record<string, number> = {
   // projects ship with 20. Override per-deploy via `estimatedDailyBudget`
   // if your project actually has the upgraded cap.
   gemini: 20,
-  // Gemma 3 27B-it on the SAME Google project — separate per-model quota
+  // Gemma 4 31B-it on the SAME Google project — separate per-model quota
   // pool, ~14,400 RPD on free tier. The big safety net.
   gemma: 14400,
   groq: 1000,
@@ -296,7 +326,7 @@ export function loadGeminiProvidersFromEnv(opts?: { model?: string }): Provider[
 /**
  * Build a Gemma provider per GEMINI_KEY_N — same key, different model on
  * the same Google Cloud project = a SEPARATE per-model RPD quota pool on
- * Google AI Studio's free tier. Gemma 3 27B-it has ~14,400 RPD vs Gemini
+ * Google AI Studio's free tier. Gemma 4 31B-it has ~14,400 RPD vs Gemini
  * 3.5 Flash's ~20-1,500 RPD, so adding these slots gives every role a
  * huge low-priority safety net for "all Flash keys cooled" days.
  *
@@ -372,14 +402,14 @@ export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provi
 
 /**
  * Load Cerebras provider from env. Returns [] if CEREBRAS_KEY is unset.
- * Defaults to llama3.1-8b — fastest free option, ideal for bulk repetitive work.
+ * Defaults to gpt-oss-120b — currently available on this Cerebras account.
  */
 export function loadCerebrasProvidersFromEnv(opts?: { model?: string }): Provider[] {
   const key = (process.env.CEREBRAS_KEY ?? "").trim();
   if (!key) return [];
   return [
     new CerebrasProvider({
-      id: "cerebras:llama3-8b",
+      id: "cerebras:gpt-oss-120b",
       apiKey: key,
       ...(opts?.model && { model: opts.model }),
     }),

@@ -31,9 +31,9 @@ export interface OllamaProviderOptions {
    * Context window in tokens. Ollama's hard default is 2048, which
    * silently truncates inputs longer than that — disastrous for the
    * categorize prefetch (which embeds the entire chat reply plus a
-   * schema in the prompt). We default to 8192 so typical round-robin
-   * syntheses fit; callers can override per-instance for models with
-   * smaller windows or memory-constrained deployments.
+   * schema in the prompt). We default to 8192 at the provider level;
+   * config-created role providers pass explicit, model-appropriate
+   * values such as 32768 for the safer 14B local defaults.
    */
   numCtx?: number;
 }
@@ -62,12 +62,14 @@ export class OllamaProvider implements Provider {
   readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
-  private readonly requestTimeoutMs: number;
+  readonly requestTimeoutMs: number;
   private readonly numCtx: number;
+  private resolvedModel: string;
 
   constructor(opts: OllamaProviderOptions) {
     this.id = opts.id;
     this.model = opts.model;
+    this.resolvedModel = opts.model;
     this.baseUrl = opts.baseUrl ?? "http://localhost:11434";
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
     this.numCtx = opts.numCtx ?? 8192;
@@ -93,19 +95,35 @@ export class OllamaProvider implements Provider {
   }
 
   async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
-    const body: Record<string, unknown> = {
-      model: this.model,
+    let body: Record<string, unknown> = {
+      model: this.resolvedModel,
       messages: historyToOllamaMessages(history),
       stream: false,
       options: this.buildOllamaOptions(opts),
     };
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
+    let res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
       const text = await res.text();
+      const alias = await this.resolveInstalledAlias(res.status, text);
+      if (alias) {
+        this.resolvedModel = alias;
+        body = { ...body, model: alias };
+        res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { message?: { content?: string } };
+          return json.message?.content ?? "";
+        }
+        const retryText = await res.text();
+        throw new Error(`Ollama API ${res.status}: ${retryText.slice(0, 200)}`);
+      }
       throw new Error(`Ollama API ${res.status}: ${text.slice(0, 200)}`);
     }
     const json = (await res.json()) as { message?: { content?: string } };
@@ -117,25 +135,47 @@ export class OllamaProvider implements Provider {
     opts: CompleteOptions | undefined,
     onToken: (text: string) => void,
   ): Promise<string> {
-    const body: Record<string, unknown> = {
-      model: this.model,
+    let body: Record<string, unknown> = {
+      model: this.resolvedModel,
       messages: historyToOllamaMessages(history),
       stream: true,
       options: this.buildOllamaOptions(opts),
     };
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
+    let res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok || !res.body) {
       const text = res.body ? await res.text() : "";
+      const alias = await this.resolveInstalledAlias(res.status, text);
+      if (alias) {
+        this.resolvedModel = alias;
+        body = { ...body, model: alias };
+        res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (res.ok && res.body) {
+          return this.readStreamResponse(res, onToken);
+        }
+        const retryText = res.body ? await res.text() : "";
+        throw new Error(`Ollama API ${res.status}: ${retryText.slice(0, 200)}`);
+      }
       throw new Error(`Ollama API ${res.status}: ${text.slice(0, 200)}`);
     }
+    return this.readStreamResponse(res, onToken);
+  }
+
+  private async readStreamResponse(
+    res: Response,
+    onToken: (text: string) => void,
+  ): Promise<string> {
     // Ollama streams newline-delimited JSON objects. Buffer partial lines
-    // across chunk boundaries — a single network read can split a JSON
+    // across chunk boundaries ? a single network read can split a JSON
     // record down the middle.
-    const reader = res.body.getReader();
+    const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let full = "";
     let buffer = "";
@@ -164,7 +204,7 @@ export class OllamaProvider implements Provider {
         }
       }
     }
-    // Stream ended without an explicit done marker — return whatever we got.
+    // Stream ended without an explicit done marker ? return whatever we got.
     return full;
   }
 
@@ -181,12 +221,27 @@ export class OllamaProvider implements Provider {
     // silently truncates the categorize prefetch's prompt (it embeds the
     // entire chat reply plus the template schema). With truncation the
     // model emits garbage, JSON parse fails, and the mindmap surfaces
-    // "couldn't structure this reply". 8192 fits a typical long round-
-    // robin synthesis with headroom; constructor option overrides per
-    // model when needed.
+    // "couldn't structure this reply". The constructor option overrides
+    // this per model; config-created local role providers usually pass a
+    // larger value than the provider's standalone fallback.
     const o: Record<string, unknown> = { num_ctx: this.numCtx };
     if (opts?.temperature !== undefined) o.temperature = opts.temperature;
     if (opts?.maxTokens !== undefined) o.num_predict = opts.maxTokens;
     return o;
+  }
+
+  private async resolveInstalledAlias(status: number, bodyText: string): Promise<string | null> {
+    if (status !== 404 || !/not found/i.test(bodyText)) return null;
+    try {
+      const res = await this.fetchWithTimeout(`${this.baseUrl}/api/tags`, { method: "GET" });
+      if (!res.ok) return null;
+      const json = (await res.json()) as { models?: Array<{ name?: string }> };
+      const installed = (json.models ?? []).map((m) => String(m.name ?? "")).filter(Boolean);
+      const exact = installed.find((name) => name === this.model);
+      if (exact) return exact;
+      return installed.find((name) => name.startsWith(`${this.model}-`)) ?? null;
+    } catch {
+      return null;
+    }
   }
 }

@@ -106,6 +106,20 @@ describe("Controller — parallel mode", () => {
     expect(trace.finalOutput).toBe("synthesis ignoring a2");
   });
 
+  it("does not attempt synthesis when every parallel agent fails", async () => {
+    const { router, provider } = routerWithScript([
+      { kind: "error", error: new Error("a1 blew up") },
+      { kind: "error", error: new Error("a2 blew up") },
+    ]);
+    const subs = ["a1", "a2"].map(
+      (id) => new Agent({ id, role: "thinker", systemPrompt: id, router }),
+    );
+    const c = new Controller({ router, subAgents: subs, mode: "parallel", dispatchStaggerMs: 0 });
+
+    await expect(c.runWithTrace("task")).rejects.toThrow("All parallel agents failed");
+    expect(provider.calls).toHaveLength(2);
+  });
+
   it("passes through single-agent output without a synthesis call", async () => {
     const { router, provider } = routerWithScript([{ kind: "ok", text: "solo answer" }]);
     const solo = new Agent({ id: "solo", role: "r", systemPrompt: "x", router });

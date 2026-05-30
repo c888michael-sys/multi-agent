@@ -8,6 +8,15 @@ import type {
 } from "./tools/types.js";
 import { AllProvidersExhaustedError, NoProvidersConfiguredError } from "./errors.js";
 
+class ProviderTimeoutError extends Error {
+  readonly retryAfterMs = 5_000;
+
+  constructor(providerId: string, timeoutMs: number) {
+    super(`Provider ${providerId} timed out after ${timeoutMs}ms`);
+    this.name = "ProviderTimeoutError";
+  }
+}
+
 /**
  * Optional out-parameter callers can pass to learn which provider actually
  * served the call (useful when an allow-list spans multiple providers and
@@ -48,10 +57,12 @@ export interface RouterOptions {
    * successful response.
    */
   onAfterCall?: () => void;
+  requestTimeoutMs?: number;
 }
 
 const DEFAULT_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const DEFAULT_JITTER = () => Math.floor(Math.random() * 500); // 0–499 ms
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export class Router {
   private readonly pool: ProviderPool;
@@ -59,6 +70,7 @@ export class Router {
   private readonly maxRetryWaitMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly jitter: () => number;
+  private readonly requestTimeoutMs: number;
   private onAfterCall: () => void;
 
   constructor(providers: Array<Provider | ProviderConfig>, options?: RouterOptions) {
@@ -72,6 +84,7 @@ export class Router {
     this.maxRetryWaitMs = options?.maxRetryWaitMs ?? 90_000;
     this.sleep = options?.sleep ?? DEFAULT_SLEEP;
     this.jitter = options?.jitterMs ?? DEFAULT_JITTER;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.onAfterCall = options?.onAfterCall ?? (() => {});
   }
 
@@ -138,13 +151,21 @@ export class Router {
 
       try {
         if (attribution) attribution.providerId = pick.provider.id;
-        const result = await pick.provider.complete(prompt, opts);
+        const result = await this.callWithTimeout(
+          pick.provider.id,
+          pick.provider.requestTimeoutMs ?? this.requestTimeoutMs,
+          opts?.signal,
+          (signal) => pick.provider.complete(prompt, this.withSignal(opts, signal)),
+        );
         this.pool.markSuccess(pick.index);
         this.fireAfterCall();
         return { kind: "ok", text: result };
       } catch (err) {
-        if (pick.provider.isRateLimitError(err)) {
-          this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+        if (pick.provider.isRateLimitError(err) || err instanceof ProviderTimeoutError) {
+          const retryAfterMs = err instanceof ProviderTimeoutError
+            ? err.retryAfterMs
+            : pick.provider.retryAfterMs(err);
+          this.pool.markRateLimited(pick.index, retryAfterMs);
           attempts.push({ providerId: pick.provider.id, error: err });
           continue;
         }
@@ -181,13 +202,21 @@ export class Router {
         }
         try {
           if (attribution) attribution.providerId = pick.provider.id;
-          const result = await pick.provider.completeWithTools(history, tools, opts);
+          const result = await this.callWithTimeout(
+            pick.provider.id,
+            pick.provider.requestTimeoutMs ?? this.requestTimeoutMs,
+            opts?.signal,
+            (signal) => pick.provider.completeWithTools!(history, tools, this.withSignal(opts, signal)),
+          );
           this.pool.markSuccess(pick.index);
           this.fireAfterCall();
           return result;
         } catch (err) {
-          if (pick.provider.isRateLimitError(err)) {
-            this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+          if (pick.provider.isRateLimitError(err) || err instanceof ProviderTimeoutError) {
+            const retryAfterMs = err instanceof ProviderTimeoutError
+              ? err.retryAfterMs
+              : pick.provider.retryAfterMs(err);
+            this.pool.markRateLimited(pick.index, retryAfterMs);
             attempts.push({ providerId: pick.provider.id, error: err });
             continue;
           }
@@ -230,13 +259,21 @@ export class Router {
         if (!pick.provider.completeChat) continue; // skip non-chat-capable providers
         try {
           if (attribution) attribution.providerId = pick.provider.id;
-          const result = await pick.provider.completeChat(history, opts);
+          const result = await this.callWithTimeout(
+            pick.provider.id,
+            pick.provider.requestTimeoutMs ?? this.requestTimeoutMs,
+            opts?.signal,
+            (signal) => pick.provider.completeChat!(history, this.withSignal(opts, signal)),
+          );
           this.pool.markSuccess(pick.index);
           this.fireAfterCall();
           return result;
         } catch (err) {
-          if (pick.provider.isRateLimitError(err)) {
-            this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+          if (pick.provider.isRateLimitError(err) || err instanceof ProviderTimeoutError) {
+            const retryAfterMs = err instanceof ProviderTimeoutError
+              ? err.retryAfterMs
+              : pick.provider.retryAfterMs(err);
+            this.pool.markRateLimited(pick.index, retryAfterMs);
             attempts.push({ providerId: pick.provider.id, error: err });
             continue;
           }
@@ -287,20 +324,33 @@ export class Router {
           if (attribution) attribution.providerId = pick.provider.id;
           let result: string;
           if (stream) {
-            result = await stream(history, opts, onToken);
+            result = await this.callWithTimeout(
+              pick.provider.id,
+              pick.provider.requestTimeoutMs ?? this.requestTimeoutMs,
+              opts?.signal,
+              (signal) => stream(history, this.withSignal(opts, signal), onToken),
+            );
           } else {
             // Fallback: provider has no streaming — wait for the full
             // reply, then emit it as one final token so callers don't
             // need a separate code path.
-            result = await chat!(history, opts);
+            result = await this.callWithTimeout(
+              pick.provider.id,
+              pick.provider.requestTimeoutMs ?? this.requestTimeoutMs,
+              opts?.signal,
+              (signal) => chat!(history, this.withSignal(opts, signal)),
+            );
             if (result) onToken(result);
           }
           this.pool.markSuccess(pick.index);
           this.fireAfterCall();
           return result;
         } catch (err) {
-          if (pick.provider.isRateLimitError(err)) {
-            this.pool.markRateLimited(pick.index, pick.provider.retryAfterMs(err));
+          if (pick.provider.isRateLimitError(err) || err instanceof ProviderTimeoutError) {
+            const retryAfterMs = err instanceof ProviderTimeoutError
+              ? err.retryAfterMs
+              : pick.provider.retryAfterMs(err);
+            this.pool.markRateLimited(pick.index, retryAfterMs);
             attempts.push({ providerId: pick.provider.id, error: err });
             continue;
           }
@@ -338,5 +388,38 @@ export class Router {
   /** Which provider IDs are registered. Used by RoleResolver for filtering. */
   registeredProviderIds(): string[] {
     return this.pool.snapshot().map((p) => p.id);
+  }
+
+  private withSignal(opts: CompleteOptions | undefined, signal: AbortSignal): CompleteOptions {
+    return { ...opts, signal };
+  }
+
+  private async callWithTimeout<T>(
+    providerId: string,
+    timeoutMs: number,
+    parentSignal: AbortSignal | undefined,
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    if (parentSignal) {
+      if (parentSignal.aborted) controller.abort();
+      else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new ProviderTimeoutError(providerId, timeoutMs));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([fn(controller.signal), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    }
   }
 }

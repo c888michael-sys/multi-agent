@@ -6,6 +6,13 @@ import type { RoleName } from "../roles/types.js";
 import type { CompleteOptions } from "../provider.js";
 import type { ConversationPart } from "../tools/types.js";
 import { parsePlan, type Plan } from "../agents/role-orchestrator.js";
+import {
+  brainstormingTasks,
+  runMultiAgentWorkflow,
+  type MultiAgentPlan,
+  type RoutingMode,
+  type WorkflowPhase,
+} from "../agents/multi-agent-workflow.js";
 
 const PLAN_PREAMBLE = `[CHAT-PLAN PROTOCOL: You are the orchestrator in a multi-turn chat with access to specialist agents. For each new user message, decide how to handle it. Output EXACTLY one JSON object.
 
@@ -89,12 +96,14 @@ export interface ChatSessionOptions {
  */
 export type ChatProgressEvent =
   | { kind: "plan-start" }
-  | { kind: "plan"; plan: Plan }
-  | { kind: "role-start"; role: RoleName; phase: "direct" | "single" | "parallel" | "synthesis"; framing?: string }
+  | { kind: "plan"; plan: ChatPlan }
+  | { kind: "role-start"; role: RoleName; phase: "direct" | "single" | "parallel" | "synthesis" | WorkflowPhase; framing?: string }
   | { kind: "role-end"; role: RoleName; ok: boolean; error?: string }
   | { kind: "token"; text: string }
   | { kind: "summarize-start" }
   | { kind: "summarize-end"; folded: number };
+
+export type ChatPlan = Plan | { kind: "multi-agent"; detail: MultiAgentPlan };
 
 export interface SessionSnapshot {
   id: string;
@@ -119,7 +128,7 @@ export interface SendResult {
    */
   servedBy: RoleName[];
   /** Plan the orchestrator picked for this turn (smart-routing mode only). */
-  plan?: Plan;
+  plan?: ChatPlan;
   /** Number of older turns folded into a summary on this send, if any. */
   summarizedTurns?: number;
 }
@@ -201,7 +210,7 @@ export class ChatSession {
     userInput: string,
     opts?: CompleteOptions,
     onProgress?: (evt: ChatProgressEvent) => void,
-    routing?: { forceRole?: RoleName; roundRobin?: boolean },
+    routing?: { forceRole?: RoleName; roundRobin?: boolean; mode?: RoutingMode },
   ): Promise<SendResult> {
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
@@ -212,7 +221,8 @@ export class ChatSession {
     // bypass smart routing for this turn only and call that role directly.
     // The session's smartRouting setting is preserved for future turns.
     const forcedRole = routing?.forceRole;
-    const roundRobin = routing?.roundRobin === true;
+    const mode: RoutingMode =
+      routing?.mode ?? (routing?.roundRobin === true ? "brainstorming" : "auto");
     const emit = (evt: ChatProgressEvent) => {
       if (onProgress) {
         try { onProgress(evt); } catch {/* ignore caller errors */}
@@ -236,7 +246,7 @@ export class ChatSession {
 
     let reply: string;
     let servedBy: RoleName[];
-    let plan: Plan | undefined;
+    let plan: ChatPlan | undefined;
     try {
       if (!this.smartRouting || forcedRole) {
         const directRole = forcedRole ?? this.role;
@@ -252,24 +262,23 @@ export class ChatSession {
         }
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
-      } else if (roundRobin) {
-        // Round-robin mode: bypass the orchestrator's plan-generation
-        // call entirely and force a parallel fan-out across the four
-        // specialist roles, then synthesize through orchestration.
-        // Matches the agents-CLI `--mode=parallel` shape but for chat.
+      } else if (mode === "brainstorming") {
+        // Brainstorming mode: bypass the orchestrator's plan-generation
+        // call and gather several model perspectives in parallel. This is
+        // the old "round-robin" behavior, renamed for the user-facing UX.
         const prebuilt: Plan = {
           kind: "parallel",
-          tasks: [
-            { role: "perception" as RoleName, prompt: "" },
-            { role: "reasoning" as RoleName, prompt: "" },
-            { role: "action-code" as RoleName, prompt: "" },
-            { role: "action-structural" as RoleName, prompt: "" },
-          ],
+          tasks: brainstormingTasks(userInput),
         };
         const planned = await this.planAndExecute(effectiveOpts, emit, prebuilt);
         reply = planned.reply;
         servedBy = planned.servedBy;
         plan = planned.plan;
+      } else if (mode === "multi-agent") {
+        const workflow = await this.runMultiAgentTurn(userInput, effectiveOpts, emit);
+        reply = workflow.reply;
+        servedBy = workflow.servedBy;
+        plan = workflow.plan;
       } else {
         const planned = await this.planAndExecute(effectiveOpts, emit);
         reply = planned.reply;
@@ -489,6 +498,25 @@ Output ONLY the summary, no preamble.`;
       reply: finalReply,
       servedBy: [...perRole.map((p) => p.role), this.role],
       plan,
+    };
+  }
+
+  private async runMultiAgentTurn(
+    userInput: string,
+    opts: CompleteOptions,
+    emit: (evt: ChatProgressEvent) => void,
+  ): Promise<{ reply: string; servedBy: RoleName[]; plan: ChatPlan }> {
+    const workflow = await runMultiAgentWorkflow(userInput, {
+      onProgress: (evt) => emit(evt as ChatProgressEvent),
+      runRole: (role, prompt) =>
+        this.resolver.runRoleChat(role, this.historyWithFraming(prompt), opts),
+      streamRole: (role, prompt, onToken) =>
+        this.resolver.runRoleChatStream(role, this.historyWithFraming(prompt), onToken, opts),
+    });
+    return {
+      reply: workflow.finalOutput,
+      servedBy: workflow.servedBy,
+      plan: { kind: "multi-agent", detail: workflow.plan },
     };
   }
 

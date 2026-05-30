@@ -65,11 +65,12 @@ export class OpenRouterProvider implements Provider {
   }
 
   /** Builds the chatCompletion args + onHeaders callback once. */
-  private callOpts(body: Record<string, unknown>) {
+  private callOpts(body: Record<string, unknown>, signal?: AbortSignal) {
     return {
       apiKey: this.apiKey,
       baseUrl: this.baseUrl,
       body,
+      signal,
       providerName: "OpenRouter",
       extraHeaders: this.extraHeaders,
       onHeaders: (headers: Record<string, string>) => {
@@ -86,13 +87,13 @@ export class OpenRouterProvider implements Provider {
     };
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-    const res = await chatCompletion(this.callOpts(body));
+    const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return extractTextFromCompletion(res);
   }
 
   async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
     const body = buildChatBody(this.model, history, opts);
-    const res = await chatCompletion(this.callOpts(body));
+    const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return extractTextFromCompletion(res);
   }
 
@@ -108,7 +109,7 @@ export class OpenRouterProvider implements Provider {
     };
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-    const res = await chatCompletion(this.callOpts(body));
+    const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return parseOpenAIToolResponse(res);
   }
 

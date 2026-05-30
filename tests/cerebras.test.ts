@@ -21,14 +21,14 @@ describe("CerebrasProvider", () => {
   it("returns text on a successful response", async () => {
     const f = fakeFetch(200, { choices: [{ message: { content: "from-cerebras" } }] });
     const p = new CerebrasProvider({
-      id: "cerebras:llama3-8b",
+      id: "cerebras:gpt-oss-120b",
       apiKey: "k",
       fetchImpl: f as typeof fetch,
     });
     expect(await p.complete("hi")).toBe("from-cerebras");
   });
 
-  it("defaults to llama3.1-8b and posts to api.cerebras.ai", async () => {
+  it("defaults to gpt-oss-120b and posts to api.cerebras.ai", async () => {
     let calledUrl = "";
     let body: unknown;
     const f = fakeFetch(
@@ -41,19 +41,19 @@ describe("CerebrasProvider", () => {
       },
     );
     const p = new CerebrasProvider({
-      id: "cerebras:llama3-8b",
+      id: "cerebras:gpt-oss-120b",
       apiKey: "k",
       fetchImpl: f as typeof fetch,
     });
     await p.complete("hi");
     expect(calledUrl).toBe("https://api.cerebras.ai/v1/chat/completions");
-    expect((body as { model: string }).model).toBe("llama3.1-8b");
+    expect((body as { model: string }).model).toBe("gpt-oss-120b");
   });
 
   it("throws OpenAICompatError on non-2xx response", async () => {
     const f = fakeFetch(429, "rate", { "retry-after": "5" });
     const p = new CerebrasProvider({
-      id: "cerebras:llama3-8b",
+      id: "cerebras:gpt-oss-120b",
       apiKey: "k",
       fetchImpl: f as typeof fetch,
     });

@@ -51,11 +51,12 @@ export class GroqProvider implements Provider {
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
   }
 
-  private callOpts(body: Record<string, unknown>) {
+  private callOpts(body: Record<string, unknown>, signal?: AbortSignal) {
     return {
       apiKey: this.apiKey,
       baseUrl: this.baseUrl,
       body,
+      signal,
       providerName: "Groq",
       onHeaders: (headers: Record<string, string>) => {
         this.lastQuota = parseLiveQuotaFromHeaders(headers, Date.now());
@@ -71,13 +72,13 @@ export class GroqProvider implements Provider {
     };
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-    const res = await chatCompletion(this.callOpts(body));
+    const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return extractTextFromCompletion(res);
   }
 
   async completeChat(history: ConversationPart[], opts?: CompleteOptions): Promise<string> {
     const body = buildChatBody(this.model, history, opts);
-    const res = await chatCompletion(this.callOpts(body));
+    const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return extractTextFromCompletion(res);
   }
 
@@ -93,7 +94,7 @@ export class GroqProvider implements Provider {
     };
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
-    const res = await chatCompletion(this.callOpts(body));
+    const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return parseOpenAIToolResponse(res);
   }
 

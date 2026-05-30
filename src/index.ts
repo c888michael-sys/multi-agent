@@ -91,6 +91,7 @@ export {
   type Plan,
   type RoleRunTrace,
 } from "./agents/role-orchestrator.js";
+export type { RoutingMode, MultiAgentPlan, WorkflowTrace } from "./agents/multi-agent-workflow.js";
 
 // Chat (Phase D)
 export {

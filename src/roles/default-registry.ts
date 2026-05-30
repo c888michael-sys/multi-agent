@@ -13,7 +13,7 @@ import type { RoleConfig } from "./types.js";
  *   - Gemini accounts: `gemini:1`, `gemini:2`, `gemini:3`, ...
  *   - Other providers: `<provider>:<short-model-name>`
  *     e.g., `groq:llama-70b`, `openrouter:deepseek-v4-flash`,
- *     `mistral:codestral`, `cerebras:llama3-8b`.
+ *     `mistral:codestral`, `cerebras:gpt-oss-120b`.
  *
  * This file is the single source of truth for role configuration. Adding a new
  * provider = update the candidate list here, plus register the provider with
@@ -29,7 +29,7 @@ const GEMINI_FLASH_SHARED = [
   { providerId: "gemini:2" },
 ];
 
-// Gemma 3 27B-it slots on every Gemini key — same project, different
+// Gemma 4 31B-it slots on every Gemini key — same project, different
 // model, separate per-model RPD quota pool (~14,400/day vs Flash's
 // 20-1,500/day). gemma:3 is RESERVED for the mindmap-categorize role
 // (analogous to gemini:3's perception isolation), so chat/round-robin
@@ -45,7 +45,7 @@ const GEMMA_FALLBACK = [
  * Local-mode candidates — when the hybrid toggle is on, these get
  * prepended to the matching role's chain so they win when registered.
  *
- *   reasoning      → ollama:deepseek-r1   (DeepSeek-R1 32B, locally hosted)
+ *   reasoning      → ollama:deepseek-r1   (DeepSeek-R1 14B by default, locally hosted)
  *   action-code    → ollama:qwen2.5-coder (Qwen 2.5 Coder, locally hosted)
  *
  * Cloud candidates remain in the chain as fallback if the local daemon
@@ -112,7 +112,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       // native reasoning). Independent quota pool. R1 free was retired
       // by OpenRouter — V4 Flash is the current free option.
       { providerId: "openrouter:deepseek-v4-flash" },
-      // Safety net: Gemma 3 27B on any of the three Gemini keys (separate
+      // Safety net: Gemma 4 31B on any of the three Gemini keys (separate
       // per-model quota; ~14,400 RPD per key on free tier).
       ...GEMMA_FALLBACK,
     ],
@@ -131,7 +131,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       // Backup: DeepSeek V4 Flash for when both Gemini Flash slots are
       // cooled. Slower but a real second opinion on routing.
       { providerId: "openrouter:deepseek-v4-flash" },
-      // Safety net: Gemma 3.
+      // Safety net: Gemma 4.
       ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:
@@ -144,7 +144,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       // Primary: Mistral Codestral — code-specialized, ~1B tokens/month
       // free on Experiment plan. Different model family.
       { providerId: "mistral:codestral" },
-      // Safety net: Gemma 3. Flash deliberately not included — preserves
+      // Safety net: Gemma 4. Flash deliberately not included — preserves
       // Flash quota for orchestration/reasoning/perception where it matters.
       ...GEMMA_FALLBACK,
     ],
@@ -169,7 +169,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     candidates: [
       // Primary: Cerebras Llama 3.1 8B — wafer-scale inference at
       // ~2000 tok/sec, 1M tokens/day free.
-      { providerId: "cerebras:llama3-8b" },
+      { providerId: "cerebras:gpt-oss-120b" },
       ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate: "You are the bulk-action agent. Process the task quickly and concisely.",
@@ -182,7 +182,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     // isolation):
     //   1. gemma:3  — RESERVED for this role, removed from every other
     //      chain. Independent ~14,400 RPD pool on the gemini:3 project.
-    //   2. cerebras:llama3-8b — fast, 1 M tok/day, fine for short JSON
+    //   2. cerebras:gpt-oss-120b — fast, 1 M tok/day, fine for short JSON
     //      categorization.
     //   3. gemma:2 / gemma:1 — last-resort fallback if the reserved
     //      slot AND Cerebras are both exhausted.
@@ -191,7 +191,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       "Convert an assistant reply into the structured JSON the mindmap burst needs (sections/files/targets/phases). Detail-preserving, no paraphrasing.",
     candidates: [
       { providerId: "gemma:3" },
-      { providerId: "cerebras:llama3-8b" },
+      { providerId: "cerebras:gpt-oss-120b" },
       { providerId: "gemma:2" },
       { providerId: "gemma:1" },
     ],
