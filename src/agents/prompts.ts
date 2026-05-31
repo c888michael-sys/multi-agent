@@ -1,4 +1,12 @@
 /**
+ * Shared directive appended to every prompt that produces user-facing prose.
+ * Instructs models to emit LaTeX notation so MathJax can typeset it.
+ * Applied in both chat (history-based) and CLI (prompt-based) paths.
+ */
+export const LATEX_DIRECTIVE =
+  `Format all mathematics as LaTeX. Inline math: single dollar signs $...$. Display equations: double dollar signs $$...$$. Use real LaTeX notation (\\frac{}{}, ^{}, _{}, \\sqrt{}, \\sum, \\int, \\cdots). Never write math as plain text — write $\\frac{x^2}{2!}$ not x^2/2!, and $e^x=\\sum_{n=0}^{\\infty}\\frac{x^n}{n!}$ not e^x = 1 + x + x^2/2! + ...`;
+
+/**
  * Controller priming. Feed into the controller's system prompt and any
  * non-Claude model used elsewhere. The text is intentionally short — once
  * keys arrive and we see model output, tune from here.

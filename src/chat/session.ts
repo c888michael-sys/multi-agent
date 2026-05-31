@@ -7,6 +7,7 @@ import type { CompleteOptions } from "../provider.js";
 import type { ConversationPart } from "../tools/types.js";
 import { WebSearchTool } from "../tools/web-search.js";
 import { parsePlan, type Plan } from "../agents/role-orchestrator.js";
+import { LATEX_DIRECTIVE } from "../agents/prompts.js";
 import {
   brainstormingTasks,
   runMultiAgentWorkflow,
@@ -15,7 +16,7 @@ import {
   type WorkflowPhase,
 } from "../agents/multi-agent-workflow.js";
 
-const PLAN_PREAMBLE = `[CHAT-PLAN PROTOCOL: You are the orchestrator in a multi-turn chat with access to specialist agents. For each new user message, decide how to handle it. Output EXACTLY one JSON object.
+const PLAN_PREAMBLE = `[CHAT-PLAN PROTOCOL: You are the orchestrator in a multi-turn chat with access to specialist agents. For each new user message, decide how to handle it. Output EXACTLY one JSON object. ${LATEX_DIRECTIVE}
 
 Specialists:
 - perception: live web search / current facts
@@ -539,7 +540,7 @@ Output ONLY the summary, no preamble.`;
           `[Orchestrator-internal: the user's last message was just delegated in parallel. ` +
           `Per-specialist outputs:\n\n` +
           perRole.map((p) => `<<<${p.role}\n${p.output}\n>>>`).join("\n\n") +
-          `\n\nIntegrate these into one coherent answer for the user. No preamble, no per-specialist labels.]`,
+          `\n\nIntegrate these into one coherent answer for the user. No preamble, no per-specialist labels. ${LATEX_DIRECTIVE}]`,
       },
     ];
     fire({ kind: "role-start", role: this.role, phase: "synthesis" });
@@ -591,11 +592,10 @@ Output ONLY the summary, no preamble.`;
    * Specialist sees: full conversation + (if framing) "[Orchestrator: ...]".
    */
   private historyWithFraming(framing: string): ConversationPart[] {
-    if (!framing.trim()) return this.history;
-    return [
-      ...this.history,
-      { kind: "user_text", text: `[Orchestrator framing for you: ${framing}]` },
-    ];
+    const framingText = framing.trim()
+      ? `[Orchestrator framing for you: ${framing}]\n\n${LATEX_DIRECTIVE}`
+      : LATEX_DIRECTIVE;
+    return [...this.history, { kind: "user_text", text: framingText }];
   }
 
   /** Clear conversation history. Persists immediately. */

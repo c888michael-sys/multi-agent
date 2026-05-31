@@ -1,4 +1,5 @@
 import type { RoleName } from "../roles/types.js";
+import { LATEX_DIRECTIVE } from "./prompts.js";
 
 export type RoutingMode = "auto" | "multi-agent" | "brainstorming";
 
@@ -348,7 +349,7 @@ function buildFormatPrompt(
   research: string,
   actionOutputs: WorkflowRoleOutput[],
 ): string {
-  return `Reformat the final answer for the user. This is visual/structural only: preserve meaning and details, do not omit important content, and do not introduce new claims.
+  return `Reformat the final answer for the user. This is visual/structural only: preserve meaning and details, do not omit important content, and do not introduce new claims. ${LATEX_DIRECTIVE}
 
 User task:
 ${task}

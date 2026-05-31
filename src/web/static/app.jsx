@@ -1099,13 +1099,18 @@ function statusLabel(status) {
 
 function InlineMarkdown({ text }) {
   const parts = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  // $$...$$ must appear before $...$ in the alternation so display math is matched first.
+  // Math spans are passed through verbatim so MathJax can typeset them undamaged.
+  const re = /(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$|\*\*[^*]+\*\*|`[^`]+`)/g;
   let last = 0;
   let m;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
     const token = m[0];
-    if (token.startsWith('**')) {
+    if (token.startsWith('$')) {
+      // Math span — output verbatim so MathJax receives clean LaTeX
+      parts.push(token);
+    } else if (token.startsWith('**')) {
       parts.push(<strong key={parts.length}>{token.slice(2, -2)}</strong>);
     } else {
       parts.push(<code key={parts.length}>{token.slice(1, -1)}</code>);
@@ -1603,12 +1608,12 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
   // center → armX_home=90 puts the knuckle face ≈ at screen center (x≈2px off).
   // Jab direction: right arm punches LEFT (armX decreases) so knuckles slam
   // through center; left arm punches RIGHT (armX increases, mirrored).
-  let armX_r = 700, armY_r = 0, armRot_r = 0, clawOpen_r = 1;
-  let armX_l = -700, armY_l = 0, armRot_l = 0, clawOpen_l = 1;
+  let armX_r = 820, armY_r = 0, armRot_r = 0, clawOpen_r = 1;
+  let armX_l = -820, armY_l = 0, armRot_l = 0, clawOpen_l = 1;
   if (t < COLLAPSE_TIMELINE.anticipation.start + COLLAPSE_TIMELINE.anticipation.dur) {
     const u = easeOutCubic(progress('anticipation'));
-    armX_r =  700 - 610 * u;   // +700 → +90 (easeOut decel, open hand approaching)
-    armX_l = -700 + 610 * u;   // -700 → -90 (symmetric from left)
+    armX_r =  820 - 730 * u;   // +820 → +90 (easeOut decel, open hand approaching)
+    armX_l = -820 + 730 * u;   // -820 → -90 (symmetric from left)
     clawOpen_r = 1;
     clawOpen_l = 1;
   } else if (t < COLLAPSE_TIMELINE.puncture.start + COLLAPSE_TIMELINE.puncture.dur) {
@@ -1628,15 +1633,15 @@ function CatalystOverlay({ newest, slideDistance, stageRect }) {
     clawOpen_l = 0;
   } else if (t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur) {
     const u = progress('retreat');
-    armX_r =  760 + u * 540;  // → +1300 off-screen
-    armX_l = -760 - u * 540;
+    armX_r =  760 + u * 640;  // → +1400 off-screen
+    armX_l = -760 - u * 640;
     armRot_r =  6 * (1 - u);
     armRot_l = -6 * (1 - u);
     clawOpen_r = u;
     clawOpen_l = u;
   } else {
-    armX_r =  1300; clawOpen_r = 1;
-    armX_l = -1300; clawOpen_l = 1;
+    armX_r =  1400; clawOpen_r = 1;
+    armX_l = -1400; clawOpen_l = 1;
   }
   const armVis_r = t < COLLAPSE_TIMELINE.retreat.start + COLLAPSE_TIMELINE.retreat.dur + 80;
   const armVis_l = armVis_r;  // both arms visible from t=0

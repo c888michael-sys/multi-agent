@@ -6,6 +6,7 @@ import {
   runMultiAgentWorkflow,
   type RoutingMode,
 } from "./multi-agent-workflow.js";
+import { LATEX_DIRECTIVE } from "./prompts.js";
 
 export interface RoleOrchestratorOptions {
   resolver: RoleResolver;
@@ -155,7 +156,7 @@ Several roles worked on parts of it. Their outputs:
 
 ${blocks}
 
-Integrate these into a single coherent answer for the user. No preamble, no per-role labels in the output. Match the granularity the user asked for.`;
+Integrate these into a single coherent answer for the user. No preamble, no per-role labels in the output. Match the granularity the user asked for. ${LATEX_DIRECTIVE}`;
     return this.resolver.runRole("orchestration", prompt, opts);
   }
 }

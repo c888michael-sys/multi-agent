@@ -735,7 +735,7 @@ function comprehensiveCategorizePrompt(template, prompt, answer) {
 ]}`,
   };
   const schema = schemas[template] || schemas.plan;
-  return `You are categorizing the assistant's reply below into a structured JSON shape so it can be visualized as a mindmap. PRESERVE ALL DETAIL — every bullet, every sentence, every code line the assistant wrote should appear in the JSON. Do not truncate. Do not paraphrase. Do not invent content the assistant did not include.
+  return `You are categorizing the assistant's reply below into a structured JSON shape so it can be visualized as a mindmap. PRESERVE ALL DETAIL — every bullet, every sentence, every code line the assistant wrote should appear in the JSON. Do not truncate. Do not paraphrase. Do not invent content the assistant did not include. Preserve any LaTeX math spans verbatim ($...$, $$...$$) — do not convert them to plain text.
 
 Return ONLY valid JSON. No prose. No markdown fences.
 
