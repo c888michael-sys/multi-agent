@@ -36,7 +36,7 @@ A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, 
 - Optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - OpenRouter fallback-routing (single OR call with a model list; OR walks top-to-bottom on 429/5xx/refusal)
 - Web UI mindmap transition v3 ("robot arm rips door → canvas dimension → agents fly out")
-- Quality-of-life: quota warning banner, stop-button during streaming, fast-mode toggle, settings drawer
+- Product polish from the 2026-05-31 audit: true server-side cancellation, web conversation manager, edit/regenerate/branch, web file tools with permissions, richer attachments, artifacts/previews, source UX, routing explainability, and mindmap workspace polish.
 
 ## Build order
 
@@ -219,14 +219,32 @@ The candidate order each role uses today, after live calibration against the act
 - [x] **Brave Search / DuckDuckGo Instant Answer tool** for the Gemma perception fallback (when `gemini:3` is exhausted and the resolver falls to Gemma, the `web_search` tool gives the model a way to still fetch fresh web data). `src/tools/web-search.ts` — Brave preferred when `BRAVE_SEARCH_KEY` is set (free 2000 q/mo), DuckDuckGo Instant Answer as the keyless fallback (no signup). Wired into `cmdAskWithTools`, so `npm run cli -- ask "..."` already has `web_search` available alongside `read_file` / `write_file` / `list_dir`. 7 new unit tests covering Brave-primary, DDG-fallback, HTML-strip, empty-query, no-results, and Brave-429 → DDG fallthrough. 211/211 tests pass.
 - [x] **UI bug — LoadingView only shows "orchestrator working"** while a chat turn is in flight. **Fixed.** Root cause: the streaming handler in `app.jsx` builds `lastStatus = { phase: evt.kind, ...evt }`, but the spread overrides `phase: evt.kind` with `evt.phase` (the inner sub-phase like `"single"` / `"synthesis"`). `LoadingView` and `statusLabel` were then computing `ph = phase || kind` — which resolved to `ph = "single"` instead of `"role-start"`, missed every branch in the switch, and left the agent state map in its initial plan-start state (so only orchestration ever showed engaged). Fix is one line in two places (`app.jsx`): `ph = kind || phase` (prefer outer event type over inner sub-phase). Sub-phase checks below still read `liveStatus.phase` directly and now work correctly. `LoadingView` now paints `reasoning: thinking…` / `action-code: thinking…` / `orchestration: synthesizing…` etc. as the SSE events arrive.
 
-Quality-of-life proposals (not yet started, ordered by likely user value):
+## Product audit: next AI-chat-app plan
 
-- [ ] **Quota warning banner in the chat** — when any role drops below 10 % remaining OR the conservation policy flips to serial mode, surface a one-line banner above the composer naming the role and its likely fallback. The data is already in `/api/usage.json`; this is a UI add only.
-- [ ] **Stop button during streaming** — a small `■` next to the composer while a turn is in flight, aborting the `/api/chat-stream` fetch and rolling the in-flight `liveTurn` back. Saves quota on bad turns.
-- [ ] **Fast-mode toggle** — composer-bar switch that bypasses smart routing for the next turn (sends straight through the orchestration role, single call, ~10 s instead of 20–45 s). Useful for short conversational turns where multi-agent depth is overkill.
-- [ ] **Settings drawer (CLI feature parity)** — surface `--serious` / `--thinking=high`, `--search`, `--role=` forced routing as toggles in the UI, so the web UI matches the CLI's full flag surface. Closes the "merge function into UI" thread.
-- [ ] **PhaseErrorBoundary around loading + response phases** — currently only the orbital phase is wrapped; defensive coverage so any future render crash anywhere in the SPA shows a recoverable panel instead of blacking the page.
-- [x] **Web-only editable long-term role instructions.** The web UI now reads/writes `~/.multi-agent/role-instructions.json` through `/api/role-instructions` and exposes a settings-drawer editor with one global box plus one box per role. Every web chat turn loads the current file, injects the global text plus the matching role-specific text into outbound role calls, and keeps those hidden instructions out of the persisted visible transcript. Users can also edit the JSON file directly on disk; missing role keys are normalized to empty strings. See `src/roles/instructions.ts`, `src/chat/session.ts`, `src/web/server.ts`, and `src/web/static/app.jsx`.
+Audit date: 2026-05-31. Verification at the time of the audit: `npm run typecheck`, `npm test` (237/237), and `npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL` all passed.
+
+The current app already has the core pieces expected from a serious AI chat UI: streaming chat, persistent backend sessions, multi-agent/auto/brainstorming routing, hybrid local Ollama mode, Google Search grounding plus Brave/DuckDuckGo fallback, text-file attachments, quota/sidebar telemetry, a quota warning banner, client-side stop button, broad phase error boundaries, web-editable role instructions, and the mindmap burst workspace.
+
+Priority plan, ordered by user value:
+
+- [ ] **True server-side stop/cancel.** The frontend stop button currently aborts the browser fetch and cleans up the visible in-flight turn, but the server does not yet propagate request disconnects into `ChatSession`, `RoleResolver`, or provider calls. That means the backend/model may continue running after the UI stops listening, so quota may still be spent. Wire request-abort signals through `/api/chat-stream` -> `ChatSession.send()` -> resolver/router/provider calls before claiming stop reliably saves quota.
+- [ ] **Web conversation manager.** Add a first-class thread drawer: list sessions, rename, delete, pin/favorite, search, duplicate/branch, and export/import. Backend already has `/api/sessions`, `/api/sessions/:id`, and `/api/sessions/:id/clear`; the web UI needs the product layer.
+- [ ] **Edit/regenerate/continue/branch messages.** Add common chat-app controls: edit the last user message and rerun, regenerate assistant response, continue a stopped/truncated response, and branch from a specific turn without overwriting the original.
+- [ ] **Web project file tools with permissions.** CLI `ask --tools` can read/write/list files inside a `--workdir`, but the web chat cannot yet browse or edit project files directly. Add a guarded web tool mode with a visible root directory, per-operation confirmation for writes, diff preview, and a strong warning before destructive operations.
+- [ ] **Richer attachments.** Current web attachments are text-only. Add PDF extraction, image/screenshot upload with OCR/vision, larger-file chunking, folder/drop support, and clearer context-budget estimates before submit.
+- [ ] **Artifacts and previews.** Add generated-file artifacts, code blocks that can become files, diff views, rendered HTML/CSS previews, and "apply this patch" flows.
+- [ ] **Better source/citation UX.** Web search results should surface as source chips/citations in the final answer and mindmap nodes, especially when perception falls back to Brave/DuckDuckGo.
+- [ ] **Model/provider picker and routing explainability.** Add a per-turn "why this route/model was used" view and optional model override, without exposing confusing internal provider names by default.
+- [ ] **Plugin/tool permission UI.** Before adding powerful web tools (bash, file writes, git), add an explicit permission surface: read-only vs write, current sandbox root, risky command warnings, and audit logs.
+- [ ] **Mindmap workspace polish.** Add drag-rearrange and free placement for category nodes, persisted per response under `localStorage[lattice.responseStack.v2]`.
+
+Completed from earlier quality-of-life list:
+
+- [x] **Quota warning banner.** Implemented in `QuotaBanner` in `src/web/static/app.jsx`.
+- [x] **Client-side stop button.** Implemented with `AbortController` in `src/web/static/app.jsx`, but still needs the server-side cancellation work above.
+- [x] **Settings drawer parity.** The web settings drawer now exposes hybrid local mode, serious mode, search grounding, routing/forced role, and long-term role instructions.
+- [x] **PhaseErrorBoundary coverage.** Idle, loading, chat, catalyst, and mindmap phases are wrapped with recoverable boundaries.
+- [x] **Web-only editable long-term role instructions.** The web UI reads/writes `~/.multi-agent/role-instructions.json` through `/api/role-instructions` and injects global plus role-specific guidance into outbound web chat role calls.
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
