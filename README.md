@@ -191,6 +191,7 @@ The candidate order each role uses today, after live calibration against the act
 - [x] **File attachments in the web composer.** Paperclip button next to send opens the OS file picker; selected text files (max 256 KB each, 1 MB total) appear as removable chips above the textarea. On submit, file contents are prepended to the message as fenced blocks (`### filename\n\`\`\`ext\n...\n\`\`\``) so the model can read them inline. Binary detection rejects non-text uploads. Per-file content is fenced with an auto-extended backtick fence so files containing their own \`\`\` aren't broken. See `Composer` in [src/web/static/app.jsx](src/web/static/app.jsx).
 - [x] **Router fix — chat backoff respects role allow-list.** `Router.completeChat` and `Router.completeChatStream` previously computed their wait-until-recovery using `pool.earliestAvailable()` instead of `earliestAvailableIn(providerIds)`, which meant role-constrained chat calls (the entire web UI hot path) would spin-retry against a cooled, allow-listed provider while unrelated healthy providers showed wait=0. Fixed by switching both call sites to the filtered variant, matching the existing `Router.complete` and `Router.completeWithTools` behavior. See [src/router.ts:250](src/router.ts), [src/router.ts:310](src/router.ts).
 - [x] **Mindmap catalyst v4 — center-split rip.** Replaced the v3 catalyst (arm enters upper-right, yanks LEFT) with the user-locked design: right arm enters horizontally from the right, punctures center (crack-flash + debris burst), left arm enters from the left simultaneously; both halves tear apart toward opposite screen edges via jagged clip-path torn panels revealing the white canvas from center out; arms retract; existing shatter+fountain plays on white canvas. Single-clock architecture — both arms and torn panels driven by one rAF `t` in `CatalystOverlay`; dark torn-half panels swap in at puncture (CSS `animation-delay: 520ms` hides the real chat list at exactly that moment, masked by the rip flash). Re-timed timeline: `anticipation(0–520) → puncture(520–720) → pull(720–1440) → retreat(1440–1740) → shatter(1740–1940) → fountain(1940–2400)`. Deleted: v3 `mm-chat-tear`, `mm-seam-snatched`, `.mm-canvas-reveal`. Added: `.mm-canvas-under`, `.mm-torn-half`, `.mm-crack-svg`, crack-line polylines, ballistic debris polygons, mirrored left arm. See `COLLAPSE_TIMELINE` + `CatalystOverlay` in [src/web/static/app.jsx](src/web/static/app.jsx) and the new v4 CSS rules at the bottom of [src/web/static/style.css](src/web/static/style.css).
+- [ ] **LaTeX math rendering (chat + mindmap) + bigger catalyst arm (FULL HANDOFF SPEC BELOW).** Math currently prints as raw text (`e^x = 1 + x + x^2/2! + ...`) instead of typeset LaTeX. Root cause: MathJax is fully wired and typesets on render, but the models emit no `$...$` delimiters (and the markdown parser can corrupt LaTeX even when present). Fix = prompt the models to emit `$...$` LaTeX (chat prompts in `prompts.ts`/`session.ts` + the mindmap `comprehensiveCategorizePrompt`) + protect math spans from the markdown inline parser. Also bump the v4 arm size. **Key gotcha:** the web chat uses `runRoleChat` which does NOT apply `systemPromptTemplate`, so the directive must go through the prompt builders, not `default-registry.ts`. See [Planned: LaTeX math rendering (chat + mindmap) + bigger catalyst arm](#planned-latex-math-rendering-chat--mindmap--bigger-catalyst-arm) for the complete plan. Build cold from that section.
 - [ ] Stage 5b: optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - [ ] Provider-layer: OpenRouter fallback-routing (single OpenRouter call with a list of candidate models; OR walks the list top-to-bottom on 429/5xx/refusal/context-overflow — see [Planned: OpenRouter fallback routing](#planned-openrouter-fallback-routing))
 - [x] **Web UI: mindmap transition v3 — robot arm rips the door + persistent canvas dimension.** Replaced the prior v2 catalyst (horizontal seam rip → `output`/`mindmap` tokens collide → shatter → fountain) with a cinematic robot-arm sequence ending on a persistent ivory workspace:
@@ -878,6 +879,51 @@ White reveal is NOT a radial wipe anymore — it's just the `.mm-canvas-under` l
 - The torn-edge clip-path point list must be `useMemo`'d (stable), or it'll re-randomize every frame and the edge will "boil."
 - Keep debris count modest (≤ ~24). It's a 2.4s one-shot; SVG with a few dozen nodes is fine, hundreds is not.
 - `stageRect` can be `{w:0,h:0}` for the first frame or two — guard all geometry on `stageRect?.w` like the existing code does.
+
+---
+
+## Planned: LaTeX math rendering (chat + mindmap) + bigger catalyst arm
+
+**Status:** Not started. Fully planned — build cold from this section. Two independent tasks bundled: (1) make math render like proper LaTeX everywhere it appears, (2) make the v4 catalyst arm bigger. Pure frontend + prompt strings; no backend logic, no TS types, no test changes expected.
+
+### Task 1 — Math renders as LaTeX, not raw text
+
+**Symptom:** the chat (and mindmap) print math as plain text, e.g. `e^x = 1 + x + x^2/2! + x^3/3! + ...` instead of typeset fractions/superscripts/summation.
+
+**Root cause (already diagnosed — don't re-investigate):** MathJax (tex-svg) is fully wired in [src/web/static/index.html](src/web/static/index.html) (inline `$...$`/`\(...\)`, display `$$...$$`/`\[...\]`), and the renderers already call `MathJax.typesetPromise` after every render — `MarkdownProse` (app.jsx ~1119-1126, effect keyed on `[text]`) and the mindmap node renderers (app.jsx ~2461, ~2513). **The renderer works.** The problem is the *input*: the models emit plain-text math with **no `$` delimiters**, so MathJax has nothing to typeset. Secondary: even with delimiters, the markdown inline parser (`InlineMarkdown`, app.jsx ~1100) can corrupt LaTeX (e.g. `$a_1 + b_2$` → the `_` get parsed as italic).
+
+**Decision (user-approved):** "prompt + markdown-protect", applied to **both chat and mindmap**. Do all of 1A–1C. 1D optional.
+
+**1A. Add a LaTeX directive to the prompts (the real fix).**
+Define one shared constant in [src/agents/prompts.ts](src/agents/prompts.ts), e.g.:
+> *Format all mathematics as LaTeX. Inline math in single dollar signs `$...$`, display equations in double dollar signs `$$...$$`. Use real LaTeX (`\frac{}{}`, `^{}`, `_{}`, `\sqrt{}`, `\sum`, `\int`, `\cdots`). Never write math as plain text — write `$\frac{x^2}{2!}$` not `x^2/2!`, and `$e^x=\sum_{n=0}^{\infty}\frac{x^n}{n!}$` not `e^x = 1 + x + x^2/2! + ...`.*
+
+Append it in `prompts.ts` to the builders that produce user-facing prose: `ROLE_GUIDANCE` / `buildAgentPrompt` (specialists), `multiAgentSystemPrompt` (default multi-agent mode), and `synthesisInstruction` (final synthesized answer). Also add it to the `direct`-answer preamble in [src/chat/session.ts](src/chat/session.ts) and the `synthesize()` prompt in [src/agents/role-orchestrator.ts](src/agents/role-orchestrator.ts) (CLI `task` parity).
+
+⚠️ **Architecture gotcha — the chat path does NOT use `systemPromptTemplate`.** `RoleResolver.compose()` (which prepends `systemPromptTemplate` from `default-registry.ts`) is only called by `runRole` (prompt-based). The web chat uses `runRoleChat` / `runRoleChatStream` (history-based), which does **not** call `compose()`. So editing `default-registry.ts` system prompts will **not** reach the chat — the directive must flow through the `prompts.ts` builders and the `session.ts` / `role-orchestrator.ts` preambles. Trace each routing mode (`direct` / `single` / `multi-agent` / `brainstorming`) to the exact prompt it sends and confirm the directive is present in each. This is the #1 way to get this wrong.
+
+**1B. Mindmap math.** Add the same directive to `comprehensiveCategorizePrompt` in [src/web/static/templates.jsx](src/web/static/templates.jsx) so the categorized node JSON uses LaTeX. The node renderers already typeset, so once the JSON contains `$...$`, nodes render math.
+
+**1C. Protect math spans from the markdown parser (correctness).**
+In `parseMarkdownBlocks` / `InlineMarkdown` (app.jsx ~1100-1150): before applying inline markdown (bold `*`, italic `_`, code `` ` ``), extract `$$...$$` and `$...$` spans into placeholder tokens, run markdown on the remainder, then restore the math spans **verbatim** so MathJax receives clean LaTeX. Mirror however inline-code `` `...` `` is already protected (it must be, since code can contain `*`/`_`). Without this, subscripts and backslashes inside math break. Make sure the protect step runs everywhere `InlineMarkdown` is used — paragraphs, list items, table cells, headings.
+
+**1D. Streaming nicety (optional, low priority).** `MarkdownProse` re-typesets on every token (effect dep `[text]`); a half-open `$` flickers raw mid-stream then resolves on completion. Optional: skip typeset until the turn finishes streaming (gate the effect on a `streaming` flag), or debounce. Current behavior self-heals, so this is polish only.
+
+**Caveat:** prompt-driven LaTeX depends on model compliance. Cloud models (Gemini/Groq/Mistral) follow explicit formatting directives well; local Ollama models (qwen/deepseek) may be less consistent — but 1C ensures whatever LaTeX they *do* emit renders correctly rather than breaking. Don't switch MathJax→KaTeX; MathJax tex-svg already renders beautifully.
+
+### Task 2 — Bigger catalyst arm
+
+In `CatalystOverlay` ([src/web/static/app.jsx](src/web/static/app.jsx), the arm-geometry block ~line 1955-1965), the arm size derives from an `armUnit` clamp (currently ~`Math.max(220, Math.min(360, (stageRect?.h || 600) * 0.5))`). Bump it, e.g. `Math.max(320, Math.min(560, (stageRect?.h || 600) * 0.7))`. Then re-verify the three derived X positions still hold after the size change: (a) arm starts fully off-screen, (b) claw reaches screen center at grip, (c) arm exits fully off-screen on retreat — these are derived from `armUnit` / stage width, so confirm them visually. Pure visual; no other code affected.
+
+### Verification
+- `npm run typecheck` (clean) + `npm test` (stay at current count) — Task 1 is string-only, Task 2 is visual.
+- `npm run web`, open `http://localhost:7421`, ask **"teach me taylor series"** → the `e^x` series renders as typeset fractions/superscripts/summation, not raw `x^2/2!`. Then **BURST INTO MINDMAP** → node text containing math also renders.
+- Check math inside **lists, tables, and bold** (the 1C protect step must cover all `InlineMarkdown` call sites).
+- Bigger arm: burst and confirm the arm reads larger but still enters/grips/exits cleanly with no clipping at screen edges.
+- Drive both with the Claude Preview MCP (`preview_start` on `multi-agent-web`, then `preview_eval`) rather than watching by hand.
+
+### README
+Per CLAUDE.md, update README in the same commit: mark the roadmap item done and note the LaTeX-rendering + arm-size changes.
 
 ---
 
