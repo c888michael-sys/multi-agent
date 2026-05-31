@@ -3,6 +3,9 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { RoleResolver } from "../roles/resolver.js";
 import type { ProviderRef, RoleName } from "../roles/types.js";
+import {
+  formatRoleInstructionsForRole,
+} from "../roles/instructions.js";
 import type { CompleteOptions } from "../provider.js";
 import type { ConversationPart } from "../tools/types.js";
 import { WebSearchTool } from "../tools/web-search.js";
@@ -88,6 +91,12 @@ export interface ChatSessionOptions {
    * default. Used only when no live countTokens is available.
    */
   charsPerToken?: number;
+  /**
+   * Optional web-only long-term instructions loaded from the local editable
+   * role-instructions file. Injected into outbound role calls, not persisted
+   * into the visible session transcript.
+   */
+  roleInstructions?: unknown;
 }
 
 /**
@@ -158,6 +167,7 @@ export class ChatSession {
   readonly keepRecentTurns: number;
   private readonly charsPerToken: number;
   private readonly resolver: RoleResolver;
+  private readonly roleInstructions?: unknown;
   private powerful: boolean;
 
   private history: ConversationPart[] = [];
@@ -177,6 +187,7 @@ export class ChatSession {
       opts.storagePath ?? join(homedir(), ".multi-agent", "sessions", `${opts.id}.json`);
     this.tokenBudget = opts.tokenBudget ?? DEFAULT_BUDGET;
     this.charsPerToken = opts.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN;
+    this.roleInstructions = opts.roleInstructions;
     this.createdAt = Date.now();
     this.updatedAt = this.createdAt;
     this.load();
@@ -255,12 +266,16 @@ export class ChatSession {
         emit({ kind: "role-start", role: directRole, phase: "single" });
         if (onProgress) {
           reply = await this.runRoleChatStreamMaybeFallbackSearch(
-            directRole, this.history,
+            directRole, this.historyForRole(directRole),
             (text) => emit({ kind: "token", text }),
             effectiveOpts,
           );
         } else {
-          reply = await this.runRoleChatMaybeFallbackSearch(directRole, this.history, effectiveOpts);
+          reply = await this.runRoleChatMaybeFallbackSearch(
+            directRole,
+            this.historyForRole(directRole),
+            effectiveOpts,
+          );
         }
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
@@ -462,7 +477,7 @@ Output ONLY the summary, no preamble.`;
       const orchHistory: ConversationPart[] = [
         { kind: "user_text", text: PLAN_PREAMBLE },
         { kind: "model_text", text: PLAN_ACK },
-        ...this.history,
+        ...this.historyForRole(this.role),
       ];
       fire({ kind: "plan-start" });
       const planRaw = await this.runRoleChatMaybeFallbackSearch(this.role, orchHistory, opts);
@@ -480,7 +495,7 @@ Output ONLY the summary, no preamble.`;
     }
 
     if (plan.kind === "single") {
-      const specialistHistory = this.historyWithFraming(plan.prompt);
+      const specialistHistory = this.historyWithFraming(plan.role, plan.prompt);
       fire({ kind: "role-start", role: plan.role, phase: "single", framing: plan.prompt });
       let reply: string;
       try {
@@ -509,7 +524,7 @@ Output ONLY the summary, no preamble.`;
         fire({ kind: "role-start", role: t.role, phase: "parallel", framing: t.prompt });
         try {
           const out = await this.runRoleChatMaybeFallbackSearch(
-            t.role, this.historyWithFraming(t.prompt), opts,
+            t.role, this.historyWithFraming(t.role, t.prompt), opts,
           );
           fire({ kind: "role-end", role: t.role, ok: true });
           return out;
@@ -533,7 +548,7 @@ Output ONLY the summary, no preamble.`;
     }
 
     const synthesisHistory: ConversationPart[] = [
-      ...this.history,
+      ...this.historyForRole(this.role),
       {
         kind: "user_text",
         text:
@@ -575,9 +590,14 @@ Output ONLY the summary, no preamble.`;
     const workflow = await runMultiAgentWorkflow(userInput, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
-        this.runRoleChatMaybeFallbackSearch(role, this.historyWithFraming(prompt), opts),
+        this.runRoleChatMaybeFallbackSearch(role, this.historyWithFraming(role, prompt), opts),
       streamRole: (role, prompt, onToken) =>
-        this.runRoleChatStreamMaybeFallbackSearch(role, this.historyWithFraming(prompt), onToken, opts),
+        this.runRoleChatStreamMaybeFallbackSearch(
+          role,
+          this.historyWithFraming(role, prompt),
+          onToken,
+          opts,
+        ),
     });
     return {
       reply: workflow.finalOutput,
@@ -591,11 +611,17 @@ Output ONLY the summary, no preamble.`;
    * optionally with a framing instruction appended as a synthetic user_text.
    * Specialist sees: full conversation + (if framing) "[Orchestrator: ...]".
    */
-  private historyWithFraming(framing: string): ConversationPart[] {
+  private historyForRole(role: RoleName, base: ConversationPart[] = this.history): ConversationPart[] {
+    const instructionText = formatRoleInstructionsForRole(role, this.roleInstructions);
+    if (!instructionText) return [...base];
+    return [{ kind: "user_text", text: instructionText }, ...base];
+  }
+
+  private historyWithFraming(role: RoleName, framing: string): ConversationPart[] {
     const framingText = framing.trim()
       ? `[Orchestrator framing for you: ${framing}]\n\n${LATEX_DIRECTIVE}`
       : LATEX_DIRECTIVE;
-    return [...this.history, { kind: "user_text", text: framingText }];
+    return [...this.historyForRole(role), { kind: "user_text", text: framingText }];
   }
 
   /** Clear conversation history. Persists immediately. */

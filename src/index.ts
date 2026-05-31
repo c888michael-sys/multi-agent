@@ -57,6 +57,16 @@ export { FileTools } from "./tools/file-tools.js";
 export { BashTool, type BashToolOptions } from "./tools/bash-tool.js";
 export { WebSearchTool, type WebSearchOptions } from "./tools/web-search.js";
 export { ToolRunner, type ToolRunnerOptions, type ToolRunResult } from "./tools/runner.js";
+export {
+  DEFAULT_ROLE_INSTRUCTIONS_PATH,
+  ROLE_INSTRUCTION_ROLES,
+  defaultRoleInstructions,
+  formatRoleInstructionsForRole,
+  normalizeRoleInstructions,
+  readRoleInstructions,
+  writeRoleInstructions,
+  type RoleInstructionSet,
+} from "./roles/instructions.js";
 export type {
   Tool,
   ToolDeclaration,

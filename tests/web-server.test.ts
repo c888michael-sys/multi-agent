@@ -8,7 +8,7 @@
  * them in tests would just rewrap on every UI change.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startWebServer } from "../src/web/server.js";
@@ -75,9 +75,11 @@ function pickPort(): number {
 describe("web server", () => {
   let handles: Array<{ close: () => void }> = [];
   let sessionDir: string;
+  let roleInstructionsPath: string;
 
   beforeEach(() => {
     sessionDir = mkdtempSync(join(tmpdir(), "multi-agent-web-sessions-"));
+    roleInstructionsPath = join(sessionDir, "role-instructions.json");
   });
 
   afterEach(() => {
@@ -95,7 +97,7 @@ describe("web server", () => {
       { id: "groq:llama-70b", cooldownUntil: 0, successCount: 1, rateLimitCount: 0 },
     ]);
     const resolver = makeResolver(opts.handler ?? (async (_n, p) => `reply:${p}`));
-    const handle = startWebServer({ router, resolver, port, sessionStorageDir: sessionDir });
+    const handle = startWebServer({ router, resolver, port, sessionStorageDir: sessionDir, roleInstructionsPath });
     handles.push(handle);
     return { handle, port, url: `http://localhost:${port}` };
   }
@@ -398,5 +400,76 @@ describe("web server", () => {
     expect(r.status).toBe(200);
     const j: any = await r.json();
     expect(Array.isArray(j.sessions)).toBe(true);
+  });
+
+  it("/api/role-instructions reads and writes the editable local instruction file", async () => {
+    const { url } = spawn();
+
+    const initial = await fetch(`${url}/api/role-instructions`);
+    expect(initial.status).toBe(200);
+    const before: any = await initial.json();
+    expect(before.path).toBe(roleInstructionsPath);
+    expect(before.instructions.roles.perception).toBe("");
+
+    const saved = await fetch(`${url}/api/role-instructions`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instructions: {
+          version: 1,
+          global: "Use direct language.",
+          roles: { perception: "Prefer research-backed claims." },
+        },
+      }),
+    });
+    expect(saved.status).toBe(200);
+    const after: any = await saved.json();
+    expect(after.instructions.global).toBe("Use direct language.");
+    expect(after.instructions.roles.perception).toBe("Prefer research-backed claims.");
+    expect(after.instructions.roles.reasoning).toBe("");
+
+    const raw = JSON.parse(readFileSync(roleInstructionsPath, "utf8"));
+    expect(raw.global).toBe("Use direct language.");
+  });
+
+  it("/api/chat loads role instructions from disk for web sessions", async () => {
+    const histories: ConversationPart[][] = [];
+    let calls = 0;
+    const { url } = spawn({
+      handler: async (_name, prompt) => {
+        histories.push(JSON.parse(prompt) as ConversationPart[]);
+        calls++;
+        return calls === 1
+          ? JSON.stringify({ kind: "direct", answer: "hello back" })
+          : "hello back";
+      },
+    });
+
+    const put = await fetch(`${url}/api/role-instructions`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instructions: {
+          version: 1,
+          global: "Keep a steady tone.",
+          roles: { orchestration: "Prefer direct plans." },
+        },
+      }),
+    });
+    expect(put.status).toBe(200);
+
+    const chat = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "role-file-thread", message: "hello" }),
+    });
+    expect(chat.status).toBe(200);
+
+    expect(histories[0]![2]).toEqual({
+      kind: "user_text",
+      text: expect.stringContaining("Long-term role instructions for orchestration"),
+    });
+    expect((histories[0]![2] as { text: string }).text).toContain("Keep a steady tone.");
+    expect((histories[0]![2] as { text: string }).text).toContain("Prefer direct plans.");
   });
 });

@@ -24,6 +24,7 @@ A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, 
 - "Serious" mode using Gemini 3.x extended reasoning (`thinkingLevel: high`)
 - Google Search grounding for live web data via Gemini Flash (perception role)
 - **Local file tools default-on** for `ask` (`read_file`, `write_file`, `list_dir` sandboxed to `--workdir`; `--no-tools` opts out)
+- **Web-only long-term role instructions** stored locally in `~/.multi-agent/role-instructions.json`, editable from the settings drawer or directly on disk
 - Bash exec tool (`--allow-bash`) with timeout, output cap, and process-tree kill on Windows
 - Backoff-and-retry when all providers are cooling
 - **6 roles × custom fallback chains** — perception's Flash key isolated; orchestration/reasoning share two Flash keys; Gemma 4 31B is the universal safety net (~14,400 RPD/key on free tier)
@@ -225,7 +226,7 @@ Quality-of-life proposals (not yet started, ordered by likely user value):
 - [ ] **Fast-mode toggle** — composer-bar switch that bypasses smart routing for the next turn (sends straight through the orchestration role, single call, ~10 s instead of 20–45 s). Useful for short conversational turns where multi-agent depth is overkill.
 - [ ] **Settings drawer (CLI feature parity)** — surface `--serious` / `--thinking=high`, `--search`, `--role=` forced routing as toggles in the UI, so the web UI matches the CLI's full flag surface. Closes the "merge function into UI" thread.
 - [ ] **PhaseErrorBoundary around loading + response phases** — currently only the orbital phase is wrapped; defensive coverage so any future render crash anywhere in the SPA shows a recoverable panel instead of blacking the page.
-- [ ] **Web-only editable long-term role instructions.** Add a local instructions/memory file that the web UI can edit and the user can also modify directly on disk. At the start of each new thread, load those custom instructions, feed the relevant parts to orchestration, and pass role-specific guidance to each specialist so users can persist preferences like tone, coding style, research depth, formatting rules, or per-model behavior without changing prompts in code. Keep it local-first and transparent: document the file path, expose an editor in settings, and make the first turn include the instructions plus the user prompt.
+- [x] **Web-only editable long-term role instructions.** The web UI now reads/writes `~/.multi-agent/role-instructions.json` through `/api/role-instructions` and exposes a settings-drawer editor with one global box plus one box per role. Every web chat turn loads the current file, injects the global text plus the matching role-specific text into outbound role calls, and keeps those hidden instructions out of the persisted visible transcript. Users can also edit the JSON file directly on disk; missing role keys are normalized to empty strings. See `src/roles/instructions.ts`, `src/chat/session.ts`, `src/web/server.ts`, and `src/web/static/app.jsx`.
 
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
@@ -753,6 +754,40 @@ dotfiles — if you ask the model to read `.env`, it will read `.env`. Use
 **Cost.** Each tool-using request makes 2+ real model calls (one to decide on
 the tool, one for the final answer, plus one per additional tool round).
 Trace mode (`--trace`) shows the exact call sequence.
+
+### Web role instructions
+
+The web UI has local long-term role instructions for per-role preferences. Open
+the settings drawer and edit **Long-term role instructions**, or edit the JSON
+file directly:
+
+```
+~/.multi-agent/role-instructions.json
+```
+
+Shape:
+
+```json
+{
+  "version": 1,
+  "global": "Applies to every role call.",
+  "roles": {
+    "perception": "Research preferences and source expectations.",
+    "reasoning": "Planning and tradeoff preferences.",
+    "orchestration": "Routing and synthesis preferences.",
+    "action-code": "Coding style and implementation preferences.",
+    "action-structural": "Formatting and presentation preferences.",
+    "action-repetitive": "Checking, QA, and bulk-work preferences.",
+    "mindmap-categorize": "Mindmap categorization preferences."
+  }
+}
+```
+
+The server loads this file on every web chat request. Global instructions plus
+the matching role's text are injected into outbound model history as hidden
+local context, then the visible session transcript persists only the user's
+message and the assistant reply. This is web-only for now; CLI `chat` and `ask`
+do not read this file.
 
 ### Bash tool
 

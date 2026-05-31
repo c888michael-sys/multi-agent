@@ -24,6 +24,11 @@ import { ChatSession, listSessions } from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
 import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 import { DEFAULT_ROLES } from "../roles/default-registry.js";
+import {
+  DEFAULT_ROLE_INSTRUCTIONS_PATH,
+  readRoleInstructions,
+  writeRoleInstructions,
+} from "../roles/instructions.js";
 import { LOCAL_OLLAMA_MODELS } from "../config.js";
 import type { CompleteOptions } from "../provider.js";
 import type { RoutingMode } from "../agents/multi-agent-workflow.js";
@@ -114,6 +119,8 @@ export interface ServerOptions {
   cors?: boolean;
   /** Override chat-session storage directory. Used by tests; default is ~/.multi-agent/sessions. */
   sessionStorageDir?: string;
+  /** Override web-editable role-instruction file. Used by tests; default is ~/.multi-agent/role-instructions.json. */
+  roleInstructionsPath?: string;
 }
 
 /**
@@ -237,6 +244,25 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/sessions" && req.method === "GET") {
         sendJson(res, 200, { sessions: listSessions(opts.sessionStorageDir) });
+        return;
+      }
+
+      if (pathname === "/api/role-instructions" && req.method === "GET") {
+        const path = roleInstructionsPath(opts);
+        sendJson(res, 200, { path, instructions: readRoleInstructions(path) });
+        return;
+      }
+
+      if (pathname === "/api/role-instructions" && req.method === "PUT") {
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { instructions?: unknown } | null;
+        if (!parsed || typeof parsed !== "object") {
+          sendJson(res, 400, { error: "JSON body required" });
+          return;
+        }
+        const path = roleInstructionsPath(opts);
+        const instructions = writeRoleInstructions(path, parsed.instructions ?? parsed);
+        sendJson(res, 200, { path, instructions });
         return;
       }
 
@@ -549,9 +575,15 @@ function roleUsageSnapshot(
 }
 
 function createChatSession(opts: ServerOptions, id: string, useLocal?: boolean): ChatSession {
+  const roleInstructionsPathValue = roleInstructionsPath(opts);
   return new ChatSession({
     resolver: resolverFor(opts, useLocal),
     id,
+    roleInstructions: readRoleInstructions(roleInstructionsPathValue),
     ...(opts.sessionStorageDir && { storagePath: join(opts.sessionStorageDir, `${id}.json`) }),
   });
+}
+
+function roleInstructionsPath(opts: ServerOptions): string {
+  return opts.roleInstructionsPath ?? DEFAULT_ROLE_INSTRUCTIONS_PATH;
 }

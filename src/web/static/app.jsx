@@ -443,6 +443,30 @@ function QuotaBanner({ phase, useLocal }) {
 // includes them in the /api/chat-stream body. The chip in the nav reflects
 // the *number of non-default* knobs so the user can tell at a glance
 // whether anything is currently in effect.
+const ROLE_INSTRUCTION_ROLES = [
+  'perception',
+  'reasoning',
+  'orchestration',
+  'action-code',
+  'action-structural',
+  'action-repetitive',
+  'mindmap-categorize',
+];
+
+function normalizeRoleInstructionPayload(value) {
+  const roles = {};
+  for (const role of ROLE_INSTRUCTION_ROLES) {
+    roles[role] = value && value.roles && typeof value.roles[role] === 'string'
+      ? value.roles[role]
+      : '';
+  }
+  return {
+    version: 1,
+    global: value && typeof value.global === 'string' ? value.global : '',
+    roles,
+  };
+}
+
 function SettingsDrawer({ open, onClose, settings, onChange }) {
   const drawerRef = React.useRef(null);
   // Hybrid-mode health gate. When the user toggles 'Hybrid local models'
@@ -453,6 +477,10 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
   // the cloud fallback, which is confusing.
   const [hybridError, setHybridError] = React.useState(null);
   const [hybridChecking, setHybridChecking] = React.useState(false);
+  const [roleInstructions, setRoleInstructions] = React.useState(null);
+  const [roleInstructionsPath, setRoleInstructionsPath] = React.useState('');
+  const [roleInstructionsStatus, setRoleInstructionsStatus] = React.useState('');
+  const [roleInstructionsSaving, setRoleInstructionsSaving] = React.useState(false);
   // Close on Escape so the drawer doesn't trap focus.
   React.useEffect(() => {
     if (!open) return;
@@ -460,6 +488,28 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setRoleInstructionsStatus('');
+    fetch('/api/role-instructions')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        setRoleInstructions(normalizeRoleInstructionPayload(payload.instructions));
+        setRoleInstructionsPath(payload.path || '');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRoleInstructionsStatus(`Could not load role instructions: ${err && err.message ? err.message : String(err)}`);
+        setRoleInstructions(normalizeRoleInstructionPayload(null));
+      });
+    return () => { cancelled = true; };
+  }, [open]);
 
   const onToggleLocal = async (e) => {
     const wantsOn = e.target.checked;
@@ -495,6 +545,33 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     const opt = ROUTING_OPTIONS.find((o) => o.value === e.target.value);
     if (!opt) return;
     onChange({ ...settings, forceRole: opt.forceRole, routingMode: opt.routingMode });
+  };
+
+  const updateRoleInstructions = (next) => {
+    setRoleInstructions(normalizeRoleInstructionPayload(next));
+    setRoleInstructionsStatus('edited locally - save to apply to new turns');
+  };
+
+  const saveRoleInstructions = async () => {
+    const instructions = normalizeRoleInstructionPayload(roleInstructions);
+    setRoleInstructionsSaving(true);
+    setRoleInstructionsStatus('saving...');
+    try {
+      const res = await fetch('/api/role-instructions', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instructions }),
+      });
+      const payload = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      setRoleInstructions(normalizeRoleInstructionPayload(payload.instructions));
+      setRoleInstructionsPath(payload.path || roleInstructionsPath);
+      setRoleInstructionsStatus('saved - the next chat turn will use these instructions');
+    } catch (err) {
+      setRoleInstructionsStatus(`Save failed: ${err && err.message ? err.message : String(err)}`);
+    } finally {
+      setRoleInstructionsSaving(false);
+    }
   };
 
   return (
@@ -577,6 +654,57 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
             <span className="mm-settings-hint">
               <code>auto</code>: orchestrator picks the shortest useful route. <code>multi-agent</code>: plan, research/action, check/repair when needed, then format (default). <code>brainstorming</code>: multiple model perspectives in parallel. Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
             </span>
+          </div>
+          <div className="mm-settings-row mm-settings-row-instructions">
+            <span className="mm-settings-name">Long-term role instructions</span>
+            <span className="mm-settings-hint">
+              Web-only local memory. Saved to <code>{roleInstructionsPath || '~/.multi-agent/role-instructions.json'}</code>; you can edit the file directly too. Global text goes to every role, and each role box only goes to that specialist.
+            </span>
+            {roleInstructions ? (
+              <div className="mm-role-instructions-editor">
+                <label className="mm-role-instruction-field">
+                  <span>Global</span>
+                  <textarea
+                    value={roleInstructions.global}
+                    onChange={(e) => updateRoleInstructions({
+                      ...roleInstructions,
+                      global: e.target.value,
+                    })}
+                    placeholder="Example: Use concise Australian English. Preserve technical detail."
+                  />
+                </label>
+                {ROLE_INSTRUCTION_ROLES.map((role) => (
+                  <label className="mm-role-instruction-field" key={role}>
+                    <span>{role}</span>
+                    <textarea
+                      value={(roleInstructions.roles && roleInstructions.roles[role]) || ''}
+                      onChange={(e) => updateRoleInstructions({
+                        ...roleInstructions,
+                        roles: {
+                          ...roleInstructions.roles,
+                          [role]: e.target.value,
+                        },
+                      })}
+                      placeholder={`Instructions only for ${role}`}
+                    />
+                  </label>
+                ))}
+                <div className="mm-role-instructions-actions">
+                  <button
+                    className="mm-settings-reset"
+                    onClick={saveRoleInstructions}
+                    disabled={roleInstructionsSaving}
+                  >
+                    {roleInstructionsSaving ? 'saving...' : 'save role instructions'}
+                  </button>
+                  {roleInstructionsStatus ? (
+                    <span className="mm-settings-hint">{roleInstructionsStatus}</span>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <span className="mm-settings-hint">loading role instructions...</span>
+            )}
           </div>
           <div className="mm-settings-foot">
             <button

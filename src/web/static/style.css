@@ -2990,6 +2990,46 @@
 .mm-settings-row-select {
   gap: 8px;
 }
+.mm-settings-row-instructions {
+  gap: 12px;
+}
+.mm-role-instructions-editor {
+  display: grid;
+  gap: 12px;
+}
+.mm-role-instruction-field {
+  display: grid;
+  gap: 6px;
+}
+.mm-role-instruction-field > span {
+  color: var(--mm-fg);
+  font-family: var(--mm-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+.mm-role-instruction-field textarea {
+  min-height: 74px;
+  resize: vertical;
+  border: 0.5px solid var(--mm-line-strong);
+  border-radius: 8px;
+  background: var(--mm-bg-deeper);
+  color: var(--mm-fg);
+  padding: 10px 11px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  outline: none;
+}
+.mm-role-instruction-field textarea:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-faint);
+}
+.mm-role-instructions-actions {
+  display: grid;
+  gap: 8px;
+}
 .mm-settings-error {
   display: block;
   margin-top: 8px;

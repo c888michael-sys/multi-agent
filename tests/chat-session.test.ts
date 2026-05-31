@@ -402,6 +402,45 @@ describe("ChatSession smart routing (plan-based)", () => {
       globalThis.fetch = oldFetch;
     }
   });
+
+  it("injects role-scoped long-term instructions into specialist calls without persisting them", async () => {
+    const p = chatProvider(["ack"], "perc");
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "perception", description: "x", candidates: [{ providerId: "perc" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "role-instructions",
+      storagePath: storage,
+      role: "perception",
+      smartRouting: false,
+      roleInstructions: {
+        version: 1,
+        global: "Prefer concise answers.",
+        roles: {
+          perception: "Use research-based phrasing.",
+          reasoning: "State assumptions first.",
+        },
+      },
+    });
+
+    const result = await s.send("what changed?");
+
+    expect(result.reply).toBe("ack");
+    const outboundHistory = JSON.parse(p.calls[0]!.prompt) as ConversationPart[];
+    expect(outboundHistory[0]).toEqual({
+      kind: "user_text",
+      text: expect.stringContaining("Long-term role instructions for perception"),
+    });
+    expect((outboundHistory[0] as { text: string }).text).toContain("Prefer concise answers.");
+    expect((outboundHistory[0] as { text: string }).text).toContain("Use research-based phrasing.");
+    expect((outboundHistory[0] as { text: string }).text).not.toContain("State assumptions first.");
+    expect(s.snapshot().history).toEqual([
+      { kind: "user_text", text: "what changed?" },
+      { kind: "model_text", text: "ack" },
+    ]);
+  });
 });
 
 describe("ChatSession powerful mode", () => {
