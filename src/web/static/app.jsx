@@ -733,6 +733,26 @@ function settingsActiveCount(s) {
   return n;
 }
 
+/** Remove numeric key-slot suffixes (gemini:1 → gemini, gemma:2 → gemma).
+ *  Non-numeric suffixes like groq:llama-70b are left unchanged. */
+function stripSlot(id) {
+  return id ? id.replace(/:(\d+)$/, '') : id;
+}
+
+/** Short human-readable label for the current Composer routing mode. */
+function composerModeLabel(settings) {
+  if (!settings) return 'smart routing';
+  const rv = routingValueFromSettings(settings);
+  const opt = ROUTING_OPTIONS.find(o => o.value === rv);
+  // Strip "(default)" and parenthetical model hints from the stored label.
+  let label = opt ? opt.label.replace(/\s*\([^)]*\)/g, '') : rv;
+  const tags = [];
+  if (settings.serious) tags.push('serious');
+  if (settings.useLocal) tags.push('local');
+  if (tags.length) label += ' · ' + tags.join(' · ');
+  return label;
+}
+
 function Sidebar({ phase, latestResponse, open, useLocal }) {
   const { usage, usageFetchedAt } = useUsage(phase === 'response' ? 'response-tick' : undefined, useLocal);
 
@@ -1021,7 +1041,7 @@ function composeMessageWithAttachments(prompt, attachments) {
 }
 
 // ─── Composer (used in idle + response phases) ─────────────
-function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments, setAttachments }) {
+function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments, setAttachments, settings }) {
   const ref = React.useRef(null);
   const fileRef = React.useRef(null);
   const [attachError, setAttachError] = React.useState(null);
@@ -1109,7 +1129,12 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
           disabled={disabled}
         />
         <div className="mm-composer-bar">
-          <span className="mm-model"><i />smart routing · 5 visible roles</span>
+          <span className="mm-model"><i />{composerModeLabel(settings)}</span>
+          {canAttach && attachments && attachments.length > 0 && (
+            <span className="mm-attach-budget">
+              {(attachments.reduce((s, a) => s + (a.text || a.content || '').length, 0) / 1024).toFixed(0)} / {ATTACH_TOTAL_MAX_BYTES / 1024} KB
+            </span>
+          )}
           <div className="mm-composer-actions">
             {canAttach && (
               <>
@@ -1188,7 +1213,9 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit }) {
   // back to servedBy or the template label.
   const liveLabel = streaming
     ? statusLabel(entry.status)
-    : (entry.servedBy?.length ? entry.servedBy.join(' + ') : (tpl?.label || entry.template));
+    : (entry.servedBy?.length
+        ? entry.servedBy.map(stripSlot).join(' + ')
+        : (tpl?.label || entry.template));
   return (
     <div
       className={'mm-turn' + (isNewest ? ' newest' : '') + (streaming ? ' streaming' : '')}
@@ -1196,7 +1223,7 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit }) {
     >
       <div className="mm-turn-user">
         <span className="mm-turn-role">you</span>
-        <div className="mm-turn-user-bubble">{entry.prompt}</div>
+        <div className="mm-turn-user-bubble"><InlineMarkdown text={entry.prompt || ''} /></div>
       </div>
       <div className="mm-turn-ai">
         <span className="mm-turn-role">
@@ -2328,7 +2355,7 @@ function previewTextForNode(node) {
 
 // ─── Phase views ───────────────────────────────────────────
 
-function IdleView({ draft, setDraft, submit, attachments, setAttachments }) {
+function IdleView({ draft, setDraft, submit, attachments, setAttachments, settings }) {
   return (
     <div className="mm-phase mm-phase-idle">
       <div className="mm-hero">
@@ -2349,7 +2376,7 @@ function IdleView({ draft, setDraft, submit, attachments, setAttachments }) {
         </p>
       </div>
       <div className="mm-composer-wrap">
-        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} />
+        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} settings={settings} />
       </div>
       <div className="mm-template-row">
         {TEMPLATE_KEYS.map((k) => (
@@ -2424,7 +2451,7 @@ function LoadingView({ prompt, liveStatus, summarize, agentState }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
-  attachments, setAttachments, burstError, onApplyEdit,
+  attachments, setAttachments, burstError, onApplyEdit, settings,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -2536,7 +2563,7 @@ function ResponseStackView({
           <div ref={bottomRef} className="mm-chat-anchor" aria-hidden="true" />
         </div>
         <div className="mm-chat-composer">
-          <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} />
+          <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} />
         </div>
       </div>
     </div>
@@ -2673,7 +2700,7 @@ function OrbitalNode({ node, pos, index, onFocus }) {
 // Focused-node view — covers the stage (sidebar untouched), composer
 // slides up to the bottom strip and is pre-filled so the next message
 // is scoped to this specific category.
-function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attachments, setAttachments }) {
+function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attachments, setAttachments, settings }) {
   const bodyRef = React.useRef(null);
   React.useEffect(() => {
     const mj = window.MathJax;
@@ -2705,7 +2732,7 @@ function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attach
         </div>
       </div>
       <div className="mm-focus-composer-wrap">
-        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} />
+        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} settings={settings} />
       </div>
     </div>
   );
@@ -2714,7 +2741,7 @@ function FocusedNodeView({ node, accent, onBack, draft, setDraft, submit, attach
 function OrbitalMindmap({
   responses, collapse, reset, phase,
   draft, setDraft, submit,
-  attachments, setAttachments,
+  attachments, setAttachments, settings,
 }) {
   const newest = responses[responses.length - 1];
   const stageRef = React.useRef(null);
@@ -2751,6 +2778,7 @@ function OrbitalMindmap({
         onBack={closeFocus}
         draft={draft} setDraft={setDraft} submit={submit}
         attachments={attachments} setAttachments={setAttachments}
+        settings={settings}
       />
     );
   }
@@ -2803,7 +2831,7 @@ function OrbitalMindmap({
             <span>collapse to thread</span>
           </button>
           <span className="mm-orbit-center-tag">A · composer</span>
-          <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} />
+          <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} />
         </div>
 
         {positions.map((pos, i) => (
@@ -4098,7 +4126,7 @@ function HeroMindmap() {
         ) : null}
         {phase === 'idle' && (
           <PhaseErrorBoundary label="idle view" recoverLabel="reset" onRecover={reset}>
-            <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} />
+            <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} />
           </PhaseErrorBoundary>
         )}
         {phase === 'loading' && (
@@ -4119,6 +4147,7 @@ function HeroMindmap() {
               attachments={attachments} setAttachments={setAttachments}
               burstError={burstError}
               onApplyEdit={openFileForEdit}
+              settings={settings}
             />
           </PhaseErrorBoundary>
         )}
@@ -4138,6 +4167,7 @@ function HeroMindmap() {
               collapse={collapse} reset={reset} phase={phase}
               draft={draft} setDraft={setDraft} submit={submit}
               attachments={attachments} setAttachments={setAttachments}
+              settings={settings}
             />
           </PhaseErrorBoundary>
         )}

@@ -393,11 +393,11 @@ Completed from earlier quality-of-life list:
 
 Smaller frontend refinements from a UI review pass, ordered by value-to-effort. Quick wins (1–5) need no new dependencies; medium items (6–9) are higher visible value; (10) is tracked above under "Edit/regenerate/continue/branch messages" and needs backend support.
 
-- [ ] **Composer mode label reflects active settings.** The composer footer always reads `smart routing · 5 visible roles` even in brainstorming mode or with a pinned role. Thread `settings` into `Composer` so it shows the live mode (e.g. `multi-agent · 5 roles`, `brainstorming · 4 specialists`, `perception only · search on`). (~30 min)
-- [ ] **User-bubble markdown rendering.** `mm-turn-user-bubble` renders the raw prompt string, so pasted lists/code show raw markdown symbols. Run it through the existing `InlineMarkdown`. (~15 min)
-- [ ] **Strip provider key suffixes from the `servedBy` pill.** `ChatTurn` shows internal IDs like `gemini:1 + action-structural`; drop the `:1`/`:2` key-slot suffix for display. (~15 min)
-- [ ] **Empty state for the threads drawer.** When no sessions are saved the drawer opens blank — add a centered "No saved threads yet" message. (~20 min)
-- [ ] **Attachment budget counter.** Attachment chips show per-file size but no total; add a `3.2 / 1024 KB` counter by the paperclip so users see remaining headroom before the cap. (~20 min)
+- [x] **Composer mode label reflects active settings.** `composerModeLabel(settings)` computes the live mode string from `routingValueFromSettings` + `settings.serious` / `settings.useLocal` flags; the `<i>` dot and label update in real time without hardcoded text.
+- [x] **User-bubble markdown rendering.** `mm-turn-user-bubble` now renders through `InlineMarkdown` so pasted bold text, inline code, and math spans display correctly.
+- [x] **Strip provider key suffixes from the `servedBy` pill.** `stripSlot(id)` removes `:N` numeric suffixes (`gemini:1` → `gemini`, `gemma:2` → `gemma`) while leaving non-numeric slugs like `groq:llama-70b` unchanged.
+- [x] **Empty state for the threads drawer.** Rendered by `ConversationDrawer` when `filtered.length === 0`.
+- [x] **Attachment budget counter.** `mm-attach-budget` span shows `X / 1024 KB` in the composer bar whenever attachments are present.
 - [ ] **Keyboard shortcuts.** None today. Add `Ctrl+K` (focus composer / thread search), `Ctrl+Shift+N` (new thread), `Ctrl+/` (settings), `Escape` (close drawer), with tooltip hints (e.g. a `⌘K` badge). (~1 hr)
 - [ ] **Per-turn elapsed time + token estimate.** Show a faint `took 4.2 s` / token estimate next to the `servedBy` pill so slow turns are explainable. (~45 min)
 - [ ] **Mindmap node hover tooltip.** Nodes show a title + short preview; a hover tooltip with the full node content lets users preview before opening the focused view. (~45 min)

@@ -519,9 +519,15 @@
   font-style: normal;
 }
 .mm-composer-bar {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; align-items: center; gap: 10px;
   padding-top: 6px;
   border-top: 0.5px solid var(--mm-line);
+}
+.mm-composer-bar .mm-composer-actions { margin-left: auto; }
+.mm-attach-budget {
+  font-family: var(--mm-font-mono); font-size: 9px;
+  color: var(--mm-fg-faint); letter-spacing: 0.08em;
+  white-space: nowrap;
 }
 .mm-model {
   font-family: var(--mm-font-mono); font-size: 9.5px;
