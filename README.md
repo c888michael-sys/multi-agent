@@ -246,6 +246,21 @@ Completed from earlier quality-of-life list:
 - [x] **PhaseErrorBoundary coverage.** Idle, loading, chat, catalyst, and mindmap phases are wrapped with recoverable boundaries.
 - [x] **Web-only editable long-term role instructions.** The web UI reads/writes `~/.multi-agent/role-instructions.json` through `/api/role-instructions` and injects global plus role-specific guidance into outbound web chat role calls.
 
+### UI/UX polish backlog
+
+Smaller frontend refinements from a UI review pass, ordered by value-to-effort. Quick wins (1–5) need no new dependencies; medium items (6–9) are higher visible value; (10) is tracked above under "Edit/regenerate/continue/branch messages" and needs backend support.
+
+- [ ] **Composer mode label reflects active settings.** The composer footer always reads `smart routing · 5 visible roles` even in brainstorming mode or with a pinned role. Thread `settings` into `Composer` so it shows the live mode (e.g. `multi-agent · 5 roles`, `brainstorming · 4 specialists`, `perception only · search on`). (~30 min)
+- [ ] **User-bubble markdown rendering.** `mm-turn-user-bubble` renders the raw prompt string, so pasted lists/code show raw markdown symbols. Run it through the existing `InlineMarkdown`. (~15 min)
+- [ ] **Strip provider key suffixes from the `servedBy` pill.** `ChatTurn` shows internal IDs like `gemini:1 + action-structural`; drop the `:1`/`:2` key-slot suffix for display. (~15 min)
+- [ ] **Empty state for the threads drawer.** When no sessions are saved the drawer opens blank — add a centered "No saved threads yet" message. (~20 min)
+- [ ] **Attachment budget counter.** Attachment chips show per-file size but no total; add a `3.2 / 1024 KB` counter by the paperclip so users see remaining headroom before the cap. (~20 min)
+- [ ] **Keyboard shortcuts.** None today. Add `Ctrl+K` (focus composer / thread search), `Ctrl+Shift+N` (new thread), `Ctrl+/` (settings), `Escape` (close drawer), with tooltip hints (e.g. a `⌘K` badge). (~1 hr)
+- [ ] **Per-turn elapsed time + token estimate.** Show a faint `took 4.2 s` / token estimate next to the `servedBy` pill so slow turns are explainable. (~45 min)
+- [ ] **Mindmap node hover tooltip.** Nodes show a title + short preview; a hover tooltip with the full node content lets users preview before opening the focused view. (~45 min)
+- [ ] **Code syntax highlighting in responses.** `MarkdownProse` renders code blocks unhighlighted. Add highlight.js (CDN, auto-detect) alongside the existing MathJax typeset call. (~1 hr)
+- [ ] **Clearer `BURST INTO MINDMAP` affordance.** The label is opaque to first-time users — rename (e.g. `↓ Expand into mindmap`) or show a one-time `localStorage`-gated hint ("Visualize this response as an interactive map"). (~30 min)
+
 See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys and exactly what needs tuning once keys arrive.
 
 ---
