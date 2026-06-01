@@ -590,6 +590,37 @@ describe("ChatSession saveAs / loadFrom", () => {
     });
     expect(s.loadFrom("does-not-exist")).toBe(false);
   });
+
+  it("setMetadata title and pinned survive subsequent send() persist calls", async () => {
+    const p = chatProvider(["reply1", "reply2"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "meta-test", storagePath: storage, smartRouting: false });
+    await s.send("first");
+    s.setMetadata({ title: "My Title", pinned: true });
+
+    // Verify in-memory snapshot reflects the metadata.
+    expect(s.snapshot().title).toBe("My Title");
+    expect(s.snapshot().pinned).toBe(true);
+
+    // Sending another message must NOT clobber title/pinned on disk.
+    await s.send("second");
+    const onDisk = JSON.parse(readFileSync(storage, "utf8"));
+    expect(onDisk.title).toBe("My Title");
+    expect(onDisk.pinned).toBe(true);
+
+    // A fresh ChatSession loading from the same file must restore title/pinned.
+    const p2 = chatProvider([]);
+    const router2 = new Router([p2], { maxRetryWaitMs: 0 });
+    const resolver2 = new RoleResolver(router2, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s2 = new ChatSession({ resolver: resolver2, id: "meta-test", storagePath: storage, smartRouting: false });
+    expect(s2.snapshot().title).toBe("My Title");
+    expect(s2.snapshot().pinned).toBe(true);
+  });
 });
 
 describe("ChatSession auto-summarization", () => {

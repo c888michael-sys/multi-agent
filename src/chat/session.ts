@@ -764,6 +764,8 @@ Output ONLY the summary, no preamble.`;
           version: SESSION_VERSION,
           id: this.id,
           role: this.role,
+          ...(this.title !== undefined && { title: this.title }),
+          ...(this.pinned && { pinned: this.pinned }),
           createdAt: this.createdAt,
           updatedAt: this.updatedAt,
           history: this.history,
@@ -785,10 +787,14 @@ Output ONLY the summary, no preamble.`;
         version?: number;
         createdAt?: number;
         updatedAt?: number;
+        title?: string;
+        pinned?: boolean;
         history?: ConversationPart[];
       };
       if (typeof parsed.createdAt === "number") this.createdAt = parsed.createdAt;
       if (typeof parsed.updatedAt === "number") this.updatedAt = parsed.updatedAt;
+      if (typeof parsed.title === "string" && parsed.title) this.title = parsed.title;
+      if (parsed.pinned === true) this.pinned = true;
       if (Array.isArray(parsed.history)) this.history = parsed.history;
     } catch (err) {
       console.error(
