@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startWebServer } from "../src/web/server.js";
+import type { CompleteOptions } from "../src/provider.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
 // ── Test doubles ─────────────────────────────────────────────────────────
@@ -471,5 +472,62 @@ describe("web server", () => {
     });
     expect((histories[0]![2] as { text: string }).text).toContain("Keep a steady tone.");
     expect((histories[0]![2] as { text: string }).text).toContain("Prefer direct plans.");
+  });
+
+  it("/api/chat-stream aborts in-flight role work when the client disconnects", async () => {
+    const port = pickPort();
+    let roleStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      roleStarted = resolve;
+    });
+    let roleAborted!: () => void;
+    const aborted = new Promise<void>((resolve) => {
+      roleAborted = resolve;
+    });
+    const router = makeRouter([]);
+    const resolver = {
+      runRoleChatStream: async (
+        _name: string,
+        _history: ConversationPart[],
+        onToken: (text: string) => void,
+        opts?: CompleteOptions,
+      ) => {
+        onToken("started");
+        roleStarted();
+        return await new Promise<string>((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => {
+            roleAborted();
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          }, { once: true });
+        });
+      },
+      listRoles: () => [],
+      rosterDescription: () => "",
+    } as unknown as import("../src/roles/resolver.js").RoleResolver;
+    const handle = startWebServer({ router, resolver, port, sessionStorageDir: sessionDir });
+    handles.push(handle);
+
+    const controller = new AbortController();
+    const response = await fetch(`http://localhost:${port}/api/chat-stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "abort-stream",
+        message: "please stop",
+        forceRole: "orchestration",
+      }),
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    await started;
+
+    controller.abort();
+
+    await expect(Promise.race([
+      aborted,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("role was not aborted")), 500)),
+    ])).resolves.toBeUndefined();
   });
 });

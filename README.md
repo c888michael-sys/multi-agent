@@ -223,11 +223,11 @@ The candidate order each role uses today, after live calibration against the act
 
 Audit date: 2026-05-31. Verification at the time of the audit: `npm run typecheck`, `npm test` (237/237), and `npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL` all passed.
 
-The current app already has the core pieces expected from a serious AI chat UI: streaming chat, persistent backend sessions, multi-agent/auto/brainstorming routing, hybrid local Ollama mode, Google Search grounding plus Brave/DuckDuckGo fallback, text-file attachments, quota/sidebar telemetry, a quota warning banner, client-side stop button, broad phase error boundaries, web-editable role instructions, and the mindmap burst workspace.
+The current app already has the core pieces expected from a serious AI chat UI: streaming chat, persistent backend sessions, multi-agent/auto/brainstorming routing, hybrid local Ollama mode, Google Search grounding plus Brave/DuckDuckGo fallback, text-file attachments, quota/sidebar telemetry, a quota warning banner, client/server stop cancellation, broad phase error boundaries, web-editable role instructions, and the mindmap burst workspace.
 
 Priority plan, ordered by user value:
 
-- [ ] **True server-side stop/cancel.** The frontend stop button currently aborts the browser fetch and cleans up the visible in-flight turn, but the server does not yet propagate request disconnects into `ChatSession`, `RoleResolver`, or provider calls. That means the backend/model may continue running after the UI stops listening, so quota may still be spent. Wire request-abort signals through `/api/chat-stream` -> `ChatSession.send()` -> resolver/router/provider calls before claiming stop reliably saves quota.
+- [x] **True server-side stop/cancel.** Implemented for `/api/chat-stream`: client disconnects now abort the stream request, pass an `AbortSignal` through `ChatSession.send()` into the resolver/router/provider path, suppress late SSE writes after disconnect, and interrupt router backoff sleeps plus stalled provider calls. Covered by web-boundary and router regression tests.
 - [ ] **Web conversation manager.** Add a first-class thread drawer: list sessions, rename, delete, pin/favorite, search, duplicate/branch, and export/import. Backend already has `/api/sessions`, `/api/sessions/:id`, and `/api/sessions/:id/clear`; the web UI needs the product layer.
 - [ ] **Edit/regenerate/continue/branch messages.** Add common chat-app controls: edit the last user message and rerun, regenerate assistant response, continue a stopped/truncated response, and branch from a specific turn without overwriting the original.
 - [ ] **Web project file tools with permissions.** CLI `ask --tools` can read/write/list files inside a `--workdir`, but the web chat cannot yet browse or edit project files directly. Add a guarded web tool mode with a visible root directory, per-operation confirmation for writes, diff preview, and a strong warning before destructive operations.
@@ -241,7 +241,7 @@ Priority plan, ordered by user value:
 Completed from earlier quality-of-life list:
 
 - [x] **Quota warning banner.** Implemented in `QuotaBanner` in `src/web/static/app.jsx`.
-- [x] **Client-side stop button.** Implemented with `AbortController` in `src/web/static/app.jsx`, but still needs the server-side cancellation work above.
+- [x] **Client-side stop button.** Implemented with `AbortController` in `src/web/static/app.jsx`; paired with the server-side cancellation path above.
 - [x] **Settings drawer parity.** The web settings drawer now exposes hybrid local mode, serious mode, search grounding, routing/forced role, and long-term role instructions.
 - [x] **PhaseErrorBoundary coverage.** Idle, loading, chat, catalyst, and mindmap phases are wrapped with recoverable boundaries.
 - [x] **Web-only editable long-term role instructions.** The web UI reads/writes `~/.multi-agent/role-instructions.json` through `/api/role-instructions` and injects global plus role-specific guidance into outbound web chat role calls.

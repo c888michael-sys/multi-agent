@@ -17,6 +17,13 @@ class ProviderTimeoutError extends Error {
   }
 }
 
+class ProviderAbortError extends Error {
+  constructor() {
+    super("Provider request aborted");
+    this.name = "AbortError";
+  }
+}
+
 /**
  * Optional out-parameter callers can pass to learn which provider actually
  * served the call (useful when an allow-list spans multiple providers and
@@ -134,7 +141,7 @@ export class Router {
       if (totalElapsedIfWeWait > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      await this.sleep(waitMs);
+      await this.sleepWithSignal(waitMs, opts?.signal);
     }
   }
 
@@ -235,7 +242,7 @@ export class Router {
       if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      await this.sleep(waitMs);
+      await this.sleepWithSignal(waitMs, opts?.signal);
     }
   }
 
@@ -292,7 +299,7 @@ export class Router {
       if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      await this.sleep(waitMs);
+      await this.sleepWithSignal(waitMs, opts?.signal);
     }
   }
 
@@ -368,7 +375,7 @@ export class Router {
       if (this.now() - startedAt + waitMs > this.maxRetryWaitMs) {
         throw new AllProvidersExhaustedError(attempts);
       }
-      await this.sleep(waitMs);
+      await this.sleepWithSignal(waitMs, opts?.signal);
     }
   }
 
@@ -401,9 +408,16 @@ export class Router {
     fn: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     const controller = new AbortController();
-    const abortFromParent = () => controller.abort();
+    let rejectAbort: (err: ProviderAbortError) => void = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const abortFromParent = () => {
+      controller.abort();
+      rejectAbort(new ProviderAbortError());
+    };
     if (parentSignal) {
-      if (parentSignal.aborted) controller.abort();
+      if (parentSignal.aborted) abortFromParent();
       else parentSignal.addEventListener("abort", abortFromParent, { once: true });
     }
 
@@ -416,10 +430,27 @@ export class Router {
     });
 
     try {
-      return await Promise.race([fn(controller.signal), timeout]);
+      return await Promise.race([fn(controller.signal), timeout, aborted]);
     } finally {
       if (timer) clearTimeout(timer);
       parentSignal?.removeEventListener("abort", abortFromParent);
+    }
+  }
+
+  private async sleepWithSignal(ms: number, signal: AbortSignal | undefined): Promise<void> {
+    if (!signal) return this.sleep(ms);
+    if (signal.aborted) throw new ProviderAbortError();
+
+    let abortFromParent: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abortFromParent = () => reject(new ProviderAbortError());
+      signal.addEventListener("abort", abortFromParent, { once: true });
+    });
+
+    try {
+      await Promise.race([this.sleep(ms), aborted]);
+    } finally {
+      if (abortFromParent) signal.removeEventListener("abort", abortFromParent);
     }
   }
 }

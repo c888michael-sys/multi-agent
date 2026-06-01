@@ -145,6 +145,30 @@ describe("Router", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(45);
     expect(signalAborted).toBe(true);
   });
+
+  it("rejects promptly when the caller aborts a stalled provider request", async () => {
+    const controller = new AbortController();
+    let signalAborted = false;
+    const stalled = {
+      id: "stalled",
+      model: "fake-model",
+      complete: (_prompt: string, opts?: { signal?: AbortSignal }) =>
+        new Promise<string>((_resolve) => {
+          opts?.signal?.addEventListener("abort", () => {
+            signalAborted = true;
+          });
+        }),
+      isRateLimitError: () => false,
+      retryAfterMs: () => null,
+    };
+    const r = new Router([stalled], { requestTimeoutMs: 60_000 });
+
+    const pending = r.complete("hi", { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(signalAborted).toBe(true);
+  });
 });
 
 describe("Router — backoff retry when all providers cooled", () => {

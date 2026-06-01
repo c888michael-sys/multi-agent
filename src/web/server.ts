@@ -382,14 +382,23 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         res.setHeader("X-Accel-Buffering", "no");
         // Flush headers eagerly so the browser sees the stream is alive.
         res.write(`:\n\n`);
+        const streamAbort = new AbortController();
+        let clientClosed = false;
+        const abortStream = () => {
+          clientClosed = true;
+          streamAbort.abort();
+        };
+        req.on("aborted", abortStream);
+        res.on("close", abortStream);
         const writeEvent = (payload: unknown) => {
+          if (clientClosed || res.destroyed) return;
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
         };
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
         try {
           const result = await session.send(
             parsed.message,
-            chatOpts.opts,
+            { ...chatOpts.opts, signal: streamAbort.signal },
             (evt) => { writeEvent(evt); },
             chatOpts.routing,
           );
@@ -405,9 +414,13 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             turns: session.turnCount(),
           });
         } catch (err) {
-          writeEvent({ kind: "error", error: (err as Error).message });
+          if (!streamAbort.signal.aborted) {
+            writeEvent({ kind: "error", error: (err as Error).message });
+          }
         } finally {
-          res.end();
+          req.off("aborted", abortStream);
+          res.off("close", abortStream);
+          if (!clientClosed && !res.writableEnded) res.end();
         }
         return;
       }
