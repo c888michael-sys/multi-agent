@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 export const FILE_MAX_BYTES = 262_144; // 256 KB per file, matches composer attachment cap
@@ -58,30 +58,47 @@ export interface ReadResult {
 export class WebFileService {
   readonly root: string;
   readonly maxBytes: number;
+  private readonly realRoot: string;
 
   constructor(root: string, opts?: { maxBytes?: number }) {
     if (!isAbsolute(root)) throw new Error(`projectRoot must be absolute, got: ${root}`);
     this.root = resolve(root);
+    this.realRoot = realpathSync(this.root);
     this.maxBytes = opts?.maxBytes ?? FILE_MAX_BYTES;
   }
 
   /**
    * Resolve a relative path against the root and verify it doesn't escape.
    * Throws with a 403-semantics message if it escapes or is blocked.
+   * Also resolves symlinks via realpathSync to prevent symlink-bypass attacks.
    */
   private resolveSafe(userPath: string): string {
-    // Normalize away any .. segments
+    // Normalize away any .. segments and check lexical containment first.
     const candidate = resolve(this.root, normalize(userPath));
     const rel = relative(this.root, candidate);
     if (rel.startsWith("..") || isAbsolute(rel)) {
       throw Object.assign(new Error("path escapes root"), { code: "TRAVERSAL" });
     }
-    // Check every path component for blocked names
+    // Check every path component for blocked names.
     const parts = rel === "" ? [] : rel.split(/[\\/]/);
     for (const part of parts) {
       if (isBlocked(part)) {
         throw Object.assign(new Error(`blocked path: ${userPath}`), { code: "BLOCKED" });
       }
+    }
+    // Resolve symlinks and re-verify: a symlink inside root could point outside it.
+    // If the path doesn't exist yet, realpathSync throws — skip the check in that
+    // case; the caller (listDir / readText) will handle the missing-path error.
+    try {
+      const realCandidate = realpathSync(candidate);
+      const realRel = relative(this.realRoot, realCandidate);
+      if (realRel.startsWith("..") || isAbsolute(realRel)) {
+        throw Object.assign(new Error("path escapes root"), { code: "TRAVERSAL" });
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & { code?: string };
+      if (e.code === "TRAVERSAL") throw err;
+      // ENOENT / ENOTDIR: path doesn't exist, let the caller handle it.
     }
     return candidate;
   }
@@ -97,7 +114,8 @@ export class WebFileService {
     }
 
     const rawNames = readdirSync(abs);
-    // Dirs first, then files, each group alphabetical
+    // Dirs first, then files, each group alphabetical. Symlinks are skipped —
+    // they could point outside the root and are not needed in the browser.
     const dirs: DirEntry[] = [];
     const files: DirEntry[] = [];
     for (const name of rawNames) {
@@ -105,6 +123,10 @@ export class WebFileService {
       const childAbs = join(abs, name);
       let childSt;
       try { childSt = statSync(childAbs); } catch { continue; }
+      // lstat detects symlinks without following them; skip to prevent bypass.
+      let childLst;
+      try { childLst = lstatSync(childAbs); } catch { continue; }
+      if (childLst.isSymbolicLink()) continue;
       const rel = relative(this.root, childAbs).replace(/\\/g, "/");
       if (childSt.isDirectory()) {
         dirs.push({ name, path: rel, kind: "dir", readable: true });
