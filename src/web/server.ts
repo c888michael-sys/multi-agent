@@ -145,6 +145,15 @@ function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleRe
   return opts.resolver;
 }
 
+/** Allowed Origin values for state-changing file endpoints (localhost only). */
+function isAllowedOrigin(origin: string | undefined, port: number): boolean {
+  if (!origin) return true; // direct API / curl — no Origin header
+  return (
+    origin === `http://localhost:${port}` ||
+    origin === `http://127.0.0.1:${port}`
+  );
+}
+
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
   const port = opts.port ?? 7421;
   const fileService = new WebFileService(resolve(opts.projectRoot ?? process.cwd()));
@@ -328,6 +337,17 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/files/write" && req.method === "POST") {
+        // CSRF guard: require application/json (forces CORS preflight from
+        // cross-origin pages) and reject requests with a foreign Origin header.
+        const ct = req.headers["content-type"] ?? "";
+        if (!ct.includes("application/json")) {
+          sendJson(res, 415, { error: "Content-Type must be application/json" });
+          return;
+        }
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
         const body = await readBody(req);
         const parsed = safeJsonParse(body) as {
           path?: string; content?: string;

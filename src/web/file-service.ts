@@ -87,6 +87,8 @@ export class WebFileService {
       }
     }
     // Resolve symlinks and re-verify: a symlink inside root could point outside it.
+    // Also re-run isBlocked on the real path's components so a symlink like
+    // root/ok-name -> root/.env cannot bypass the blocked-name check.
     // If the path doesn't exist yet, realpathSync throws — skip the check in that
     // case; the caller (listDir / readText) will handle the missing-path error.
     try {
@@ -95,9 +97,16 @@ export class WebFileService {
       if (realRel.startsWith("..") || isAbsolute(realRel)) {
         throw Object.assign(new Error("path escapes root"), { code: "TRAVERSAL" });
       }
+      // Re-check every component of the resolved real path for blocked names.
+      const realParts = realRel === "" ? [] : realRel.split(/[\\/]/);
+      for (const part of realParts) {
+        if (isBlocked(part)) {
+          throw Object.assign(new Error(`blocked path: ${userPath}`), { code: "BLOCKED" });
+        }
+      }
     } catch (err) {
       const e = err as NodeJS.ErrnoException & { code?: string };
-      if (e.code === "TRAVERSAL") throw err;
+      if (e.code === "TRAVERSAL" || e.code === "BLOCKED") throw err;
       // ENOENT / ENOTDIR: path doesn't exist, let the caller handle it.
     }
     return candidate;
@@ -186,7 +195,16 @@ export class WebFileService {
     if (st.isDirectory()) {
       throw Object.assign(new Error(`path is a directory: ${userPath}`), { code: "IS_DIR" });
     }
+    if (st.size > this.maxBytes) {
+      throw Object.assign(
+        new Error(`file too large (${st.size} bytes; max ${this.maxBytes})`),
+        { code: "TOO_LARGE" },
+      );
+    }
     const buf = readFileSync(abs);
+    if (isBinary(buf)) {
+      throw Object.assign(new Error("binary files are not supported"), { code: "BINARY" });
+    }
     const beforeSha256 = createHash("sha256").update(buf).digest("hex");
     const oldContent = buf.toString("utf8");
     const rel = relative(this.root, abs).replace(/\\/g, "/");
@@ -224,8 +242,16 @@ export class WebFileService {
         );
       }
     } else {
-      // New file — walk up to the deepest existing ancestor, resolve its
-      // realpath, and verify it's still inside realRoot before mkdir.
+      // New file — must not already exist (prevents silent overwrite when
+      // expectedSha256 is null but the file was created concurrently).
+      if (existsSync(abs)) {
+        throw Object.assign(
+          new Error("file already exists; supply expectedSha256 to overwrite"),
+          { code: "CONFLICT" },
+        );
+      }
+      // Walk up to the deepest existing ancestor, resolve its realpath, and
+      // verify it's still inside realRoot before mkdir.
       const parentDir = dirname(abs);
       let ancestor = parentDir;
       while (!existsSync(ancestor)) ancestor = dirname(ancestor);
