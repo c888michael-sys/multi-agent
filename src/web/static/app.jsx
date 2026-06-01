@@ -1152,11 +1152,35 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
 // scan the thread at a glance. Newest gets `data-newest`, which the CSS uses
 // to scale it up slightly and brighten the accent — a subtle "you're looking
 // at the latest result" cue.
+/**
+ * Scan a model response for fenced code blocks whose first line is a
+ * path comment ( // src/foo.ts  |  # src/foo.py  |  -- src/foo.sql ).
+ * Returns unique { path, content } pairs so the UI can offer "apply to file".
+ */
+function detectFileEdits(text) {
+  if (!text) return [];
+  const results = [];
+  const seen = new Set();
+  const fenceRe = /```[^\n`]*\n([\s\S]*?)```/g;
+  let m;
+  while ((m = fenceRe.exec(text)) !== null) {
+    const lines = m[1].split('\n');
+    if (lines.length < 2) continue;
+    const pathMatch = lines[0].match(/^(?:\/\/|#|--|\/\*)\s*([\w./\\-]+\.[a-zA-Z]{1,10})\s*$/);
+    if (!pathMatch) continue;
+    const path = pathMatch[1].replace(/^\//, '');
+    if (seen.has(path) || path.startsWith('http')) continue;
+    seen.add(path);
+    results.push({ path, content: lines.slice(1).join('\n').replace(/\n$/, '') });
+  }
+  return results;
+}
+
 // One turn in the chat-style scroll view. User prompt on top
 // (right-aligned), AI response below (left-aligned). The AI bubble
 // renders the orchestrator's RAW prose answer (no category split —
 // that's the mindmap's job). Newest gets a subtle accent ring.
-function ChatTurn({ entry, accent, isNewest }) {
+function ChatTurn({ entry, accent, isNewest, onApplyEdit }) {
   const tpl = TEMPLATE_DEFS[entry.template];
   const streaming = !!entry.streaming;
   // Status pill: while streaming, surface the live phase (plan / role /
@@ -1189,6 +1213,14 @@ function ChatTurn({ entry, accent, isNewest }) {
           {streaming && <span className="mm-turn-caret" aria-hidden="true" />}
           <div className="mm-turn-foot">
             <CopyButton getText={() => entry.text || ''} />
+            {!streaming && onApplyEdit && detectFileEdits(entry.text).map(edit => (
+              <button
+                key={edit.path}
+                className="mm-turn-apply-btn"
+                onClick={() => onApplyEdit(edit.path, edit.content)}
+                title={'Apply this code to ' + edit.path}
+              >apply → {edit.path}</button>
+            ))}
           </div>
         </div>
       </div>
@@ -2392,7 +2424,7 @@ function LoadingView({ prompt, liveStatus, summarize, agentState }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
-  attachments, setAttachments, burstError,
+  attachments, setAttachments, burstError, onApplyEdit,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -2477,6 +2509,7 @@ function ResponseStackView({
               entry={entry}
               accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
               isNewest={i === responses.length - 1 && !liveTurn}
+              onApplyEdit={onApplyEdit}
             />
           ))}
           {/* In-flight turn: shows the user prompt + the partial AI bubble
@@ -3015,7 +3048,7 @@ class PhaseErrorBoundary extends React.Component {
   }
 }
 
-function FileDrawer({ open, onClose, attachments, setAttachments }) {
+function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPreloadConsumed }) {
   const [rootInfo, setRootInfo] = React.useState(null);
   const [currentPath, setCurrentPath] = React.useState('.');
   const [entries, setEntries] = React.useState([]);
@@ -3054,6 +3087,41 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
       setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
     }
   }, [open]);
+
+  // Preload: when opened from a chat "apply" button, auto-fetch the target file,
+  // pre-fill the editor with the proposed content, and jump straight to diff view.
+  React.useEffect(() => {
+    if (!open || !preload) return;
+    onPreloadConsumed && onPreloadConsumed();
+    setPreviewError(null); setPreviewLoading(true); setSelectedFile(null);
+    setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
+    fetch('/api/files/read?path=' + encodeURIComponent(preload.path))
+      .then(async r => {
+        const j = await r.json();
+        if (!r.ok) {
+          // File doesn't exist yet — enter edit mode as a new-file creation.
+          setSelectedFile({ path: preload.path, content: '', size: 0, sha256: null, truncated: false });
+          setEditContent(preload.content);
+          setEditMode(true);
+          return;
+        }
+        setSelectedFile(j);
+        setEditContent(preload.content);
+        // Auto-compute diff so the user lands directly on the diff view.
+        return fetch('/api/files/diff', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: j.path, content: preload.content }),
+        }).then(async dr => {
+          const dj = await dr.json();
+          if (!dr.ok) throw new Error(dj.error || 'Diff error');
+          setDiffResult(dj);
+          setEditMode(true);
+        });
+      })
+      .catch(e => setPreviewError(e.message))
+      .finally(() => setPreviewLoading(false));
+  }, [open, preload]);
 
   function navigateTo(path) {
     setCurrentPath(path); setSelectedFile(null); setPreviewError(null);
@@ -3362,6 +3430,11 @@ function HeroMindmap() {
   const activeSettingsCount = settingsActiveCount(settings);
   const [sessionsOpen, setSessionsOpen] = React.useState(false);
   const [filesOpen, setFilesOpen] = React.useState(false);
+  const [fileDrawerPreload, setFileDrawerPreload] = React.useState(null);
+  const openFileForEdit = React.useCallback((path, content) => {
+    setFileDrawerPreload({ path, content });
+    setFilesOpen(true);
+  }, []);
   const [sessionList, setSessionList] = React.useState([]);
   const [sessionQuery, setSessionQuery] = React.useState('');
   const [sessionBusy, setSessionBusy] = React.useState(false);
@@ -3996,9 +4069,11 @@ function HeroMindmap() {
       />
       <FileDrawer
         open={filesOpen}
-        onClose={() => setFilesOpen(false)}
+        onClose={() => { setFilesOpen(false); setFileDrawerPreload(null); }}
         attachments={attachments}
         setAttachments={setAttachments}
+        preload={fileDrawerPreload}
+        onPreloadConsumed={() => setFileDrawerPreload(null)}
       />
 
       <div
@@ -4043,6 +4118,7 @@ function HeroMindmap() {
               liveTurn={liveTurn}
               attachments={attachments} setAttachments={setAttachments}
               burstError={burstError}
+              onApplyEdit={openFileForEdit}
             />
           </PhaseErrorBoundary>
         )}

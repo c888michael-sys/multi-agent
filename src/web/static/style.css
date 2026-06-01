@@ -2611,6 +2611,18 @@
   padding: 2px 8px; font-size: 9.5px; border-radius: 3px;
   letter-spacing: 0.12em; text-transform: uppercase;
 }
+.mm-turn-foot { flex-wrap: wrap; gap: 6px; }
+.mm-turn-apply-btn {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 0.5px solid color-mix(in oklch, var(--accent) 40%, var(--mm-line));
+  background: color-mix(in oklch, var(--accent) 8%, transparent);
+  color: var(--mm-fg-dim);
+  font-family: var(--mm-font-mono);
+  font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  cursor: pointer; white-space: nowrap;
+}
+.mm-turn-apply-btn:hover { color: var(--mm-fg); background: color-mix(in oklch, var(--accent) 16%, transparent); }
 
 /* Mobile: tighter padding, full-width bubbles */
 @media (max-width: 640px) {
