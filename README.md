@@ -233,10 +233,11 @@ Priority plan, ordered by user value:
 - [ ] **Edit/regenerate/continue/branch messages.** Add common chat-app controls: edit the last user message and rerun, regenerate assistant response, continue a stopped/truncated response, and branch from a specific turn without overwriting the original.
 - [ ] **Richer attachments.** Current web attachments are text-only. Add PDF extraction, image/screenshot upload with OCR/vision, larger-file chunking, folder/drop support, and clearer context-budget estimates before submit.
 - [ ] **Artifacts and previews.** Add generated-file artifacts, code blocks that can become files, diff views, rendered HTML/CSS previews, and "apply this patch" flows.
-- [ ] **Better source/citation UX.** Web search results should surface as source chips/citations in the final answer and mindmap nodes, especially when perception falls back to Brave/DuckDuckGo.
+- [ ] **Better source/citation UX.** Web search results should surface as source chips/citations in the final answer and mindmap nodes, especially when perception falls back to Brave/DuckDuckGo. **Detailed worker plan below: "Source citations from search grounding."**
 - [ ] **Model/provider picker and routing explainability.** Add a per-turn "why this route/model was used" view and optional model override, without exposing confusing internal provider names by default.
 - [ ] **Plugin/tool permission UI.** Before adding powerful web tools (bash, file writes, git), add an explicit permission surface: read-only vs write, current sandbox root, risky command warnings, and audit logs.
 - [ ] **Mindmap workspace polish.** Add drag-rearrange and free placement for category nodes, persisted per response under `localStorage[lattice.responseStack.v2]`.
+- [ ] **Frontend logic test coverage.** `app.jsx` (4,229 lines) + `templates.jsx` (771 lines) have zero unit tests — the no-build React files are verified only by an esbuild parse check. Extract the pure functions (JSON extractor, edit detector, markdown parser, attachment composer) into a testable module and cover them. **Detailed worker plan below: "Frontend logic test coverage."**
 
 ### Worker implementation plan: Web project file tools with permissions
 
@@ -388,6 +389,121 @@ Completed from earlier quality-of-life list:
 - [x] **Settings drawer parity.** The web settings drawer now exposes hybrid local mode, serious mode, search grounding, routing/forced role, and long-term role instructions.
 - [x] **PhaseErrorBoundary coverage.** Idle, loading, chat, catalyst, and mindmap phases are wrapped with recoverable boundaries.
 - [x] **Web-only editable long-term role instructions.** The web UI reads/writes `~/.multi-agent/role-instructions.json` through `/api/role-instructions` and injects global plus role-specific guidance into outbound web chat role calls.
+
+### Worker implementation plan: Source citations from search grounding
+
+> **For agentic workers:** implement task-by-task. Use `superpowers:test-driven-development` for every code task (write the failing test, watch it fail, then implement) and `superpowers:verification-before-completion` before each commit. This is **one shippable PR**: structured sources flow from the provider to the UI as citation chips. Commit + push after each completed phase per the repo convention; update this README in the same commit that ships the feature.
+
+**Goal:** Web search already happens — Gemini native Google Search grounding (the `--search` / settings-drawer toggle) and the Brave/DuckDuckGo `web_search` fallback tool for the Gemma perception path. The sources are currently invisible in the web UI except as an inline `Sources:` markdown footer that Gemini appends to the reply text. Surface them as **structured citation chips** beneath the answer (and, as a stretch, on mindmap nodes), deduped by domain, each linking out to the source URL. The model output should no longer carry a raw markdown source dump that competes with the chips.
+
+**Current data flow (confirmed — read these before starting):**
+
+- `appendSources(text, response)` in `src/providers/gemini.ts:282` is the single point where grounding metadata is read today. It pulls `candidates[0].groundingMetadata.groundingChunks[].web.{uri,title}` and `groundingMetadata.webSearchQueries[]`, dedupes by URI, and **appends a `Sources:\n- [title](uri)` markdown block to the reply string.** That string is what propagates everywhere downstream — there is no structured source data above the provider layer today.
+- The Brave/DuckDuckGo fallback runs through the `web_search` tool in `src/tools/web-search.ts`. Its results are injected as **input context** in `src/chat/session.ts:419-424` (a `[Fallback web_search results …]` block prepended to the perception history), *not* captured as output metadata. So fallback sources must be captured at the tool-call site, not scraped from the reply.
+- `Provider.getLastQuota?(): LiveQuota | null` at `src/provider.ts:71` is the established **side-channel pattern** in this codebase: the provider stashes per-call metadata after `complete*()` returns, and the caller reads it back via an optional accessor (wired through `onHeaders` for quota). Mirror this exactly for sources — do not try to change the `Promise<string>` return type of `complete`/`completeChat`/`completeChatStream`.
+- `SendResult` interface at `src/chat/session.ts:141` currently carries `{ reply, tokenEstimate, budgetPct, servedBy }`. The SSE `done` event in `src/web/server.ts:540` and the `/api/chat` JSON response at `src/web/server.ts:471` both serialize from this shape. The frontend builds its `entry` from `doneEvent` fields around `src/web/static/app.jsx:3701`.
+
+**Data contract — add this type (suggested home: `src/provider.ts` next to `LiveQuota`):**
+
+```ts
+export interface CitationSource {
+  title: string;     // human label; fall back to the hostname if the provider gives none
+  uri: string;       // absolute URL the chip links to
+  domain: string;    // registrable hostname for dedupe + chip label (e.g. "arxiv.org")
+  origin: "gemini-grounding" | "web-search-tool"; // which path produced it
+}
+```
+
+**Phase 1 — capture structured sources at the provider / tool layer:**
+
+- In `src/providers/gemini.ts`: add `extractSources(response): CitationSource[]` (export it for unit testing) that returns the same chunks `appendSources` walks today, as structured objects with `origin: "gemini-grounding"`. Compute `domain` via `new URL(uri).hostname` (strip a leading `www.`); guard with try/catch and skip unparseable URIs. Store the result on a private field and expose `getLastSources(): CitationSource[] | null` on the Gemini provider, cleared at the start of each `complete*()` call so a non-grounded turn returns `null`/`[]` rather than stale data.
+- Add `getLastSources?(): CitationSource[] | null` to the `Provider` interface in `src/provider.ts` (optional, mirroring `getLastQuota?`). Only Gemini implements it for now.
+- **Decide the markdown footer's fate:** stop having `appendSources` mutate the reply for the web/chat path so chips are the single source-of-truth surface. Keep `appendSources` exported and tested for the CLI `ask`/`task` text paths if they still want an inline footer, but the value returned through `SendResult.reply` for the web path should be clean prose. If fully decoupling is too invasive in one PR, the acceptable fallback is: keep the footer, and have the **frontend strip a trailing `Sources:`-led block** before rendering prose (Phase 4) so it isn't shown twice.
+- For the Brave/DDG fallback: at the `web_search` tool-call site in `src/chat/session.ts` (around line 419), capture the tool's structured results into `CitationSource[]` with `origin: "web-search-tool"` and stash them on the session for this turn. `src/tools/web-search.ts` already parses titles + URLs — return/thread those rather than re-parsing text.
+
+**Phase 2 — thread sources up to `SendResult`:**
+
+- In `src/roles/resolver.ts`, after each `runRole` / `runRoleChat` / `runRoleChatStream` call (lines 109 / 130 / 163) resolves, read `provider.getLastSources?.()` from the candidate that actually served — exactly where/how quota is read today — and return it alongside the text. Keep it additive and optional so non-Gemini roles are unaffected.
+- In `src/chat/session.ts`, collect sources from the reply-producing role call(s) plus any captured `web-search-tool` sources, dedupe by `uri`, and attach as `sources: CitationSource[]` on the `SendResult` (line 141). Empty array when none.
+- Persist nothing new server-side beyond the existing session history; sources are recomputed/forwarded per turn, not stored in the session file (the model_text history stays clean prose).
+
+**Phase 3 — expose over the wire:**
+
+- `src/web/server.ts`: add `sources` to both the SSE `done` event (line 540) and the `/api/chat` JSON response (line 471). Serialize `result.sources ?? []`.
+- Add a `web-server.test.ts` case asserting the `done` event JSON includes a `sources` array (use a stubbed session/result, consistent with how the existing chat-stream test injects a fake — no live API calls).
+
+**Phase 4 — render citation chips in the web UI (`src/web/static/app.jsx` + `style.css`):**
+
+- Store `sources: doneEvent?.sources || []` on the finalized `entry` (around line 3701), include it in `savePersistedStack`/`loadPersistedStack` (around line 3008) and default it to `[]` in `responsesFromSessionHistory` (line 2976) so reloaded turns don't crash.
+- Add a `SourceChips({ sources })` component rendered inside `ChatTurn`'s `.mm-turn-ai-bubble` (after `MarkdownProse`, before/near `.mm-turn-foot`). Render nothing when `sources.length === 0`. Each chip: favicon (`https://www.google.com/s2/favicons?domain=<domain>&sz=32` is acceptable; degrade gracefully if it fails to load), the `domain` as label, `title` as the `title=` tooltip, wrapped in an `<a href={uri} target="_blank" rel="noopener noreferrer">`. Dedupe by `domain` for the chip row (full per-URI list can live in the tooltip).
+- If the markdown footer was not fully decoupled in Phase 1, add a small pre-parse in `MarkdownProse`/`parseMarkdownBlocks` (or before passing text in) that strips a trailing block beginning with a `Sources:` line, so the prose and the chips don't duplicate.
+- Style `.mm-source-chips` (flex-wrap row, small gap, top margin) and `.mm-source-chip` (pill: faint border, `var(--mm-fg-dim)` text, hover lifts to `var(--mm-fg)`, monospace small caps consistent with `.mm-turn-apply-btn`). Favicon is a 14px inline img with a tiny right margin.
+
+**Phase 5 (stretch) — mindmap node sources:** thread the same `entry.sources` into the mindmap data so category nodes that reference a fact can show a source chip in the focused-node view. Lower priority; ship Phases 1–4 first and mark the backlog item complete on that.
+
+**Acceptance criteria:**
+
+- Ask a search-grounded question with the search toggle on → the answer bubble shows a row of clickable source chips, each opening the real URL in a new tab; the prose contains no leftover `Sources:` markdown dump.
+- A non-search turn shows no chip row and no empty container.
+- Reloading the page (persisted stack) preserves the chips for prior turns.
+- `extractSources` has unit tests (well-formed grounding metadata → sources; missing/garbled metadata → `[]`; duplicate URIs deduped; `www.` stripped from `domain`). The `done`-event test asserts `sources` is present. All existing tests still pass; `app.jsx` bundles clean.
+- README backlog item "Better source/citation UX" flips to `[x]` with a one-line description of the implemented path in the same commit.
+
+### Worker implementation plan: Frontend logic test coverage
+
+> **For agentic workers:** implement task-by-task with `superpowers:test-driven-development` discipline adapted for *existing* code — see the "TDD for extraction" note below. Use `superpowers:verification-before-completion` before each commit. This is a **refactor-for-testability PR**; it must not change any runtime behavior. Commit + push per the repo convention.
+
+**Goal:** `src/web/static/app.jsx` (4,229 lines) and `src/web/static/templates.jsx` (771 lines) hold the most failure-prone logic in the product — the mindmap JSON extractor, the model-edit detector that gates the "apply" button, markdown parsing, attachment composition — and have **zero test coverage**. All 22 test files today are backend `.ts`; the frontend is verified only by an esbuild *parse* check (`npx esbuild … --outfile=NUL`), which proves it compiles, not that it works. The README history shows the JSON extractor alone caused repeated "mindmap stuck on structuring…" regressions. Extract the pure functions into an importable, testable module and cover them, with **no behavior change** to the running app.
+
+**Why this is high-leverage:** these are pure, deterministic functions with gnarly edge cases (brace-depth scanning, fenced-code detection, regex parsing). They are exactly what unit tests protect best, and several have already broken in production. Locking them down hardens the mindmap burst and the file-edit "apply" flow that the file-tools feature depends on.
+
+**The constraint that makes this non-trivial:** `app.jsx`/`templates.jsx` are **no-build, in-browser Babel** files loaded via `<script type="text/babel">` (see `src/web/static/index.html:33-34`). They are not ES modules and cannot be `import`ed by Vitest as-is. The functions reference browser globals (`window.MathJax`, `window.hljs`, `localStorage`, `performance`). The extraction must keep the browser path working byte-for-byte while exposing the same functions to Node/Vitest.
+
+**Target functions to extract (pure, no React, no DOM):**
+
+- `extractFirstJsonObject(text)` — strips `<think>…</think>` + code fences, brace-depth scan, returns first balanced `{…}`. Highest priority.
+- `detectFileEdits(text)` — scans fenced blocks for first-line path comments; gates the "apply →" button (security-adjacent).
+- `parseMarkdownBlocks(text)` — heading/list/code(+lang)/table/paragraph block parser.
+- `composeMessageWithAttachments(message, attachments)` — auto-extended backtick fencing.
+- `isValidMindmapData(template, parsed)` and `deriveMindmapData(template, prompt, text)` (the latter may live in `templates.jsx`).
+- `stripSlot(id)`, `composerModeLabel(settings)`, `detectTemplate(prompt)`, `statusLabel(status)`.
+
+**Recommended approach — shared module + global bridge (no bundler, no stack migration):**
+
+1. Create `src/web/static/lib.js` as a **plain script that assigns to a namespace** and is also consumable by Node. The portable pattern that works in both a `<script>` tag and Vitest without a build step:
+   ```js
+   (function (root) {
+     function extractFirstJsonObject(text) { /* moved verbatim from app.jsx */ }
+     function detectFileEdits(text) { /* … */ }
+     // … the other pure fns …
+     const api = { extractFirstJsonObject, detectFileEdits, parseMarkdownBlocks,
+                   composeMessageWithAttachments, isValidMindmapData, deriveMindmapData,
+                   stripSlot, composerModeLabel, detectTemplate, statusLabel };
+     if (typeof module !== "undefined" && module.exports) module.exports = api; // Node/Vitest
+     root.MMLib = api;                                                           // browser
+   })(typeof globalThis !== "undefined" ? globalThis : this);
+   ```
+   Any function that touches a browser global must take it as an argument or guard with `typeof window`. Keep them pure where possible (e.g., `detectTemplate` is already pure).
+2. In `index.html`, load `lib.js` **before** `app.jsx` (a normal `<script src="/lib.js">`, not `type="text/babel"`, since it's plain ES5-compatible JS).
+3. In `app.jsx`/`templates.jsx`, **delete the moved function bodies** and replace with thin references (`const { extractFirstJsonObject, detectFileEdits, … } = window.MMLib;` near the top, or call `MMLib.fn(...)` at use sites). Confirm every call site resolves. This is the only edit to the React files and must be behavior-preserving.
+4. Add `tests/web-static-lib.test.ts` that does `import { /* via */ } from "../src/web/static/lib.js"` — or `const lib = require("../src/web/static/lib.js")` if kept CommonJS — and tests each function. No DOM, no React, no jsdom needed for the pure set.
+
+> **TDD for extraction:** you are characterizing *existing* behavior, so the honest cycle is: (a) write a test asserting what the current function *should* do for a known input, (b) run it against the freshly-extracted function and watch it pass (or fail and reveal a real bug — capture that as a finding, don't silently "fix" behavior in this PR). For each function write at least the edge cases the README history implicates: `extractFirstJsonObject` with `<think>` blocks, prose-prefixed JSON, fences, braces inside string literals, and no-JSON input; `detectFileEdits` with `//`, `#`, `--` path comments, multiple blocks, and fenced blocks with no path; `parseMarkdownBlocks` with code fences (incl. language id), tables, nested lists; `composeMessageWithAttachments` with content containing its own backtick fences.
+
+**Files:**
+
+- Create `src/web/static/lib.js` (extracted pure functions, dual-export shim).
+- Create `tests/web-static-lib.test.ts` (Vitest coverage of every extracted function + edge cases).
+- Modify `src/web/static/index.html` (load `lib.js` before `app.jsx`).
+- Modify `src/web/static/app.jsx` and `src/web/static/templates.jsx` (remove moved bodies; reference `MMLib`).
+- Modify `README.md` (mark the backlog item complete; note the new `lib.js` module + test file in repo layout).
+
+**Acceptance criteria:**
+
+- `npm test` includes the new `web-static-lib.test.ts` and all tests pass (target: every extracted function has ≥3 cases incl. the edge cases above).
+- `npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL` still succeeds.
+- Manual smoke: `npm run web`, send a prompt, confirm the mindmap still bursts, the "apply →" pill still appears for path-commented code blocks, markdown/code/tables still render, attachments still compose — i.e. **no behavioral change**.
+- If extraction surfaces a latent bug (a test reveals the current code does the wrong thing), document it as a finding for the user to triage rather than changing behavior inside this refactor PR.
 
 ### UI/UX polish backlog
 
