@@ -112,11 +112,15 @@ describe("web server", () => {
     expect(body).toContain("HeroMindmap");
   });
 
-  it("serves /app.jsx as text/babel", async () => {
+  it("serves /app.jsx with the conversation manager entry point", async () => {
     const { url } = spawn();
     const r = await fetch(`${url}/app.jsx`);
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toMatch(/text\/babel/);
+    const body = await r.text();
+    expect(body).toContain("ConversationDrawer");
+    expect(body).toContain("mm-nav-sessions");
+    expect(body).toContain("Open saved threads");
   });
 
   it("blocks directory traversal", async () => {

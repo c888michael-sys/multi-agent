@@ -36,7 +36,7 @@ A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, 
 - Optional bot integrations (Telegram / Discord). Instagram bot idea removed.
 - OpenRouter fallback-routing (single OR call with a model list; OR walks top-to-bottom on 429/5xx/refusal)
 - Web UI mindmap transition v3 ("robot arm rips door → canvas dimension → agents fly out")
-- Product polish from the 2026-05-31 audit: true server-side cancellation, web conversation manager, edit/regenerate/branch, web file tools with permissions, richer attachments, artifacts/previews, source UX, routing explainability, and mindmap workspace polish.
+- Product polish from the 2026-05-31 audit: edit/regenerate/branch, web file tools with permissions, richer attachments, artifacts/previews, source UX, routing explainability, and mindmap workspace polish.
 
 ## Build order
 
@@ -562,7 +562,7 @@ The prompt's *type* is detected via keyword heuristics (`research|find|sources|.
 
 > **Layout invariant — no overlaps.** The orbital layout must keep nodes (a) clear of the composer A at center, and (b) clear of each other. The current logic enforces (a) via `minR ≥ composerHalfW + nodeW/2 − slack` and (b) via even angular spacing + a per-pair repulsion pass (`resolveOverlaps`) after positions are computed. If you change node sizes, the composer max-width, jitter ranges, or the number of nodes per template, re-verify both invariants — especially on viewports under ~1100 px wide, where the available radius is small. Any future change here should keep the contract: no card visually intersects another card or the composer, including after drift settles.
 
-Persistence: the visible chat transcript is mirrored to `localStorage[lattice.responseStack.v2]`, and the backend `ChatSession` id is stored in `localStorage[lattice.chatSessionId.v1]`, so browser turns keep real backend context across main-chat and mindmap follow-ups. "New thread" clears the old backend session, rotates the session id, wipes the visible transcript key, and returns to the idle hero.
+Persistence: the visible chat transcript is mirrored to `localStorage[lattice.responseStack.v2]`, and the backend `ChatSession` id is stored in `localStorage[lattice.chatSessionId.v1]`, so browser turns keep real backend context across main-chat and mindmap follow-ups. The top-right `threads` button opens the web conversation manager for saved-thread search, open, rename, pin, duplicate, export, delete, and clear-current actions. "New thread" clears the old backend session, rotates the session id, wipes the visible transcript key, and returns to the idle hero.
 
 **Backend endpoints**
 
@@ -575,8 +575,10 @@ Persistence: the visible chat transcript is mirrored to `localStorage[lattice.re
 | `/api/chat` | POST | `{ sessionId, message }` | `{ reply, servedBy, plan, summarizedTurns, tokenEstimate, budgetPct, turns, ... }` — buffered multi-turn `ChatSession` shape (one JSON reply at the end) |
 | `/api/chat-stream` | POST | `{ sessionId, message }` | `text/event-stream` — same `ChatSession` path as `/api/chat`, but emits SSE frames as the turn runs: `{kind:"plan-start"}` / `{kind:"plan",plan}` / `{kind:"role-start",role,phase}` / `{kind:"role-end",role,ok}` / `{kind:"token",text}` / `{kind:"summarize-start"}` / `{kind:"summarize-end",folded}` / `{kind:"done",reply,...}` / `{kind:"error",error}`. The web frontend uses this so the chat bubble fills in token-by-token and the LoadingView agent rows show real-time status |
 | `/api/usage.json` | GET | — | `{ mode, providers: [{id, successCount, rateLimitCount, remainingPct, estimatedDailyBudget, rpmCount, rpmCap, rpmSource, rpdSource, liveQuotaFetchedAt, cooling, cooldownMsRemaining}], roles: {<role>: {…, rpmSource, rpdSource, cooldownMsRemaining, candidates: [...]}} }` — machine-readable counterpart to `/api/usage`, polled by the sidebar. `rpm/rpdSource` is `"live"` when the values came straight from a provider's `X-RateLimit-*` headers (OpenRouter / Groq / Cerebras / Mistral) or `"estimated"` when computed from our local sliding window (always for Gemini, since the SDK doesn't expose those headers) |
-| `/api/sessions` | GET | — | `{ sessions: string[] }` |
-| `/api/sessions/:id` | GET | — | full session snapshot |
+| `/api/sessions` | GET | — | `{ sessions: SessionSummary[] }`, sorted pinned-first then recently updated |
+| `/api/sessions/:id` | GET/PATCH/DELETE | PATCH `{ title?: string, pinned?: boolean }` | full session snapshot / updated metadata / deletion result |
+| `/api/sessions/:id/duplicate` | POST | `{ newId?: string }` | duplicate session metadata + history |
+| `/api/sessions/:id/export` | GET | — | downloadable session JSON |
 | `/api/sessions/:id/clear` | POST | — | wipe a session |
 | `/api/usage` | GET | — | `formatUsageReport` text |
 

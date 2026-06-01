@@ -3123,6 +3123,24 @@ function HeroMindmap() {
   const [sessionQuery, setSessionQuery] = React.useState('');
   const [sessionBusy, setSessionBusy] = React.useState(false);
 
+  const refreshSessions = React.useCallback(async () => {
+    setSessionBusy(true);
+    try {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error('/api/sessions ' + res.status);
+      const json = await res.json();
+      setSessionList(Array.isArray(json.sessions) ? json.sessions : []);
+    } catch {
+      setSessionList([]);
+    } finally {
+      setSessionBusy(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (sessionsOpen) refreshSessions();
+  }, [sessionsOpen, refreshSessions]);
+
   // Surfaced when a stale `useLocal=true` setting from localStorage gets
   // auto-cleared on mount because the Ollama daemon isn't reachable on
   // the current device. The banner sits inside the response/idle phase
@@ -3527,6 +3545,112 @@ function HeroMindmap() {
     setAttachments([]);
     setResponses([]);
     clearPersistedStack();
+    refreshSessions();
+  };
+
+  const openSession = async (id) => {
+    if (!id) return;
+    stopStream();
+    setSessionBusy(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error('/api/sessions/' + id + ' ' + res.status);
+      const json = await res.json();
+      const next = responsesFromSessionHistory(id, json.history);
+      setSessionId(id);
+      persistSessionId(id);
+      setResponses(next);
+      savePersistedStack(next);
+      setLiveTurn(null);
+      setCurrentPrompt('');
+      setDraft('');
+      setAttachments([]);
+      setPhase(next.length > 0 ? 'response' : 'idle');
+      setSessionsOpen(false);
+    } catch (e) {
+      window.alert('Could not open that thread: ' + (e?.message || 'unknown error'));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const renameSession = async (session) => {
+    const title = window.prompt('Rename thread', session.title || '');
+    if (title === null) return;
+    setSessionBusy(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.trim() || session.id }),
+      });
+      if (!res.ok) throw new Error('rename failed');
+      await refreshSessions();
+    } catch (e) {
+      window.alert('Could not rename that thread: ' + (e?.message || 'unknown error'));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const togglePinSession = async (session) => {
+    setSessionBusy(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: !session.pinned }),
+      });
+      if (!res.ok) throw new Error('pin failed');
+      await refreshSessions();
+    } catch (e) {
+      window.alert('Could not update that thread: ' + (e?.message || 'unknown error'));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const duplicateSessionUi = async (session) => {
+    setSessionBusy(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/duplicate`, { method: 'POST' });
+      if (!res.ok) throw new Error('duplicate failed');
+      await refreshSessions();
+    } catch (e) {
+      window.alert('Could not duplicate that thread: ' + (e?.message || 'unknown error'));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const deleteSessionUi = async (session) => {
+    if (!window.confirm(`Delete thread "${session.title || session.id}"? This cannot be undone.`)) return;
+    setSessionBusy(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('delete failed');
+      if (session.id === sessionId) {
+        const nextSession = resetSessionId();
+        setSessionId(nextSession);
+        setResponses([]);
+        clearPersistedStack();
+        setPhase('idle');
+      }
+      await refreshSessions();
+    } catch (e) {
+      window.alert('Could not delete that thread: ' + (e?.message || 'unknown error'));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const exportSessionUi = (session) => {
+    window.location.href = `/api/sessions/${encodeURIComponent(session.id)}/export`;
+  };
+
+  const clearCurrentSession = () => {
+    reset();
+    setSessionsOpen(false);
   };
 
   // Soft recovery for PhaseErrorBoundary catches: keep the conversation
@@ -3563,6 +3687,14 @@ function HeroMindmap() {
         <div className="mm-nav-right">
           <div className="mm-status"><i />5/5 AGENTS ONLINE</div>
           <button
+            className={'mm-nav-sessions' + (sessionsOpen ? ' open' : '')}
+            onClick={() => setSessionsOpen(true)}
+            title="Open saved threads"
+            aria-label="Open saved threads"
+          >
+            threads
+          </button>
+          <button
             className={'mm-nav-settings' + (settingsOpen ? ' open' : '') + (activeSettingsCount > 0 ? ' active' : '')}
             onClick={() => setSettingsOpen(true)}
             title="Open settings (thinking depth, search, forced role)"
@@ -3592,6 +3724,24 @@ function HeroMindmap() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         onChange={setSettings}
+      />
+
+      <ConversationDrawer
+        open={sessionsOpen}
+        sessions={sessionList}
+        query={sessionQuery}
+        setQuery={setSessionQuery}
+        currentId={sessionId}
+        busy={sessionBusy}
+        onClose={() => setSessionsOpen(false)}
+        onRefresh={refreshSessions}
+        onOpenSession={openSession}
+        onRenameSession={renameSession}
+        onTogglePin={togglePinSession}
+        onDuplicateSession={duplicateSessionUi}
+        onDeleteSession={deleteSessionUi}
+        onExportSession={exportSessionUi}
+        onClearCurrent={clearCurrentSession}
       />
 
       <div
