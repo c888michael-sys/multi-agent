@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 export const FILE_MAX_BYTES = 262_144; // 256 KB per file, matches composer attachment cap
 
@@ -176,4 +176,94 @@ export class WebFileService {
     const rel = relative(this.root, abs).replace(/\\/g, "/");
     return { path: rel, content, size: st.size, sha256, truncated: false };
   }
+
+  buildDiff(userPath: string, nextContent: string): { path: string; beforeSha256: string; diff: string } {
+    const abs = this.resolveSafe(userPath);
+    if (!existsSync(abs)) {
+      throw Object.assign(new Error(`not found: ${userPath}`), { code: "NOT_FOUND" });
+    }
+    const st = statSync(abs);
+    if (st.isDirectory()) {
+      throw Object.assign(new Error(`path is a directory: ${userPath}`), { code: "IS_DIR" });
+    }
+    const buf = readFileSync(abs);
+    const beforeSha256 = createHash("sha256").update(buf).digest("hex");
+    const oldContent = buf.toString("utf8");
+    const rel = relative(this.root, abs).replace(/\\/g, "/");
+    return { path: rel, beforeSha256, diff: unifiedDiff(oldContent, nextContent, rel) };
+  }
+
+  writeText(
+    userPath: string,
+    nextContent: string,
+    expectedSha256: string | null,
+  ): { path: string; sha256: string; bytes: number } {
+    const abs = this.resolveSafe(userPath);
+    const rel = relative(this.root, abs).replace(/\\/g, "/");
+    const isNew = expectedSha256 === null;
+
+    if (!isNew) {
+      // File must exist and hash must match.
+      if (!existsSync(abs)) {
+        throw Object.assign(new Error(`not found: ${userPath}`), { code: "NOT_FOUND" });
+      }
+      const current = readFileSync(abs);
+      const currentSha = createHash("sha256").update(current).digest("hex");
+      if (currentSha !== expectedSha256) {
+        throw Object.assign(
+          new Error("file changed on disk; refresh before applying"),
+          { code: "CONFLICT" },
+        );
+      }
+    } else {
+      // New file — parent directory must exist inside root.
+      const parentDir = dirname(abs);
+      const parentRel = relative(this.root, parentDir);
+      if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+        throw Object.assign(new Error("path escapes root"), { code: "TRAVERSAL" });
+      }
+      mkdirSync(parentDir, { recursive: true });
+    }
+
+    const buf = Buffer.from(nextContent, "utf8");
+    writeFileSync(abs, buf);
+    const sha256 = createHash("sha256").update(buf).digest("hex");
+    return { path: rel, sha256, bytes: buf.length };
+  }
+}
+
+/**
+ * Produce a single-hunk unified diff between two strings.
+ * Finds the longest common prefix/suffix of lines, then emits the changed
+ * region with 3 lines of context either side. Sufficient for the MVP file
+ * browser — files are capped at 256 KB so performance is not a concern.
+ */
+function unifiedDiff(oldText: string, newText: string, label: string): string {
+  if (oldText === newText) return "";
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+
+  let pfx = 0;
+  while (pfx < a.length && pfx < b.length && a[pfx] === b[pfx]) pfx++;
+
+  let aTail = a.length;
+  let bTail = b.length;
+  while (aTail > pfx && bTail > pfx && a[aTail - 1] === b[bTail - 1]) { aTail--; bTail--; }
+
+  const ctx = 3;
+  const aStart = Math.max(0, pfx - ctx);
+  const bStart = Math.max(0, pfx - ctx);
+  const aEnd = Math.min(a.length, aTail + ctx);
+  const bEnd = Math.min(b.length, bTail + ctx);
+
+  const lines: string[] = [
+    `--- ${label}`,
+    `+++ ${label}`,
+    `@@ -${aStart + 1},${aEnd - aStart} +${bStart + 1},${bEnd - bStart} @@`,
+  ];
+  for (let i = aStart; i < pfx; i++) lines.push(` ${a[i]}`);
+  for (let i = pfx; i < aTail; i++) lines.push(`-${a[i]}`);
+  for (let i = pfx; i < bTail; i++) lines.push(`+${b[i]}`);
+  for (let i = aTail; i < aEnd; i++) lines.push(` ${a[i]}`);
+  return lines.join("\n");
 }

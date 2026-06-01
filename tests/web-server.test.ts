@@ -693,6 +693,90 @@ describe("web server", () => {
       const j: any = await r.json();
       expect(j.error).toMatch(/binary/i);
     });
+
+    // ── Phase B: diff + write ─────────────────────────────────────────────
+
+    it("POST /api/files/diff returns a unified diff and beforeSha256", async () => {
+      writeFileSync(join(fileRoot, "edit.txt"), "line one\nline two\nline three\n", "utf8");
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/diff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "edit.txt", content: "line one\nline TWO\nline three\n" }),
+      });
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.path).toBe("edit.txt");
+      expect(typeof j.beforeSha256).toBe("string");
+      expect(j.beforeSha256).toHaveLength(64);
+      expect(j.diff).toContain("-line two");
+      expect(j.diff).toContain("+line TWO");
+    });
+
+    it("POST /api/files/write applies content when expectedSha256 matches", async () => {
+      writeFileSync(join(fileRoot, "target.txt"), "original content\n", "utf8");
+      const { url } = spawnWithRoot(fileRoot);
+      // Get current sha256 via read
+      const readRes = await fetch(`${url}/api/files/read?path=target.txt`);
+      const { sha256 } = await readRes.json() as any;
+      // Apply write
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "target.txt", content: "updated content\n", expectedSha256: sha256, confirm: true }),
+      });
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.path).toBe("target.txt");
+      expect(typeof j.sha256).toBe("string");
+      expect(readFileSync(join(fileRoot, "target.txt"), "utf8")).toBe("updated content\n");
+    });
+
+    it("POST /api/files/write 409s when expectedSha256 is stale", async () => {
+      writeFileSync(join(fileRoot, "stale.txt"), "first version\n", "utf8");
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "stale.txt", content: "new version\n", expectedSha256: "a".repeat(64), confirm: true }),
+      });
+      expect(r.status).toBe(409);
+      const j: any = await r.json();
+      expect(j.error).toMatch(/changed on disk/i);
+    });
+
+    it("POST /api/files/write 400s when confirm is not true", async () => {
+      writeFileSync(join(fileRoot, "guard.txt"), "content\n", "utf8");
+      const { url } = spawnWithRoot(fileRoot);
+      const readRes = await fetch(`${url}/api/files/read?path=guard.txt`);
+      const { sha256 } = await readRes.json() as any;
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "guard.txt", content: "x", expectedSha256: sha256 }), // no confirm
+      });
+      expect(r.status).toBe(400);
+    });
+
+    it("POST /api/files/write 403s on path traversal", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "../escape.txt", content: "x", expectedSha256: null, confirm: true }),
+      });
+      expect(r.status).toBe(403);
+    });
+
+    it("POST /api/files/write 403s on .env", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: ".env", content: "SECRET=x", expectedSha256: null, confirm: true }),
+      });
+      expect(r.status).toBe(403);
+    });
   });
 
   it("/api/chat-stream aborts in-flight role work when the client disconnects", async () => {

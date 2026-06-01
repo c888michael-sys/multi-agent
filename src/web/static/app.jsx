@@ -3024,6 +3024,13 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
   const [previewError, setPreviewError] = React.useState(null);
   const [listLoading, setListLoading] = React.useState(false);
   const [previewLoading, setPreviewLoading] = React.useState(false);
+  // edit / diff / apply state
+  const [editMode, setEditMode] = React.useState(false);
+  const [editContent, setEditContent] = React.useState('');
+  const [diffResult, setDiffResult] = React.useState(null); // { path, beforeSha256, diff }
+  const [diffLoading, setDiffLoading] = React.useState(false);
+  const [applyLoading, setApplyLoading] = React.useState(false);
+  const [applyError, setApplyError] = React.useState(null);
 
   React.useEffect(() => {
     if (!open) return;
@@ -3041,15 +3048,21 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
   }, [open, currentPath]);
 
   React.useEffect(() => {
-    if (!open) { setCurrentPath('.'); setEntries([]); setSelectedFile(null); setListError(null); setPreviewError(null); }
+    if (!open) {
+      setCurrentPath('.'); setEntries([]); setSelectedFile(null);
+      setListError(null); setPreviewError(null);
+      setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
+    }
   }, [open]);
 
-  function navigateTo(path) { setCurrentPath(path); setSelectedFile(null); setPreviewError(null); }
+  function navigateTo(path) {
+    setCurrentPath(path); setSelectedFile(null); setPreviewError(null);
+    setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
+  }
 
   function loadFile(entry) {
-    setPreviewError(null);
-    setPreviewLoading(true);
-    setSelectedFile(null);
+    setPreviewError(null); setPreviewLoading(true); setSelectedFile(null);
+    setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
     fetch('/api/files/read?path=' + encodeURIComponent(entry.path))
       .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error ' + r.status); setSelectedFile(j); })
       .catch(e => setPreviewError(e.message))
@@ -3069,6 +3082,47 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
     onClose();
   }
 
+  function enterEdit() {
+    if (!selectedFile) return;
+    setEditContent(selectedFile.content);
+    setDiffResult(null); setApplyError(null);
+    setEditMode(true);
+  }
+
+  function cancelEdit() { setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null); }
+
+  function previewDiff() {
+    if (!selectedFile) return;
+    setDiffLoading(true); setDiffResult(null); setApplyError(null);
+    fetch('/api/files/diff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: selectedFile.path, content: editContent }),
+    })
+      .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error ' + r.status); setDiffResult(j); })
+      .catch(e => setApplyError(e.message))
+      .finally(() => setDiffLoading(false));
+  }
+
+  function applyWrite() {
+    if (!selectedFile || !diffResult) return;
+    setApplyLoading(true); setApplyError(null);
+    fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: selectedFile.path, content: editContent, expectedSha256: diffResult.beforeSha256, confirm: true }),
+    })
+      .then(async r => {
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || 'Error ' + r.status);
+        // Reload the file to get the new sha256 + content
+        return fetch('/api/files/read?path=' + encodeURIComponent(selectedFile.path));
+      })
+      .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error ' + r.status); setSelectedFile(j); setEditMode(false); setEditContent(''); setDiffResult(null); })
+      .catch(e => setApplyError(e.message))
+      .finally(() => setApplyLoading(false));
+  }
+
   function buildCrumbs() {
     const rootLabel = rootInfo ? (rootInfo.root.replace(/\\/g, '/').split('/').pop() || 'root') : 'root';
     if (!currentPath || currentPath === '.') return [{ label: rootLabel, path: '.' }];
@@ -3084,6 +3138,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
   const alreadyAttached = selectedFile && (attachments || []).some(a => a.name === selectedFile.path);
   const totalAttached = (attachments || []).reduce((s, a) => s + (a.size || 0), 0);
   const wouldExceedCap = selectedFile && (totalAttached + selectedFile.size > ATTACH_TOTAL_MAX_BYTES);
+  const diffLines = diffResult?.diff ? diffResult.diff.split('\n') : [];
 
   return (
     <aside className="mm-file-drawer" aria-label="Project file browser">
@@ -3128,7 +3183,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
           <div className="mm-file-preview-pane">
             {previewLoading && <div className="mm-file-status">loading preview…</div>}
             {previewError && <div className="mm-file-error">{previewError}</div>}
-            {!previewLoading && !previewError && selectedFile && (
+            {!previewLoading && !previewError && selectedFile && !editMode && (
               <>
                 <div className="mm-file-preview-meta">
                   <span className="mm-file-preview-path">{selectedFile.path}</span>
@@ -3136,6 +3191,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
                 </div>
                 <pre className="mm-file-preview-content">{selectedFile.content}</pre>
                 <div className="mm-file-preview-actions">
+                  <button className="mm-file-edit-btn" onClick={enterEdit} title="Edit this file">edit</button>
                   {alreadyAttached
                     ? <span className="mm-file-attached-note">✓ already attached</span>
                     : <button
@@ -3144,6 +3200,50 @@ function FileDrawer({ open, onClose, attachments, setAttachments }) {
                         disabled={!!wouldExceedCap}
                         title={wouldExceedCap ? 'Would exceed total attachment cap' : 'Attach this file to the current chat prompt'}
                       >attach to chat</button>}
+                </div>
+              </>
+            )}
+            {!previewLoading && selectedFile && editMode && !diffResult && (
+              <>
+                <div className="mm-file-preview-meta">
+                  <span className="mm-file-preview-path">{selectedFile.path} · editing</span>
+                </div>
+                <textarea
+                  className="mm-file-edit-area"
+                  value={editContent}
+                  onChange={e => setEditContent(e.target.value)}
+                  spellCheck={false}
+                />
+                {applyError && <div className="mm-file-error">{applyError}</div>}
+                <div className="mm-file-preview-actions">
+                  <button className="mm-file-attach-btn" onClick={previewDiff} disabled={diffLoading || editContent === selectedFile.content}>
+                    {diffLoading ? 'computing…' : 'preview diff'}
+                  </button>
+                  <button className="mm-file-edit-btn" onClick={cancelEdit}>cancel</button>
+                </div>
+              </>
+            )}
+            {!previewLoading && selectedFile && editMode && diffResult && (
+              <>
+                <div className="mm-file-preview-meta">
+                  <span className="mm-file-preview-path">{selectedFile.path} · diff preview</span>
+                </div>
+                {diffResult.diff
+                  ? <div className="mm-file-diff">
+                      {diffLines.map((line, i) => (
+                        <div key={i} className={'mm-diff-line' + (line.startsWith('+') && !line.startsWith('+++') ? ' add' : line.startsWith('-') && !line.startsWith('---') ? ' del' : line.startsWith('@@') ? ' hunk' : '')}>
+                          {line}
+                        </div>
+                      ))}
+                    </div>
+                  : <div className="mm-file-status">No changes.</div>}
+                {applyError && <div className="mm-file-error">{applyError}</div>}
+                <div className="mm-file-preview-actions">
+                  <button className="mm-file-attach-btn" onClick={applyWrite} disabled={applyLoading || !diffResult.diff}>
+                    {applyLoading ? 'applying…' : 'apply'}
+                  </button>
+                  <button className="mm-file-edit-btn" onClick={() => { setDiffResult(null); setApplyError(null); }}>back to edit</button>
+                  <button className="mm-file-edit-btn" onClick={cancelEdit}>cancel</button>
                 </div>
               </>
             )}

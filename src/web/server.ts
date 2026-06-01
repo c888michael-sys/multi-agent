@@ -309,6 +309,51 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         return;
       }
 
+      if (pathname === "/api/files/diff" && req.method === "POST") {
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { path?: string; content?: string } | null;
+        if (typeof parsed?.path !== "string" || typeof parsed?.content !== "string") {
+          sendJson(res, 400, { error: "path and content (strings) required" });
+          return;
+        }
+        try {
+          sendJson(res, 200, fileService.buildDiff(parsed.path, parsed.content));
+        } catch (err) {
+          const e = err as NodeJS.ErrnoException & { code?: string };
+          if (e.code === "TRAVERSAL" || e.code === "BLOCKED") sendJson(res, 403, { error: e.message });
+          else if (e.code === "NOT_FOUND") sendJson(res, 404, { error: e.message });
+          else sendJson(res, 400, { error: e.message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/files/write" && req.method === "POST") {
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as {
+          path?: string; content?: string;
+          expectedSha256?: string | null; confirm?: boolean;
+        } | null;
+        if (typeof parsed?.path !== "string" || typeof parsed?.content !== "string") {
+          sendJson(res, 400, { error: "path and content (strings) required" });
+          return;
+        }
+        if (parsed.confirm !== true) {
+          sendJson(res, 400, { error: "confirm must be true to apply writes" });
+          return;
+        }
+        try {
+          const expectedSha256 = parsed.expectedSha256 ?? null;
+          sendJson(res, 200, fileService.writeText(parsed.path, parsed.content, typeof expectedSha256 === "string" ? expectedSha256 : null));
+        } catch (err) {
+          const e = err as NodeJS.ErrnoException & { code?: string };
+          if (e.code === "TRAVERSAL" || e.code === "BLOCKED") sendJson(res, 403, { error: e.message });
+          else if (e.code === "NOT_FOUND") sendJson(res, 404, { error: e.message });
+          else if (e.code === "CONFLICT") sendJson(res, 409, { error: e.message });
+          else sendJson(res, 400, { error: e.message });
+        }
+        return;
+      }
+
       // ─────────────────────────────────────────────────────────────────────
 
       if (pathname === "/api/sessions" && req.method === "GET") {

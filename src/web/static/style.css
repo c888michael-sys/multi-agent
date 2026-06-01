@@ -3698,6 +3698,43 @@
   border-radius: 12px; border: 0.5px dashed var(--mm-line);
 }
 
+.mm-file-edit-btn {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 0.5px solid var(--mm-line);
+  background: transparent;
+  color: var(--mm-fg-dim);
+  font-family: var(--mm-font-mono);
+  font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  cursor: pointer;
+}
+.mm-file-edit-btn:hover { color: var(--mm-fg); border-color: color-mix(in oklch, var(--accent) 45%, var(--mm-line)); }
+
+.mm-file-edit-area {
+  flex: 1; min-height: 200px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 0.5px solid var(--mm-line);
+  background: oklch(1 0 0 / 0.03);
+  color: var(--mm-fg);
+  font-family: var(--mm-font-mono); font-size: 11.5px; line-height: 1.55;
+  resize: vertical;
+}
+.mm-file-edit-area:focus { outline: none; border-color: color-mix(in oklch, var(--accent) 55%, var(--mm-line)); }
+
+.mm-file-diff {
+  flex: 1; overflow: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 0.5px solid var(--mm-line);
+  background: oklch(1 0 0 / 0.03);
+  font-family: var(--mm-font-mono); font-size: 11px; line-height: 1.6;
+}
+.mm-diff-line { white-space: pre; }
+.mm-diff-line.add { color: oklch(0.72 0.13 148); background: oklch(0.72 0.13 148 / 0.08); }
+.mm-diff-line.del { color: oklch(0.72 0.15 28); background: oklch(0.72 0.15 28 / 0.08); }
+.mm-diff-line.hunk { color: var(--accent); opacity: 0.8; }
+
 @media (max-width: 640px) {
   .mm-file-panel { inset: 8px; width: auto; border-radius: 16px; }
   .mm-file-body { flex-direction: column; }
