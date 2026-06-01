@@ -229,14 +229,157 @@ Priority plan, ordered by user value:
 
 - [x] **True server-side stop/cancel.** Implemented for `/api/chat-stream`: client disconnects now abort the stream request, pass an `AbortSignal` through `ChatSession.send()` into the resolver/router/provider path, suppress late SSE writes after disconnect, and interrupt router backoff sleeps plus stalled provider calls. Covered by web-boundary and router regression tests.
 - [x] **Web conversation manager.** Added a first-class `threads` drawer in the web UI with search, open/switch, rename, pin/unpin, duplicate/branch, export JSON, delete, refresh, and clear-current actions. Backend session files now expose lightweight metadata (`title`, `pinned`, timestamps, preview, token estimate) through `/api/sessions`, plus PATCH/DELETE/duplicate/export endpoints with session-id validation.
-- [ ] **Edit/regenerate/continue/branch messages.** Add common chat-app controls: edit the last user message and rerun, regenerate assistant response, continue a stopped/truncated response, and branch from a specific turn without overwriting the original.
 - [ ] **Web project file tools with permissions.** CLI `ask --tools` can read/write/list files inside a `--workdir`, but the web chat cannot yet browse or edit project files directly. Add a guarded web tool mode with a visible root directory, per-operation confirmation for writes, diff preview, and a strong warning before destructive operations.
+- [ ] **Edit/regenerate/continue/branch messages.** Add common chat-app controls: edit the last user message and rerun, regenerate assistant response, continue a stopped/truncated response, and branch from a specific turn without overwriting the original.
 - [ ] **Richer attachments.** Current web attachments are text-only. Add PDF extraction, image/screenshot upload with OCR/vision, larger-file chunking, folder/drop support, and clearer context-budget estimates before submit.
 - [ ] **Artifacts and previews.** Add generated-file artifacts, code blocks that can become files, diff views, rendered HTML/CSS previews, and "apply this patch" flows.
 - [ ] **Better source/citation UX.** Web search results should surface as source chips/citations in the final answer and mindmap nodes, especially when perception falls back to Brave/DuckDuckGo.
 - [ ] **Model/provider picker and routing explainability.** Add a per-turn "why this route/model was used" view and optional model override, without exposing confusing internal provider names by default.
 - [ ] **Plugin/tool permission UI.** Before adding powerful web tools (bash, file writes, git), add an explicit permission surface: read-only vs write, current sandbox root, risky command warnings, and audit logs.
 - [ ] **Mindmap workspace polish.** Add drag-rearrange and free placement for category nodes, persisted per response under `localStorage[lattice.responseStack.v2]`.
+
+### Worker implementation plan: Web project file tools with permissions
+
+> **For agentic workers:** implement this task-by-task. Use `superpowers:test-driven-development` for each code task and `superpowers:verification-before-completion` before every commit. The first shippable PR is **read-only file browser + attach-to-chat**; write/apply support is the second PR unless the user explicitly asks to keep going in the same branch.
+
+**Goal:** Let the web UI inspect the current project folder safely, attach selected files to chat context, then later preview and apply explicit file edits without letting the model freely mutate the filesystem.
+
+**Non-negotiable safety rules:**
+
+- The repo remains the code location: `C:\Users\micha\Desktop\Project\bots\multi-agent`. Runtime memory/session data stays outside the repo in `~/.multi-agent`.
+- Web file access is scoped to one visible project root. Default root should be the server process cwd unless `ServerOptions.projectRoot` overrides it in tests or a future CLI flag/env var overrides it at boot.
+- Never allow path traversal. Resolve every requested path against the project root and reject any path whose `relative(root, candidate)` starts with `..` or is absolute.
+- Read-only is the default. Writes require an explicit UI confirmation and an expected file hash so stale browser tabs cannot overwrite newer disk changes.
+- Block noisy/sensitive paths by default in the web file browser: `.git`, `node_modules`, `dist`, `coverage`, `graphify-out`, `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa`, `id_ed25519`, and anything outside the chosen root.
+- Text files only for MVP. Return a clear error for binary files and files larger than the configured read cap, initially 256 KB per file and 1 MB total attached context, matching the current composer attachment philosophy.
+- Do not expose bash, git, delete, or arbitrary command execution in this feature. Those belong behind a later plugin/tool permission UI.
+
+#### Phase A - read-only browser and attach-to-chat
+
+**Files to create or modify:**
+
+- Create `src/web/file-service.ts`: web-specific file service for safe path resolution, listing, text reads, SHA-256 hashes, ignore rules, and text/binary/size checks.
+- Modify `src/web/server.ts`: add file-service imports, `ServerOptions.projectRoot?: string`, and read-only file endpoints.
+- Modify `tests/web-server.test.ts`: add API tests for root reporting, listing, reading, blocked sensitive files, size limits, and traversal rejection.
+- Modify `src/web/static/app.jsx`: add file drawer state, top-nav `files` button, file list/preview panel, and attach-selected-file action that appends to the existing `attachments` array.
+- Modify `src/web/static/style.css`: style the file drawer, breadcrumbs, file rows, preview pane, blocked/error states, and attach button.
+- Modify `README.md`: mark this phase complete only after tests pass and the UI can attach a repo file into a chat prompt.
+
+**Backend API contract:**
+
+```http
+GET /api/files/root
+200 { "root": "C:\\...\\multi-agent", "mode": "read", "maxBytes": 262144 }
+
+GET /api/files?path=src/web
+200 {
+  "path": "src/web",
+  "entries": [
+    { "name": "server.ts", "path": "src/web/server.ts", "kind": "file", "size": 24432, "readable": true },
+    { "name": "static", "path": "src/web/static", "kind": "dir", "readable": true }
+  ]
+}
+
+GET /api/files/read?path=src/web/server.ts
+200 { "path": "src/web/server.ts", "content": "...", "size": 24432, "sha256": "<hex>", "truncated": false }
+```
+
+**Backend implementation notes:**
+
+- `src/web/file-service.ts` should expose a small class, for example `WebFileService`, with `listDir(path)`, `readText(path)`, `buildDiff(path, nextContent)`, and Phase B `writeText(path, nextContent, expectedSha256)`.
+- Reuse the path-sandboxing logic from `src/tools/file-tools.ts`, but do not directly expose `FileTools.writeFileTool()` to the web UI. The web needs hashes, blocklists, and diff/apply semantics that are stricter than the CLI tool path.
+- Use `fs.statSync` / `fs.readdirSync` / `fs.readFileSync` for the MVP, consistent with existing code style. Sort directories before files, then names alphabetically.
+- Detect binary files by checking for NUL bytes in the first chunk and by rejecting invalid UTF-8 reads. The response should be `415 { "error": "binary files are not supported" }`.
+- Return `403` for traversal or blocked paths, `404` for missing paths, `413` for files over the cap, and `400` for missing/invalid query params.
+- Keep CORS unchanged. The app is local-first and the existing server defaults to no cross-origin access.
+
+**Required backend tests:**
+
+- `GET /api/files/root` returns the test `projectRoot` and mode `read`.
+- `GET /api/files?path=.` lists files inside the temporary root and omits blocked directories such as `.git` and `node_modules`.
+- `GET /api/files/read?path=a.txt` returns content plus a stable `sha256`.
+- `GET /api/files/read?path=../secret.txt` returns 403 and does not leak content.
+- `GET /api/files/read?path=.env` returns 403 by default.
+- `GET /api/files/read?path=large.txt` returns 413 when the file exceeds the cap.
+- `GET /api/files/read?path=image.bin` returns 415 for binary content.
+
+**Frontend behaviour:**
+
+- Add a top-right `files` button near `threads` and settings.
+- The drawer opens with the visible root path, current relative path, a refresh button, and a two-pane layout: directory entries on the left, selected file preview on the right.
+- Clicking a directory navigates into it. Breadcrumbs navigate upward without allowing manual path escape.
+- Clicking a file loads a preview through `/api/files/read`.
+- `Attach to chat` converts the selected file into the existing attachment shape: `{ name, size, content }`, where `name` is the relative path and `content` is the file text.
+- The drawer should show errors inline, not via `alert()`, for blocked/sensitive/large/binary files.
+- The composer attachment total should still enforce the existing total cap before submit.
+
+**Phase A verification:**
+
+```powershell
+npm run typecheck
+npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL
+npm test -- tests/web-server.test.ts
+npm test
+npm run cli -- serve --port=7421
+```
+
+Manual smoke: open `http://localhost:7421`, click `files`, open `README.md`, click `Attach to chat`, verify the attachment chip appears, submit a prompt asking the model to summarize the attached file, and confirm the request body includes the file content through the existing attachment composition path.
+
+#### Phase B - diff preview and confirmed writes
+
+**Files to modify:**
+
+- `src/web/file-service.ts`: implement `buildDiff(path, nextContent)` and `writeText(path, nextContent, expectedSha256)`.
+- `src/web/server.ts`: add `POST /api/files/diff` and `POST /api/files/write`.
+- `tests/web-server.test.ts`: add diff/write tests.
+- `src/web/static/app.jsx`: add edit mode, diff preview, stale-file warning, and apply button.
+- `src/web/static/style.css`: style diff rows and apply confirmation states.
+
+**Write API contract:**
+
+```http
+POST /api/files/diff
+{ "path": "src/example.ts", "content": "new full file content" }
+200 { "path": "src/example.ts", "beforeSha256": "<hex>", "diff": "--- src/example.ts\n+++ src/example.ts\n..." }
+
+POST /api/files/write
+{ "path": "src/example.ts", "content": "new full file content", "expectedSha256": "<hex>", "confirm": true }
+200 { "path": "src/example.ts", "sha256": "<new hex>", "bytes": 1234 }
+```
+
+**Write safety requirements:**
+
+- `POST /api/files/write` must reject unless `confirm === true`.
+- `expectedSha256` must match the current file hash before writing. If it does not, return `409 { "error": "file changed on disk; refresh before applying" }`.
+- Creating new files is allowed only when the parent directory exists inside the root and the path is not blocked. Use `expectedSha256: null` for new files.
+- Do not implement delete in this phase.
+- After write, the frontend must refresh the preview and show the new hash.
+
+**Phase B verification:**
+
+- Add tests proving writes cannot escape the root, cannot touch `.env`, cannot overwrite stale files, and can update a normal text file when `expectedSha256` matches.
+- Run the same verification commands as Phase A.
+- Manual smoke: edit a temporary file in the repo, preview diff, apply, verify disk content changed, then revert the manual test file before committing.
+
+#### Phase C - model-assisted file reads, not model writes
+
+**Goal:** Let the web chat ask for file context on demand while keeping writes human-confirmed.
+
+**Implementation path:**
+
+- Add a web-only chat option such as `fileContextMode: "off" | "read"`; default `off` until the user opens the file drawer or toggles project context on.
+- Thread selected file paths into `/api/chat-stream` as `attachedFilePaths: string[]` or keep using current text attachments after the user clicks `Attach to chat`. Prefer the existing attachment path first because it is already visible and auditable.
+- Do not give web chat the raw `write_file` tool. If the model proposes edits, it should answer with a patch or full replacement text that the UI turns into Phase B's diff preview.
+- Add the artifact flow after Phase B is solid: recognise fenced blocks like `diff` or structured JSON edit proposals and route them into the same diff-preview path.
+
+**Acceptance criteria:**
+
+- A user can browse the repo from the web UI without touching `C:\Users\micha\.multi-agent` or private env files.
+- A user can attach a local repo file to a prompt without using the OS file picker.
+- A user can preview edits as a diff and apply them only after an explicit confirmation.
+- The model never silently writes local files from chat.
+- All new routes are covered by tests, and all existing tests still pass.
+
 
 Completed from earlier quality-of-life list:
 
