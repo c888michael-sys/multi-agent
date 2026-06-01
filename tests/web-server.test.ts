@@ -8,7 +8,7 @@
  * them in tests would just rewrap on every UI change.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startWebServer } from "../src/web/server.js";
@@ -392,15 +392,127 @@ describe("web server", () => {
     expect(r.headers.get("access-control-allow-origin")).toBe("*");
   });
 
-  it("/api/sessions returns whatever listSessions reports", async () => {
-    // listSessions reads ~/.multi-agent/sessions — we don't write fixtures
-    // here, just confirm the route shape. The real session-store tests live
-    // in chat-session.test.ts.
+﻿  it("/api/sessions returns session summaries sorted by pinned and recency", async () => {
+    writeFileSync(join(sessionDir, "old.json"), JSON.stringify({
+      version: 1,
+      id: "old",
+      title: "Old chat",
+      pinned: false,
+      createdAt: 1000,
+      updatedAt: 2000,
+      history: [
+        { kind: "user_text", text: "older question" },
+        { kind: "model_text", text: "older answer" },
+      ],
+    }), "utf8");
+    writeFileSync(join(sessionDir, "pinned.json"), JSON.stringify({
+      version: 1,
+      id: "pinned",
+      title: "Pinned chat",
+      pinned: true,
+      createdAt: 1000,
+      updatedAt: 1500,
+      history: [
+        { kind: "user_text", text: "important question" },
+        { kind: "model_text", text: "important answer" },
+      ],
+    }), "utf8");
+
     const { url } = spawn();
     const r = await fetch(`${url}/api/sessions`);
     expect(r.status).toBe(200);
     const j: any = await r.json();
-    expect(Array.isArray(j.sessions)).toBe(true);
+    expect(j.sessions.map((x: any) => x.id)).toEqual(["pinned", "old"]);
+    expect(j.sessions[0]).toMatchObject({
+      id: "pinned",
+      title: "Pinned chat",
+      pinned: true,
+      turns: 1,
+      preview: "important question",
+    });
+  });
+
+  it("/api/sessions/:id PATCH updates title and pinned metadata", async () => {
+    writeFileSync(join(sessionDir, "meta.json"), JSON.stringify({
+      version: 1,
+      id: "meta",
+      createdAt: 1000,
+      updatedAt: 2000,
+      history: [{ kind: "user_text", text: "first topic" }],
+    }), "utf8");
+
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/sessions/meta`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Renamed thread", pinned: true }),
+    });
+    expect(r.status).toBe(200);
+    const j: any = await r.json();
+    expect(j.session.title).toBe("Renamed thread");
+    expect(j.session.pinned).toBe(true);
+
+    const raw = JSON.parse(readFileSync(join(sessionDir, "meta.json"), "utf8"));
+    expect(raw.title).toBe("Renamed thread");
+    expect(raw.pinned).toBe(true);
+  });
+
+  it("/api/sessions/:id/duplicate copies a session under a new id", async () => {
+    writeFileSync(join(sessionDir, "source.json"), JSON.stringify({
+      version: 1,
+      id: "source",
+      title: "Source",
+      createdAt: 1000,
+      updatedAt: 2000,
+      history: [
+        { kind: "user_text", text: "copy me" },
+        { kind: "model_text", text: "copied" },
+      ],
+    }), "utf8");
+
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/sessions/source/duplicate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ newId: "source-copy" }),
+    });
+    expect(r.status).toBe(200);
+    const j: any = await r.json();
+    expect(j.session.id).toBe("source-copy");
+    expect(j.session.title).toBe("Source copy");
+    expect(existsSync(join(sessionDir, "source-copy.json"))).toBe(true);
+    const copy = JSON.parse(readFileSync(join(sessionDir, "source-copy.json"), "utf8"));
+    expect(copy.history).toHaveLength(2);
+  });
+
+  it("/api/sessions/:id/export downloads the raw session JSON", async () => {
+    writeFileSync(join(sessionDir, "export-me.json"), JSON.stringify({
+      version: 1,
+      id: "export-me",
+      title: "Export me",
+      history: [],
+    }), "utf8");
+
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/sessions/export-me/export`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toMatch(/application\/json/);
+    expect(r.headers.get("content-disposition")).toContain("export-me.json");
+    const j: any = await r.json();
+    expect(j.title).toBe("Export me");
+  });
+
+  it("/api/sessions/:id DELETE removes a session file", async () => {
+    writeFileSync(join(sessionDir, "delete-me.json"), JSON.stringify({
+      version: 1,
+      id: "delete-me",
+      history: [],
+    }), "utf8");
+
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/sessions/delete-me`, { method: "DELETE" });
+    expect(r.status).toBe(200);
+    expect(existsSync(join(sessionDir, "delete-me.json"))).toBe(false);
   });
 
   it("/api/role-instructions reads and writes the editable local instruction file", async () => {

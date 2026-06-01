@@ -8,7 +8,7 @@
  * Routes:
  *   GET  /                       static index.html
  *   GET  /<asset>                static files from src/web/static/
- *   GET  /api/sessions           list saved session ids
+ *   GET  /api/sessions           list saved session summaries
  *   POST /api/chat               { sessionId, message } -> { reply, servedBy, ... }
  *   POST /api/sessions/:id/clear wipe session history
  *   GET  /api/usage              router usage snapshot as plain text
@@ -20,7 +20,15 @@ import { fileURLToPath } from "node:url";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
 import type { RoleName } from "../roles/types.js";
-import { ChatSession, listSessions } from "../chat/session.js";
+import {
+  ChatSession,
+  deleteSession,
+  duplicateSession,
+  exportSessionRaw,
+  isSafeSessionId,
+  listSessionSummaries,
+  updateSessionMetadata,
+} from "../chat/session.js";
 import { formatUsageReport } from "../conservation.js";
 import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 import { DEFAULT_ROLES } from "../roles/default-registry.js";
@@ -243,7 +251,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/sessions" && req.method === "GET") {
-        sendJson(res, 200, { sessions: listSessions(opts.sessionStorageDir) });
+        sendJson(res, 200, { sessions: listSessionSummaries(opts.sessionStorageDir) });
         return;
       }
 
@@ -425,9 +433,50 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         return;
       }
 
+      const duplicateMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/duplicate$/);
+      if (duplicateMatch && req.method === "POST") {
+        const id = decodeURIComponent(duplicateMatch[1]!);
+        const parsed = safeJsonParse(await readBody(req)) as { newId?: string } | null;
+        if (!isSafeSessionId(id) || (parsed?.newId && !isSafeSessionId(parsed.newId))) {
+          sendJson(res, 400, { error: "invalid session id" });
+          return;
+        }
+        try {
+          const session = duplicateSession(id, parsed?.newId, opts.sessionStorageDir);
+          if (!session) sendJson(res, 404, { error: "session not found" });
+          else sendJson(res, 200, { session });
+        } catch (err) {
+          sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
+      }
+
+      const exportMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/export$/);
+      if (exportMatch && req.method === "GET") {
+        const id = decodeURIComponent(exportMatch[1]!);
+        if (!isSafeSessionId(id)) {
+          sendJson(res, 400, { error: "invalid session id" });
+          return;
+        }
+        const raw = exportSessionRaw(id, opts.sessionStorageDir);
+        if (!raw) {
+          sendJson(res, 404, { error: "session not found" });
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Content-Disposition", "attachment; filename=\"" + id + ".json\"");
+        res.end(JSON.stringify(raw, null, 2));
+        return;
+      }
+
       const clearMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/clear$/);
       if (clearMatch && req.method === "POST") {
         const id = decodeURIComponent(clearMatch[1]!);
+        if (!isSafeSessionId(id)) {
+          sendJson(res, 400, { error: "invalid session id" });
+          return;
+        }
         const session = createChatSession(opts, id);
         session.clear();
         sendJson(res, 200, { cleared: id });
@@ -435,16 +484,40 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
-      if (sessionMatch && req.method === "GET") {
+      if (sessionMatch) {
         const id = decodeURIComponent(sessionMatch[1]!);
-        const session = createChatSession(opts, id);
-        sendJson(res, 200, {
-          id,
-          turns: session.turnCount(),
-          tokenEstimate: session.estimateTokens(),
-          history: session.snapshot().history,
-        });
-        return;
+        if (!isSafeSessionId(id)) {
+          sendJson(res, 400, { error: "invalid session id" });
+          return;
+        }
+        if (req.method === "GET") {
+          const session = createChatSession(opts, id);
+          const snap = session.snapshot();
+          sendJson(res, 200, {
+            id,
+            title: snap.title,
+            pinned: snap.pinned,
+            createdAt: snap.createdAt,
+            updatedAt: snap.updatedAt,
+            turns: session.turnCount(),
+            tokenEstimate: session.estimateTokens(),
+            history: snap.history,
+          });
+          return;
+        }
+        if (req.method === "PATCH") {
+          const parsed = safeJsonParse(await readBody(req)) as { title?: string; pinned?: boolean } | null;
+          const session = updateSessionMetadata(id, parsed ?? {}, opts.sessionStorageDir);
+          if (!session) sendJson(res, 404, { error: "session not found" });
+          else sendJson(res, 200, { session });
+          return;
+        }
+        if (req.method === "DELETE") {
+          const deleted = deleteSession(id, opts.sessionStorageDir);
+          if (!deleted) sendJson(res, 404, { error: "session not found" });
+          else sendJson(res, 200, { deleted: id });
+          return;
+        }
       }
 
       // --- Static files ---

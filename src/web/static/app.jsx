@@ -2898,6 +2898,40 @@ function resetSessionId() {
   return next;
 }
 
+function persistSessionId(id) {
+  try { localStorage.setItem(SESSION_LS_KEY, id); } catch {}
+}
+
+function responsesFromSessionHistory(sessionId, history) {
+  if (!Array.isArray(history)) return [];
+  const out = [];
+  let turn = 0;
+  for (let i = 0; i < history.length; i++) {
+    const user = history[i];
+    if (!user || user.kind !== 'user_text' || typeof user.text !== 'string') continue;
+    const model = history.slice(i + 1).find((p) => p && p.kind === 'model_text' && typeof p.text === 'string');
+    const prompt = user.text;
+    const text = model?.text || '';
+    out.push({
+      id: `${sessionId}_${turn++}`,
+      prompt,
+      template: detectTemplate(prompt),
+      text,
+      servedBy: [],
+      plan: null,
+      tokenEstimate: 0,
+      tokenBudget: 100000,
+      budgetPct: 0,
+      turns: turn,
+      warning: null,
+      data: null,
+      dataLoading: false,
+      dataError: false,
+    });
+  }
+  return out.filter((r) => r.text || r.prompt);
+}
+
 function loadPersistedStack() {
   try {
     const raw = localStorage.getItem(STACK_LS_KEY);
@@ -2981,6 +3015,83 @@ class PhaseErrorBoundary extends React.Component {
   }
 }
 
+function ConversationDrawer({
+  open,
+  sessions,
+  query,
+  setQuery,
+  currentId,
+  busy,
+  onClose,
+  onRefresh,
+  onOpenSession,
+  onRenameSession,
+  onTogglePin,
+  onDuplicateSession,
+  onDeleteSession,
+  onExportSession,
+  onClearCurrent,
+}) {
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter((s) =>
+      (s.title || '').toLowerCase().includes(q) ||
+      (s.preview || '').toLowerCase().includes(q) ||
+      (s.id || '').toLowerCase().includes(q)
+    );
+  }, [sessions, query]);
+
+  if (!open) return null;
+  return (
+    <aside className="mm-session-drawer" aria-label="Conversation manager">
+      <div className="mm-session-backdrop" onClick={onClose} />
+      <div className="mm-session-panel">
+        <div className="mm-session-head">
+          <div>
+            <div className="mm-session-kicker">threads</div>
+            <h2>Conversation Manager</h2>
+          </div>
+          <button className="mm-session-close" onClick={onClose} aria-label="Close threads">close</button>
+        </div>
+        <div className="mm-session-tools">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search title, preview, or id"
+          />
+          <button onClick={onRefresh} disabled={busy}>{busy ? 'syncing' : 'refresh'}</button>
+          <button onClick={onClearCurrent}>clear current</button>
+        </div>
+        <div className="mm-session-list">
+          {filtered.length === 0 ? (
+            <div className="mm-session-empty">No saved threads yet.</div>
+          ) : filtered.map((s) => {
+            const active = s.id === currentId;
+            const updated = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : 'not dated';
+            return (
+              <article key={s.id} className={'mm-session-card' + (active ? ' active' : '') + (s.pinned ? ' pinned' : '')}>
+                <button className="mm-session-main" onClick={() => onOpenSession(s.id)}>
+                  <span className="mm-session-title">{s.pinned ? '★ ' : ''}{s.title || s.id}</span>
+                  <span className="mm-session-preview">{s.preview || 'Empty thread'}</span>
+                  <span className="mm-session-meta">{s.turns || 0} turns · {updated}</span>
+                </button>
+                <div className="mm-session-actions">
+                  <button onClick={() => onTogglePin(s)}>{s.pinned ? 'unpin' : 'pin'}</button>
+                  <button onClick={() => onRenameSession(s)}>rename</button>
+                  <button onClick={() => onDuplicateSession(s)}>duplicate</button>
+                  <button onClick={() => onExportSession(s)}>export</button>
+                  <button className="danger" onClick={() => onDeleteSession(s)}>delete</button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 function HeroMindmap() {
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
@@ -3007,6 +3118,10 @@ function HeroMindmap() {
     saveSettings(next);
   }, []);
   const activeSettingsCount = settingsActiveCount(settings);
+  const [sessionsOpen, setSessionsOpen] = React.useState(false);
+  const [sessionList, setSessionList] = React.useState([]);
+  const [sessionQuery, setSessionQuery] = React.useState('');
+  const [sessionBusy, setSessionBusy] = React.useState(false);
 
   // Surfaced when a stale `useLocal=true` setting from localStorage gets
   // auto-cleared on mount because the Ollama daemon isn't reachable on

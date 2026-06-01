@@ -3436,3 +3436,115 @@
   background: rgba(255, 255, 255, 0.90);
   border-bottom: 1px solid rgba(20, 30, 60, 0.10);
 }
+
+/* Conversation manager drawer */
+.mm-nav-sessions {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 0.5px solid var(--mm-line);
+  background: color-mix(in oklch, var(--mm-bg) 72%, transparent);
+  color: var(--mm-fg-dim);
+  font-family: var(--mm-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.mm-nav-sessions:hover,
+.mm-nav-sessions.open {
+  color: var(--mm-fg);
+  border-color: color-mix(in oklch, var(--accent) 45%, var(--mm-line));
+}
+.mm-session-drawer {
+  position: fixed; inset: 0; z-index: 45; pointer-events: none;
+}
+.mm-session-backdrop {
+  position: absolute; inset: 0; pointer-events: auto;
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(2px);
+}
+.mm-session-panel {
+  position: absolute; top: 14px; right: 14px; bottom: 14px;
+  width: min(460px, calc(100vw - 28px));
+  pointer-events: auto;
+  display: flex; flex-direction: column;
+  padding: 18px;
+  border-radius: 20px;
+  border: 0.5px solid var(--mm-line-strong);
+  background: color-mix(in oklch, var(--mm-card-elev) 92%, transparent);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.48);
+  animation: mmSessionIn 220ms ease both;
+}
+@keyframes mmSessionIn {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.mm-session-head,
+.mm-session-tools,
+.mm-session-actions {
+  display: flex; align-items: center; gap: 8px;
+}
+.mm-session-head { justify-content: space-between; margin-bottom: 14px; }
+.mm-session-kicker {
+  font-family: var(--mm-font-mono); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent);
+}
+.mm-session-head h2 {
+  margin: 2px 0 0; font-family: var(--mm-font-display); font-size: 24px;
+}
+.mm-session-close,
+.mm-session-tools button,
+.mm-session-actions button {
+  border: 0.5px solid var(--mm-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--mm-fg-dim);
+  font-family: var(--mm-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.mm-session-close:hover,
+.mm-session-tools button:hover,
+.mm-session-actions button:hover { color: var(--mm-fg); border-color: var(--accent); }
+.mm-session-actions button.danger:hover { border-color: oklch(0.67 0.17 28); color: oklch(0.78 0.15 28); }
+.mm-session-tools { margin-bottom: 14px; flex-wrap: wrap; }
+.mm-session-tools input {
+  flex: 1 1 190px;
+  min-width: 0;
+  padding: 8px 11px;
+  border-radius: 999px;
+  border: 0.5px solid var(--mm-line);
+  background: oklch(1 0 0 / 0.045);
+  color: var(--mm-fg);
+  font-family: var(--mm-font-body);
+}
+.mm-session-list { display: flex; flex-direction: column; gap: 10px; overflow: auto; padding-right: 2px; }
+.mm-session-empty {
+  padding: 20px; border-radius: 14px; border: 0.5px dashed var(--mm-line);
+  color: var(--mm-fg-dim); font-size: 13px;
+}
+.mm-session-card {
+  display: grid; gap: 9px;
+  padding: 12px;
+  border-radius: 15px;
+  border: 0.5px solid var(--mm-line);
+  background: color-mix(in oklch, var(--mm-bg) 65%, transparent);
+}
+.mm-session-card.active { border-color: color-mix(in oklch, var(--accent) 58%, var(--mm-line)); }
+.mm-session-card.pinned { box-shadow: inset 3px 0 0 color-mix(in oklch, var(--accent) 68%, transparent); }
+.mm-session-main {
+  display: grid; gap: 4px; text-align: left; border: 0; background: transparent;
+  color: inherit; cursor: pointer; padding: 0;
+}
+.mm-session-title { color: var(--mm-fg); font-family: var(--mm-font-display); font-size: 16px; }
+.mm-session-preview { color: var(--mm-fg-dim); font-size: 12.5px; line-height: 1.35; }
+.mm-session-meta { color: var(--mm-fg-faint); font-family: var(--mm-font-mono); font-size: 10px; }
+.mm-session-actions { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .mm-session-panel { inset: 8px; width: auto; border-radius: 16px; }
+  .mm-session-head h2 { font-size: 20px; }
+}

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { RoleResolver } from "../roles/resolver.js";
@@ -118,11 +118,24 @@ export type ChatPlan = Plan | { kind: "multi-agent"; detail: MultiAgentPlan };
 
 export interface SessionSnapshot {
   id: string;
+  title: string;
+  pinned: boolean;
   createdAt: number;
   updatedAt: number;
   role: RoleName;
   history: ConversationPart[];
   estimatedTokens: number;
+}
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  pinned: boolean;
+  createdAt: number;
+  updatedAt: number;
+  turns: number;
+  tokenEstimate: number;
+  preview: string;
 }
 
 export interface SendResult {
@@ -168,6 +181,8 @@ export class ChatSession {
   private readonly charsPerToken: number;
   private readonly resolver: RoleResolver;
   private readonly roleInstructions?: unknown;
+  private title?: string;
+  private pinned = false;
   private powerful: boolean;
 
   private history: ConversationPart[] = [];
@@ -698,12 +713,24 @@ Output ONLY the summary, no preamble.`;
   snapshot(): SessionSnapshot {
     return {
       id: this.id,
+      title: this.title ?? deriveSessionTitle(this.history, this.id),
+      pinned: this.pinned,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
       role: this.role,
       history: this.history.map((h) => ({ ...h })),
       estimatedTokens: this.estimateTokens(),
     };
+  }
+
+  setMetadata(metadata: { title?: string; pinned?: boolean }): void {
+    if (typeof metadata.title === "string") {
+      const normalized = normalizeSessionTitle(metadata.title);
+      this.title = normalized || undefined;
+    }
+    if (typeof metadata.pinned === "boolean") this.pinned = metadata.pinned;
+    this.updatedAt = Date.now();
+    this.persist();
   }
 
   /**
@@ -771,16 +798,160 @@ Output ONLY the summary, no preamble.`;
   }
 }
 
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
+
+function sessionDir(storageDir?: string): string {
+  return storageDir ?? join(homedir(), ".multi-agent", "sessions");
+}
+
+export function isSafeSessionId(id: string): boolean {
+  return SESSION_ID_RE.test(id) && !id.includes("..") && !id.includes("/") && !id.includes("\\");
+}
+
+function sessionFilePath(id: string, storageDir?: string): string {
+  if (!isSafeSessionId(id)) throw new Error("Invalid session id");
+  return join(sessionDir(storageDir), id + ".json");
+}
+
+function normalizeSessionTitle(title: string): string {
+  return title.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function estimatePartsTokens(history: ConversationPart[]): number {
+  let chars = 0;
+  for (const part of history) {
+    if (part.kind === "user_text" || part.kind === "model_text") chars += part.text.length;
+    else if (part.kind === "tool_result") chars += part.result.length;
+  }
+  return Math.ceil(chars / DEFAULT_CHARS_PER_TOKEN);
+}
+
+function isConversationPartArray(value: unknown): value is ConversationPart[] {
+  return Array.isArray(value);
+}
+
+function firstUserText(history: ConversationPart[]): string {
+  const first = history.find((p): p is Extract<ConversationPart, { kind: "user_text" }> => p.kind === "user_text");
+  return first?.text ?? "";
+}
+
+function deriveSessionTitle(history: ConversationPart[], id: string): string {
+  const first = firstUserText(history).replace(/\s+/g, " ").trim();
+  return (first || id).slice(0, 80);
+}
+
+function sessionPreview(history: ConversationPart[]): string {
+  return firstUserText(history).replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+type RawSessionFile = {
+  version?: number;
+  id?: string;
+  title?: string;
+  pinned?: boolean;
+  role?: RoleName;
+  createdAt?: number;
+  updatedAt?: number;
+  history?: unknown;
+};
+
+function readSessionFile(id: string, storageDir?: string): RawSessionFile | null {
+  const path = sessionFilePath(id, storageDir);
+  if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf8");
+  return JSON.parse(raw) as RawSessionFile;
+}
+
+function writeSessionFile(id: string, body: RawSessionFile, storageDir?: string): void {
+  const path = sessionFilePath(id, storageDir);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(body, null, 2), "utf8");
+}
+
+function summarizeSessionFile(id: string, raw: RawSessionFile): SessionSummary {
+  const history = isConversationPartArray(raw.history) ? raw.history : [];
+  return {
+    id,
+    title: normalizeSessionTitle(raw.title ?? "") || deriveSessionTitle(history, id),
+    pinned: raw.pinned === true,
+    createdAt: typeof raw.createdAt === "number" ? raw.createdAt : 0,
+    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
+    turns: history.filter((p) => p.kind === "model_text").length,
+    tokenEstimate: estimatePartsTokens(history),
+    preview: sessionPreview(history),
+  };
+}
+
 /** List existing session ids by scanning the storage directory. */
 export function listSessions(storageDir?: string): string[] {
-  const dir = storageDir ?? join(homedir(), ".multi-agent", "sessions");
+  const dir = sessionDir(storageDir);
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir)
       .filter((f) => f.endsWith(".json"))
       .map((f) => f.replace(/\.json$/, ""))
+      .filter(isSafeSessionId)
       .sort();
   } catch {
     return [];
   }
+}
+
+export function listSessionSummaries(storageDir?: string): SessionSummary[] {
+  const out: SessionSummary[] = [];
+  for (const id of listSessions(storageDir)) {
+    try {
+      const raw = readSessionFile(id, storageDir);
+      if (raw) out.push(summarizeSessionFile(id, raw));
+    } catch {
+      // Ignore unreadable/corrupt session files in the manager list.
+    }
+  }
+  return out.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+}
+
+export function updateSessionMetadata(
+  id: string,
+  metadata: { title?: string; pinned?: boolean },
+  storageDir?: string,
+): SessionSummary | null {
+  const raw = readSessionFile(id, storageDir);
+  if (!raw) return null;
+  if (typeof metadata.title === "string") raw.title = normalizeSessionTitle(metadata.title) || undefined;
+  if (typeof metadata.pinned === "boolean") raw.pinned = metadata.pinned;
+  raw.updatedAt = Date.now();
+  writeSessionFile(id, raw, storageDir);
+  return summarizeSessionFile(id, raw);
+}
+
+export function duplicateSession(id: string, newId?: string, storageDir?: string): SessionSummary | null {
+  const raw = readSessionFile(id, storageDir);
+  if (!raw) return null;
+  const created = newId && isSafeSessionId(newId)
+    ? newId
+    : id + "-copy-" + Date.now().toString(36);
+  if (!isSafeSessionId(created)) throw new Error("Invalid new session id");
+  if (existsSync(sessionFilePath(created, storageDir))) throw new Error("Session already exists");
+  const now = Date.now();
+  const copy: RawSessionFile = {
+    ...raw,
+    id: created,
+    title: (normalizeSessionTitle(raw.title ?? "") || deriveSessionTitle(isConversationPartArray(raw.history) ? raw.history : [], id)) + " copy",
+    pinned: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+  writeSessionFile(created, copy, storageDir);
+  return summarizeSessionFile(created, copy);
+}
+
+export function deleteSession(id: string, storageDir?: string): boolean {
+  const path = sessionFilePath(id, storageDir);
+  if (!existsSync(path)) return false;
+  unlinkSync(path);
+  return true;
+}
+
+export function exportSessionRaw(id: string, storageDir?: string): RawSessionFile | null {
+  return readSessionFile(id, storageDir);
 }
