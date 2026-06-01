@@ -331,6 +331,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           const e = err as NodeJS.ErrnoException & { code?: string };
           if (e.code === "TRAVERSAL" || e.code === "BLOCKED") sendJson(res, 403, { error: e.message });
           else if (e.code === "NOT_FOUND") sendJson(res, 404, { error: e.message });
+          else if (e.code === "TOO_LARGE") sendJson(res, 413, { error: e.message });
+          else if (e.code === "BINARY") sendJson(res, 415, { error: e.message });
           else sendJson(res, 400, { error: e.message });
         }
         return;
@@ -369,6 +371,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           if (e.code === "TRAVERSAL" || e.code === "BLOCKED") sendJson(res, 403, { error: e.message });
           else if (e.code === "NOT_FOUND") sendJson(res, 404, { error: e.message });
           else if (e.code === "CONFLICT") sendJson(res, 409, { error: e.message });
+          else if (e.code === "TOO_LARGE") sendJson(res, 413, { error: e.message });
           else sendJson(res, 400, { error: e.message });
         }
         return;

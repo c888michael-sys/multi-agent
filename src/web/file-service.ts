@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TextDecoder } from "node:util";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
@@ -37,6 +38,14 @@ function isBinary(buf: Buffer): boolean {
     if (buf[i] === 0) return true;
   }
   return false;
+}
+
+function decodeUtf8Text(buf: Buffer): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    throw Object.assign(new Error("binary files are not supported"), { code: "BINARY" });
+  }
 }
 
 export interface DirEntry {
@@ -175,12 +184,7 @@ export class WebFileService {
     if (isBinary(buf)) {
       throw Object.assign(new Error("binary files are not supported"), { code: "BINARY" });
     }
-    let content: string;
-    try {
-      content = buf.toString("utf8");
-    } catch {
-      throw Object.assign(new Error("binary files are not supported"), { code: "BINARY" });
-    }
+    const content = decodeUtf8Text(buf);
     const sha256 = createHash("sha256").update(buf).digest("hex");
     const rel = relative(this.root, abs).replace(/\\/g, "/");
     return { path: rel, content, size: st.size, sha256, truncated: false };
@@ -188,6 +192,13 @@ export class WebFileService {
 
   buildDiff(userPath: string, nextContent: string): { path: string; beforeSha256: string; diff: string } {
     const abs = this.resolveSafe(userPath);
+    const nextBuf = Buffer.from(nextContent, "utf8");
+    if (nextBuf.length > this.maxBytes) {
+      throw Object.assign(
+        new Error(`file too large (${nextBuf.length} bytes; max ${this.maxBytes})`),
+        { code: "TOO_LARGE" },
+      );
+    }
     if (!existsSync(abs)) {
       throw Object.assign(new Error(`not found: ${userPath}`), { code: "NOT_FOUND" });
     }
@@ -206,7 +217,7 @@ export class WebFileService {
       throw Object.assign(new Error("binary files are not supported"), { code: "BINARY" });
     }
     const beforeSha256 = createHash("sha256").update(buf).digest("hex");
-    const oldContent = buf.toString("utf8");
+    const oldContent = decodeUtf8Text(buf);
     const rel = relative(this.root, abs).replace(/\\/g, "/");
     return { path: rel, beforeSha256, diff: unifiedDiff(oldContent, nextContent, rel) };
   }
@@ -219,6 +230,13 @@ export class WebFileService {
     const abs = this.resolveSafe(userPath);
     const rel = relative(this.root, abs).replace(/\\/g, "/");
     const isNew = expectedSha256 === null;
+    const nextBuf = Buffer.from(nextContent, "utf8");
+    if (nextBuf.length > this.maxBytes) {
+      throw Object.assign(
+        new Error(`file too large (${nextBuf.length} bytes; max ${this.maxBytes})`),
+        { code: "TOO_LARGE" },
+      );
+    }
 
     // Refuse to write through a symlink at the target path itself.
     if (existsSync(abs)) {
@@ -268,7 +286,7 @@ export class WebFileService {
       }
     }
 
-    const buf = Buffer.from(nextContent, "utf8");
+    const buf = nextBuf;
     writeFileSync(abs, buf);
     const sha256 = createHash("sha256").update(buf).digest("hex");
     return { path: rel, sha256, bytes: buf.length };

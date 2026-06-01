@@ -1017,15 +1017,20 @@ function readFileAsText(file) {
   });
 }
 
+function attachmentText(att) {
+  return String(att?.text ?? att?.content ?? '');
+}
+
 // Render an attached file's content as a fenced block the model can read.
 // Uses the file extension as the fence language hint when present.
 function fenceForAttachment(att) {
+  const text = attachmentText(att);
   const dot = att.name.lastIndexOf('.');
   const ext = dot > 0 ? att.name.slice(dot + 1).toLowerCase() : '';
   // Pick three backticks but bump count if the file itself contains them.
   let fence = '```';
-  while (att.text.includes(fence)) fence += '`';
-  return `${fence}${ext}\n${att.text}\n${fence}`;
+  while (text.includes(fence)) fence += '`';
+  return `${fence}${ext}\n${text}\n${fence}`;
 }
 
 // Compose the final message body: attachments first, prompt last. The
@@ -1070,7 +1075,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
     if (!files.length || !canAttach) return;
     const current = attachments || [];
     const accepted = [...current];
-    let total = accepted.reduce((acc, a) => acc + a.text.length, 0);
+    let total = accepted.reduce((acc, a) => acc + attachmentText(a).length, 0);
     const errors = [];
     for (const f of files) {
       if (total + f.size > ATTACH_TOTAL_MAX_BYTES) {
@@ -1080,7 +1085,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
       try {
         const att = await readFileAsText(f);
         accepted.push(att);
-        total += att.text.length;
+        total += attachmentText(att).length;
       } catch (err) {
         errors.push(err.message || String(err));
       }
@@ -1107,9 +1112,9 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
         {canAttach && attachments && attachments.length > 0 && (
           <div className="mm-attach-chips">
             {attachments.map((a, i) => (
-              <span key={`${a.name}-${i}`} className="mm-attach-chip" title={`${a.name} · ${(a.text.length / 1024).toFixed(1)} KB`}>
+              <span key={`${a.name}-${i}`} className="mm-attach-chip" title={`${a.name} · ${(attachmentText(a).length / 1024).toFixed(1)} KB`}>
                 <span className="mm-attach-name">{a.name}</span>
-                <span className="mm-attach-size">{(a.text.length / 1024).toFixed(1)} KB</span>
+                <span className="mm-attach-size">{(attachmentText(a).length / 1024).toFixed(1)} KB</span>
                 <button className="mm-attach-x" onClick={() => removeAttachment(i)} aria-label={`Remove ${a.name}`}>×</button>
               </span>
             ))}
@@ -1132,7 +1137,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
           <span className="mm-model"><i />{composerModeLabel(settings)}</span>
           {canAttach && attachments && attachments.length > 0 && (
             <span className="mm-attach-budget">
-              {(attachments.reduce((s, a) => s + (a.text || a.content || '').length, 0) / 1024).toFixed(0)} / {ATTACH_TOTAL_MAX_BYTES / 1024} KB
+              {(attachments.reduce((s, a) => s + attachmentText(a).length, 0) / 1024).toFixed(0)} / {ATTACH_TOTAL_MAX_BYTES / 1024} KB
             </span>
           )}
           <div className="mm-composer-actions">
@@ -3197,13 +3202,13 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
   function attachFile() {
     if (!selectedFile) return;
     const current = attachments || [];
-    const totalCurrent = current.reduce((s, a) => s + (a.size || 0), 0);
+    const totalCurrent = current.reduce((s, a) => s + (a.size || attachmentText(a).length), 0);
     if (totalCurrent + selectedFile.size > ATTACH_TOTAL_MAX_BYTES) {
       setPreviewError('Would exceed total ' + (ATTACH_TOTAL_MAX_BYTES / 1024) + ' KB attachment cap');
       return;
     }
     if (current.some(a => a.name === selectedFile.path)) { setPreviewError('This file is already attached'); return; }
-    setAttachments([...current, { name: selectedFile.path, size: selectedFile.size, content: selectedFile.content }]);
+    setAttachments([...current, { name: selectedFile.path, size: selectedFile.size, text: selectedFile.content }]);
     onClose();
   }
 

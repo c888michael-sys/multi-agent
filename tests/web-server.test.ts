@@ -123,6 +123,13 @@ describe("web server", () => {
     expect(body).toContain("Open saved threads");
   });
 
+  it("keeps project-file attachments compatible with the composer attachment shape", () => {
+    const app = readFileSync(join(process.cwd(), "src", "web", "static", "app.jsx"), "utf8");
+    expect(app).toContain("function attachmentText(att)");
+    expect(app).toContain("text: selectedFile.content");
+    expect(app).not.toContain("content: selectedFile.content }]");
+  });
+
   it("blocks directory traversal", async () => {
     const { url } = spawn();
     // %2e%2e%2f is ../ encoded; the server should normalize and refuse.
@@ -694,6 +701,15 @@ describe("web server", () => {
       expect(j.error).toMatch(/binary/i);
     });
 
+    it("GET /api/files/read 415s for invalid UTF-8 text without NUL bytes", async () => {
+      writeFileSync(join(fileRoot, "invalid.txt"), Buffer.from([0xff, 0xfe, 0xfd]));
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/read?path=invalid.txt`);
+      expect(r.status).toBe(415);
+      const j: any = await r.json();
+      expect(j.error).toMatch(/binary|utf-?8/i);
+    });
+
     // ── Phase B: diff + write ─────────────────────────────────────────────
 
     it("POST /api/files/diff returns a unified diff and beforeSha256", async () => {
@@ -743,6 +759,19 @@ describe("web server", () => {
       expect(r.status).toBe(409);
       const j: any = await r.json();
       expect(j.error).toMatch(/changed on disk/i);
+    });
+
+    it("POST /api/files/write 413s when new content exceeds the cap", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "too-large.txt", content: "x".repeat(300_000), expectedSha256: null, confirm: true }),
+      });
+      expect(r.status).toBe(413);
+      expect(existsSync(join(fileRoot, "too-large.txt"))).toBe(false);
+      const j: any = await r.json();
+      expect(j.error).toMatch(/too large/i);
     });
 
     it("POST /api/files/write 400s when confirm is not true", async () => {
