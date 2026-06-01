@@ -238,6 +238,10 @@ Priority plan, ordered by user value:
 - [ ] **Plugin/tool permission UI.** Before adding powerful web tools (bash, file writes, git), add an explicit permission surface: read-only vs write, current sandbox root, risky command warnings, and audit logs.
 - [ ] **Mindmap workspace polish.** Add drag-rearrange and free placement for category nodes, persisted per response under `localStorage[lattice.responseStack.v2]`.
 - [ ] **Frontend logic test coverage.** `app.jsx` (4,229 lines) + `templates.jsx` (771 lines) have zero unit tests — the no-build React files are verified only by an esbuild parse check. Extract the pure functions (JSON extractor, edit detector, markdown parser, attachment composer) into a testable module and cover them. **Detailed worker plan below: "Frontend logic test coverage."**
+- [ ] **Live think-out-loud lanes.** In brainstorming mode, show all 4 agents streaming in real-time side-by-side columns instead of a spinner, then converge into synthesis. After synthesis, a "see all 4 perspectives" toggle shows the full per-role content. **Detailed worker plan below: "Live think-out-loud lanes."**
+- [ ] **Cross-model disagreement surfacing.** After brainstorming fan-out, run a background Cerebras call to identify where the 4 models agree and disagree, surface a `⚖ 3/4 agree · 1 dissent` bar with expandable per-claim breakdown. **Detailed worker plan below: "Cross-model disagreement surfacing."** Depends on lanes plan (needs per-role outputs).
+- [ ] **Cheap model verification pass.** After every turn, run a background Cerebras fact-check on the reply and surface a `⚠ N claim(s) to verify` pill in the turn footer, with per-claim reasons. **Detailed worker plan below: "Cheap model verification pass."**
+- [ ] **/goal — quota-patient autonomous task loop.** `/goal <description>` in the composer starts a multi-step autonomous loop. When all quotas exhaust, shows a live countdown to the next provider reset and resumes automatically — free-tier daily resets become a scheduling primitive. **Detailed worker plan below: "/goal — quota-patient autonomous task loop."**
 
 ### Worker implementation plan: Web project file tools with permissions
 
@@ -504,6 +508,227 @@ export interface CitationSource {
 - `npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL` still succeeds.
 - Manual smoke: `npm run web`, send a prompt, confirm the mindmap still bursts, the "apply →" pill still appears for path-commented code blocks, markdown/code/tables still render, attachments still compose — i.e. **no behavioral change**.
 - If extraction surfaces a latent bug (a test reveals the current code does the wrong thing), document it as a finding for the user to triage rather than changing behavior inside this refactor PR.
+
+### Worker implementation plan: Live think-out-loud lanes (parallel brainstorming streams)
+
+> **For agentic workers:** use `superpowers:test-driven-development` for every backend code task. Commit + push after each phase per repo convention. Mark the backlog item complete + update README in the same commit as the finishing commit.
+
+**Goal:** In brainstorming mode the UI currently shows a generic spinner while 4 agents run in parallel, then streams only the synthesis. The individual perspectives — the most valuable output of an ensemble — are discarded before the user ever sees them. Replace the loading phase for brainstorming turns with a live 4-column lanes view where each agent's tokens stream in real time as it types, then converge visually into the synthesis reply.
+
+**Current brainstorming flow (confirmed — read before starting):**
+
+- `brainstormingTasks(task)` at `src/agents/multi-agent-workflow.ts:66` builds 4 tasks for roles `perception`, `reasoning`, `action-code`, `action-structural`.
+- `src/chat/session.ts:297-308` handles `mode === "brainstorming"`: calls `planAndExecute` with a prebuilt `{ kind: "parallel", tasks }` plan.
+- `WorkflowProgress` union at `src/agents/multi-agent-workflow.ts:41` currently has `{ kind: "token"; text: string }` — one shared token stream. Individual role tokens are not distinguished; only the final synthesis streams.
+- The SSE handler at `src/web/server.ts:530-539` forwards every `WorkflowProgress` event verbatim to the client. `token` events reach the frontend as `evt.kind === "token"` and `partial` is accumulated there.
+
+**Phase 1 — new `role-token` SSE event type (backend):**
+
+- Add `{ kind: "role-token"; role: RoleName; text: string }` to the `WorkflowProgress` union in `src/agents/multi-agent-workflow.ts:41`. Keep the existing `{ kind: "token"; text: string }` for the synthesis stream; `role-token` is strictly for the per-agent pre-synthesis tokens.
+- In `planAndExecute` / the parallel execution path: when dispatching the 4 brainstorming roles, pass an `onToken` callback per role that fires `{ kind: "role-token", role, text }` through `onProgress`. Each role already has a `streamRole?` path on `WorkflowRuntime` (`src/agents/multi-agent-workflow.ts:50-54`) — use it instead of `runRole` for the brainstorming parallel tasks when `streamRole` is available.
+- The SSE handler already forwards all `WorkflowProgress` events; no change needed in `server.ts` as long as the new event matches the union.
+- Add a `tests/multi-agent-workflow.test.ts` case (or extend the existing one): verify that a mock runtime with `streamRole` receives 4 per-role `onToken` calls and that `role-token` events are emitted with the correct `role` field.
+
+**Phase 2 — frontend lanes view (`src/web/static/app.jsx` + `style.css`):**
+
+- In the SSE event handler (around `app.jsx:3654`), handle `evt.kind === "role-token"`: accumulate per-role partials in a `Map<RoleName, string>` stored on `liveTurn.roleLanes` (add this field to the live-turn shape alongside `partial` and `status`).
+- In `HeroMindmap`'s `LoadingView` call site (the phase `=== 'loading'` branch), detect when the active plan is a brainstorming parallel plan and render `BrainstormingLanesView` instead of the generic `LoadingView`. The signal: `liveTurn.status?.plan?.kind === 'parallel'` or `settings.routingMode === 'brainstorming'`.
+- `BrainstormingLanesView({ roleLanes, agentState })`: a 4-column grid, one column per brainstorming role. Each column header uses the role label + the agent colour from `ROLE_COLORS` (already used in the catalyst particles). The column body is a scrollable `<pre>` or `MarkdownProse` that updates as tokens arrive. A pulsing caret appears at the end of the active column. When a role's `role-end` event arrives (already handled in `agentState`), its column shows a ✓ and stops pulsing.
+- When the brainstorming parallel phase ends and synthesis begins (first `token` event for the synthesis stream), transition the lanes view: columns collapse with a CSS animation and the main reply bubble fades in. After synthesis completes, the collapsed lane summaries remain accessible via a "▶ see all 4 perspectives" toggle that expands them below the reply.
+- Style: `.mm-lanes-grid` (4-col CSS grid, gap, max-height with overflow-y scroll per column), `.mm-lane-header` (role label + dot in role colour), `.mm-lane-body` (monospace 11px, dim colour, caret), `.mm-lane-collapsed` (toggle chevron + short first-line preview per lane).
+
+**Acceptance criteria:**
+
+- In brainstorming mode, all 4 columns appear and fill with tokens in real time before synthesis starts.
+- After synthesis, "see all 4 perspectives" toggle shows the full per-role content.
+- Non-brainstorming turns are unaffected; no `role-token` events fire.
+- New workflow test passes; all 274+ existing tests pass; bundle clean.
+- README backlog item updated in the same commit.
+
+---
+
+### Worker implementation plan: Cross-model disagreement surfacing
+
+> **For agentic workers:** use `superpowers:test-driven-development` for backend tasks. This plan builds directly on the lanes plan above — implement after live lanes are shipped, since it reuses the per-role output data that lanes exposes.
+
+**Goal:** The 4 brainstorming perspectives often diverge — one model sees a risk the others miss, or two disagree on a tradeoff. That signal is currently discarded by synthesis. Surface a disagreement summary: "3/4 agree on X; reasoning dissents — it argues Y." This turns the ensemble from a hidden fallback chain into a visible epistemic instrument.
+
+**Current data available (post-lanes):**
+
+- After the lanes plan ships, `WorkflowTrace.perRole` (`src/agents/multi-agent-workflow.ts:20-29`) carries each role's full output. This needs to be threaded to `SendResult` and the `done` event (same pattern as the `sources` plan: add an optional field, serialize it over SSE, store on the entry).
+- The disagreement analysis itself is a single `action-repetitive` (Cerebras) call — fast, cheap, ~1M tok/day quota. Same background-fetch pattern as `prefetchMindmapData`.
+
+**Phase 1 — expose per-role outputs over the wire:**
+
+- Add `perspectives?: { role: RoleName; text: string }[]` to `SendResult` in `src/chat/session.ts:141`. Populate it from `WorkflowTrace.perRole` when `mode === "brainstorming"`.
+- Add `perspectives` to the SSE `done` event in `src/web/server.ts:540` and the `/api/chat` JSON response. Store `entry.perspectives = doneEvent?.perspectives || []` on the finalized entry in `app.jsx:3701`; include it in `savePersistedStack`.
+
+**Phase 2 — disagreement analysis (background, Cerebras):**
+
+- In `prefetchMindmapData` (or a sibling `prefetchDisagreementData`), when `entry.perspectives.length >= 2`, fire a `POST /api/complete` with `role: "action-repetitive"` and a prompt like: `"Four AI models answered the same question from different angles. Identify agreements and disagreements. Output ONLY valid JSON: { agreements: [\"string\"], disagreements: [{ claim: \"string\", sides: { role: \"their position\" } }] }. Perspectives:\n[...formatted perspectives]"`.
+- Store the parsed result on `entry.disagreement: { agreements: string[]; disagreements: { claim: string; sides: Record<RoleName, string> }[] } | null`.
+
+**Phase 3 — render in `ChatTurn`:**
+
+- Below the reply bubble (after `.mm-turn-foot`), when `entry.disagreement` is populated, render a `DisagreementBar` component.
+- Compact state: a single line — `⚖ 3/4 agree · 1 dissent` — as a faint pill. Clicking it expands.
+- Expanded state: agreements listed as `✓ [claim]` in green-tinted rows; each disagreement as a small table — claim in the header, each role's position in a sub-row. Collapse button at bottom.
+- Style: `.mm-disagree-bar` (subtle border-top, faint bg tint), `.mm-disagree-agree` (green accent), `.mm-disagree-row` (role pill + text), `.mm-disagree-expand-btn`.
+
+**Acceptance criteria:**
+
+- Brainstorming turn shows the disagreement bar with accurate counts; clicking expands.
+- Non-brainstorming turns show nothing.
+- `perspectives` and `disagreement` persist across page reload.
+- All existing tests pass; bundle clean.
+
+---
+
+### Worker implementation plan: Cheap model verification pass
+
+> **For agentic workers:** use `superpowers:test-driven-development`. Ships as its own PR; no dependency on the lanes/disagreement plans. The verification prompt engineering is the highest-risk part — iterate on it carefully.
+
+**Goal:** Before the reply lands in the chat, or immediately after, use the fast Cerebras `action-repetitive` slot (GPT-OSS 120B, ~2000 tok/s, ~1M tok/day free) to check the response for potentially unverified factual claims and surface a lightweight fact-check panel in the turn footer. The key constraint: the flag must be *honest about its own uncertainty* — it should say "this claim may be unverified" not "this is wrong."
+
+**Current slot availability (confirmed):**
+
+- `action-repetitive` is Cerebras GPT-OSS 120B. It already runs as a background prefetch in `prefetchMindmapData` after every turn. The verification call can run alongside it without conflict.
+- The background fetch pattern is already established: `POST /api/complete` with `{ role: "action-repetitive", prompt, useLocal: false }` from the frontend, or equivalently via `runRole` from the server. No new endpoints needed.
+
+**Phase 1 — verification fetch (frontend, background):**
+
+- After a turn lands (when `entry.text` is set and not an error), fire a background fetch in `HeroMindmap`'s `useEffect` block alongside `prefetchMindmapData`: `POST /api/complete` with `role: "action-repetitive"` and this prompt template:
+  ```
+  Review this AI response for factual claims that a reader should independently verify.
+  Focus on: specific statistics, named dates/events, attributed quotes, technical specifications, and claims about external systems/products.
+  Output ONLY valid JSON: { "flagged": [{ "claim": "<exact short phrase from the response>", "reason": "<why it might need verification>" }] }
+  If no claims need flagging, output: { "flagged": [] }
+  Response to review:
+  <entry.text>
+  ```
+- Parse the result with `extractFirstJsonObject`. Store `entry.factCheck: { flagged: { claim: string; reason: string }[] } | null` on the entry. Set to `null` while pending, `{ flagged: [] }` for clean responses.
+- Include `factCheck` in `savePersistedStack` and default to `null` in `responsesFromSessionHistory`.
+
+**Phase 2 — render in `ChatTurn`:**
+
+- In `.mm-turn-foot`, after the timing chip: when `entry.factCheck === null`, show nothing (still loading); when `entry.factCheck.flagged.length === 0`, optionally show a faint `✓ fact-check clean` indicator; when `> 0 flagged`, show a `⚠ N claim(s) to verify` pill that expands to list each claim + reason.
+- Keep it non-alarming — the wording should be "worth verifying" not "false". Each claim shows as a grey pill with the reason as a tooltip/sub-text.
+- Style: `.mm-factcheck-pill` (amber-tinted border, same size as `.mm-turn-timing`), `.mm-factcheck-item` (claim text, dimmer reason line), `.mm-factcheck-clean` (green-tinted, very faint — don't overdo the "all clear" signal).
+
+**Phase 3 — tests:**
+
+- `tests/web-server.test.ts`: the `/api/complete` endpoint already exists; add a case verifying `role: "action-repetitive"` routes correctly.
+- Unit test the prompt-building helper (extract it as a pure function) and the JSON-parse fallback path.
+
+**Acceptance criteria:**
+
+- After every turn, the verification runs in the background; the pill appears once results arrive.
+- `{ flagged: [] }` turns show the clean indicator or nothing; flagged turns show the warning count.
+- Persists across reload; non-intrusive when verification is still loading.
+- All existing tests pass; bundle clean.
+
+---
+
+### Worker implementation plan: /goal — quota-patient autonomous task loop
+
+> **For agentic workers:** this is the most architecturally significant plan in the repo. Read the entire section before starting. Use `superpowers:test-driven-development` for all backend tasks. Ship in phases; each phase is independently shippable. Do NOT start Phase 3+ without confirming Phase 1–2 work end-to-end.
+
+**Goal:** A `/goal <description>` command in the web composer that runs a multi-step autonomous loop toward a long-horizon objective. When all provider quotas are exhausted, instead of failing, the system enters a **patient wait state**: it shows a real-time countdown to the next provider reset, then automatically resumes. Free-tier quota resets (daily UTC rollover for Gemini, per-minute windows for Groq/Cerebras) become a scheduling primitive rather than an error. The result: a task that might take 3 quota cycles and 8 hours completes unattended.
+
+**Critical context — existing infrastructure that MUST be reused (do not reinvent):**
+
+- `src/router.ts:134-144`: already has `earliestAvailableIn(providerIds)` + `sleepWithSignal(waitMs, signal)`. The current `maxRetryWaitMs` cap (`src/router.ts:44`) is what causes `AllProvidersExhaustedError` to fire instead of waiting indefinitely. The goal loop needs to bypass this cap using a dedicated `RouterOptions` flag: `{ maxRetryWaitMs: Infinity }` (or a very large value like `24 * 60 * 60 * 1000`). This is a one-line change to the router; do NOT refactor the existing retry logic.
+- `src/state.ts:10-32`: `ProviderUsage` and `rollover()` already track per-provider daily counters and cooldown timestamps. `UsageStore` (`src/state.ts:53+`) loads/saves `~/.multi-agent/state.json`. The wait time is computable from `pool.earliestAvailableIn()` — this already returns the earliest `cooldownUntil` timestamp across eligible providers.
+- `src/chat/session.ts`: `ChatSession` already persists to `~/.multi-agent/sessions/<id>.json` and can be resumed across process restarts. Goal sessions should extend this pattern.
+
+**Goal state format (new file: `src/goal/goal-session.ts`):**
+
+```ts
+export interface GoalStep {
+  prompt: string;          // what was asked of the model this step
+  result?: string;         // model's output
+  status: "pending" | "running" | "done" | "failed";
+  startedAt?: number;
+  finishedAt?: number;
+}
+export interface GoalSession {
+  goalId: string;          // e.g. "goal_abc123"
+  description: string;     // original user goal
+  sessionId: string;       // underlying ChatSession id for history
+  steps: GoalStep[];
+  status: "running" | "paused" | "done" | "failed";
+  pausedUntil?: number;    // timestamp of next expected provider availability
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+Persist to `~/.multi-agent/goals/<goalId>.json`. Load/save pattern mirrors `UsageStore`.
+
+**Phase 1 — goal planner + loop (backend):**
+
+- Create `src/goal/planner.ts`: export `planNextStep(goal, completedSteps, chatSession): Promise<{ nextPrompt: string; done: boolean; summary?: string }>`. Uses `reasoning` role. Prompt template:
+  ```
+  Goal: <description>
+  Completed steps so far:
+  <numbered list of step prompts + result summaries>
+  
+  What is the single next concrete action to take toward this goal?
+  Reply ONLY with JSON: { "nextPrompt": "<what to ask/do next>", "done": <true if goal achieved>, "summary": "<optional 1-sentence progress summary>" }
+  If the goal is fully achieved, set done=true and summarize the result in summary.
+  ```
+- Create `src/goal/runner.ts`: export `runGoalLoop(goalSession, resolver, opts)`. The loop:
+  1. Call `planNextStep` → get `nextPrompt` / `done`
+  2. If `done`, mark session complete, persist, return
+  3. Append step to `goalSession.steps`, persist
+  4. Run `nextPrompt` through `ChatSession.send()` with `maxRetryWaitMs: Infinity` (pass via `RouterOptions`)
+  5. On `AllProvidersExhaustedError` — this should NOT fire with `Infinity`, but if it somehow does (no providers registered at all), mark session `failed`
+  6. On success, store result on step, go to 1
+  7. Expose an `onProgress(evt: GoalProgress)` callback for the server to stream events
+- `GoalProgress` event union:
+  ```ts
+  | { kind: "goal-step-start"; stepIndex: number; prompt: string }
+  | { kind: "goal-token"; text: string }          // tokens from the current step's reply
+  | { kind: "goal-step-done"; stepIndex: number; result: string }
+  | { kind: "goal-plan"; nextPrompt: string; stepIndex: number }
+  | { kind: "quota-wait"; resumeAt: number; waitMs: number; providers: { id: string; resumeAt: number }[] }
+  | { kind: "goal-done"; summary: string; stepCount: number }
+  | { kind: "goal-error"; error: string }
+  ```
+  The `quota-wait` event fires when the router detects it will sleep for > 30 s (i.e., a real quota exhaustion, not a brief RPM cooldown). Emit it before `sleepWithSignal` so the frontend can start its countdown.
+
+**Phase 2 — server endpoints:**
+
+- `POST /api/goal` `{ description, sessionId? }` → creates a new `GoalSession`, starts the loop in the background, returns `{ goalId }`.
+- `GET /api/goal/:goalId/stream` → SSE stream of `GoalProgress` events for an in-progress goal (long-lived connection). If the goal is paused/waiting, immediately emit the current `quota-wait` state so a reconnecting client can restore its countdown.
+- `GET /api/goals` → list all goal sessions (id, description, status, stepCount, createdAt).
+- `DELETE /api/goal/:goalId` → cancel + remove.
+- Wire into `src/web/server.ts` route table.
+- `tests/web-server.test.ts`: add cases for goal creation (`POST /api/goal` returns `goalId`), goal list (`GET /api/goals` returns array), and that a completed goal is marked `status: "done"` in the persisted file. Use a mock `GoalSession`/runner — no live API calls.
+
+**Phase 3 — frontend goal UI (`src/web/static/app.jsx` + `style.css`):**
+
+- Detect `/goal ` prefix in the composer submit handler. If the message starts with `/goal `, extract the description, fire `POST /api/goal`, and open `GoalView` instead of the normal chat flow.
+- `GoalView({ goalId })`: subscribes to `GET /api/goal/:goalId/stream` via `EventSource`. Renders:
+  - **Header**: goal description, status badge (running / waiting / done / failed), elapsed time.
+  - **Steps list**: each completed step as a collapsible row showing the prompt + result summary. The current running step shows streaming tokens.
+  - **Quota-wait panel** (shown only when `status === "waiting"`): large countdown timer (`HH:MM:SS` to `resumeAt`), list of providers with their individual reset times, a pulsing "waiting for quota..." indicator. Auto-dismisses when the runner resumes and emits the next `goal-step-start`.
+  - **Done state**: "Goal complete" banner, final summary, "back to chat" button that adds the goal summary as a chat message.
+- The countdown timer: use `setInterval(1000)` updating `Math.max(0, resumeAt - Date.now())`, formatted as `HH:MM:SS`. Clear on unmount.
+- Style: `.mm-goal-view` (full-height panel, similar container to `.mm-file-drawer`), `.mm-goal-step` (row with status dot, prompt preview, collapsible body), `.mm-quota-wait-panel` (amber border, centered countdown in large monospace, provider list below), `.mm-goal-done-banner` (green accent).
+
+**Phase 4 — goal management in threads drawer:**
+
+- Add a `goals` tab alongside `threads` in the conversation drawer. Lists active/recent goals with status and a cancel button.
+- Clicking a running goal opens `GoalView`. Clicking a done goal opens a read-only summary.
+
+**Acceptance criteria:**
+
+- `/goal write a summary of the top 5 recent AI papers` starts a multi-step loop, visible in the UI as steps complete.
+- When quota exhausts (test by temporarily using a mock that returns `AllProvidersExhaustedError` after 2 steps), the countdown panel appears with the correct `resumeAt` time; after the mock "quota" resets, the loop resumes from where it left off.
+- Goal state persists to disk; killing and restarting the server does not lose goal progress (a reconnecting client sees the current step count).
+- All existing tests pass; new goal-session and planner tests cover the step-accumulation loop, `done: true` termination, and `quota-wait` event emission.
+- README backlog item updated in the same commit.
 
 ### UI/UX polish backlog
 
