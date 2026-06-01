@@ -731,10 +731,12 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           if (!goalListeners.has(goalId)) goalListeners.set(goalId, new Set());
           goalListeners.get(goalId)!.add(send);
 
-          req.on("close", () => {
+          const cleanupListener = () => {
             goalListeners.get(goalId)?.delete(send);
             if (goalListeners.get(goalId)?.size === 0) goalListeners.delete(goalId);
-          });
+          };
+          req.on("close", cleanupListener);
+          res.on("close", cleanupListener);
           return;
         }
 

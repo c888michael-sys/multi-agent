@@ -78,6 +78,7 @@ export async function runGoalLoop(
           await handleQuotaWait(err, session, emit, sleep, opts);
           continue; // retry planning
         }
+        session.status = "failed";
         emit({ kind: "goal-error", error: (err as Error).message ?? String(err) });
         return;
       }
@@ -112,6 +113,7 @@ export async function runGoalLoop(
           }
           step.status = "failed";
           step.finishedAt = Date.now();
+          session.status = "failed";
           emit({ kind: "goal-error", error: (err as Error).message ?? String(err) });
           return;
         }

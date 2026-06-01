@@ -3486,7 +3486,11 @@ function GoalView({ goalId, onClose }) {
         setCurrentTokens('');
         setSteps(prev => {
           const next = [...prev];
-          if (!next[evt.stepIndex]) next.push({ prompt: evt.prompt, status: 'running' });
+          if (!next[evt.stepIndex]) {
+            next.push({ prompt: evt.prompt, status: 'running' });
+          } else {
+            next[evt.stepIndex] = { ...next[evt.stepIndex], status: 'running' };
+          }
           return next;
         });
       } else if (evt.kind === 'goal-token') {

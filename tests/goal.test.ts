@@ -291,5 +291,43 @@ describe("runGoalLoop", () => {
     const errEvt = events.find((e) => e.kind === "goal-error") as Extract<GoalProgress, { kind: "goal-error" }>;
     expect(errEvt).toBeTruthy();
     expect(errEvt.error).toContain("unexpected API failure");
+    expect(session.status).toBe("failed");
+  });
+
+  it("sets session.status to failed when step execution throws a non-quota error", async () => {
+    const events: GoalProgress[] = [];
+    let plannerCalled = false;
+
+    const mockResolver = {
+      runRole: vi.fn(async (_role: string, prompt: string) => {
+        if (prompt.includes("next concrete action")) {
+          if (!plannerCalled) {
+            plannerCalled = true;
+            return '{"nextPrompt":"do the step","done":false}';
+          }
+        }
+        // Step execution always throws a non-quota error
+        throw new Error("step execution failure");
+      }),
+    };
+
+    const session: GoalSession = {
+      goalId: "goal_step_err",
+      description: "Step error test",
+      steps: [],
+      status: "running",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await runGoalLoop(session, mockResolver as any, {
+      onProgress: (e) => events.push(e),
+      sleep: async () => {},
+    });
+
+    const errEvt = events.find((e) => e.kind === "goal-error") as Extract<GoalProgress, { kind: "goal-error" }>;
+    expect(errEvt).toBeTruthy();
+    expect(errEvt.error).toContain("step execution failure");
+    expect(session.status).toBe("failed");
   });
 });
