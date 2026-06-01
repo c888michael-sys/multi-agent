@@ -41,6 +41,8 @@ import {
 import { LOCAL_OLLAMA_MODELS } from "../config.js";
 import type { CompleteOptions } from "../provider.js";
 import type { RoutingMode } from "../agents/multi-agent-workflow.js";
+import { GoalStore, newGoalId, type GoalSession } from "../goal/goal-session.js";
+import { runGoalLoop, type GoalProgress } from "../goal/runner.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -132,6 +134,8 @@ export interface ServerOptions {
   roleInstructionsPath?: string;
   /** Project root exposed to the web file browser. Defaults to process.cwd(). */
   projectRoot?: string;
+  /** Override goal storage directory. Used by tests; default is ~/.multi-agent/goals. */
+  goalStorageDir?: string;
 }
 
 /**
@@ -157,6 +161,27 @@ function isAllowedOrigin(origin: string | undefined, port: number): boolean {
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
   const port = opts.port ?? 7421;
   const fileService = new WebFileService(resolve(opts.projectRoot ?? process.cwd()));
+  const goalStore = new GoalStore(opts.goalStorageDir);
+  // In-memory listeners for SSE goal streams: goalId → set of write callbacks.
+  const goalListeners = new Map<string, Set<(evt: GoalProgress) => void>>();
+
+  function notifyGoal(goalId: string, evt: GoalProgress): void {
+    goalListeners.get(goalId)?.forEach((fn) => fn(evt));
+  }
+
+  function startGoalRunner(session: GoalSession): void {
+    const r = resolverFor(opts, undefined);
+    runGoalLoop(session, r, {
+      onProgress: (evt) => {
+        session.updatedAt = Date.now();
+        goalStore.save(session);
+        notifyGoal(session.goalId, evt);
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    }).catch((err) => {
+      console.error(`[goal] ${session.goalId} runner error:`, err);
+    });
+  }
 
   const server = createServer(async (req, res) => {
     try {
@@ -645,6 +670,85 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           const deleted = deleteSession(id, opts.sessionStorageDir);
           if (!deleted) sendJson(res, 404, { error: "session not found" });
           else sendJson(res, 200, { deleted: id });
+          return;
+        }
+      }
+
+      // --- Goal endpoints ---
+      if (pathname === "/api/goals" && req.method === "GET") {
+        sendJson(res, 200, { goals: goalStore.list() });
+        return;
+      }
+
+      if (pathname === "/api/goal" && req.method === "POST") {
+        const parsed = safeJsonParse(await readBody(req)) as { description?: string } | null;
+        if (!parsed?.description || typeof parsed.description !== "string") {
+          sendJson(res, 400, { error: "description (string) required" });
+          return;
+        }
+        const goalId = newGoalId();
+        const session: GoalSession = {
+          goalId,
+          description: parsed.description.trim(),
+          steps: [],
+          status: "running",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        goalStore.save(session);
+        sendJson(res, 200, { goalId });
+        startGoalRunner(session);
+        return;
+      }
+
+      // /api/goal/:id and /api/goal/:id/stream
+      const goalIdMatch = pathname.match(/^\/api\/goal\/([^/]+)(\/stream)?$/);
+      if (goalIdMatch) {
+        const goalId = goalIdMatch[1];
+        const isStream = !!goalIdMatch[2];
+
+        if (isStream && req.method === "GET") {
+          // SSE stream for live goal progress events.
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+          res.statusCode = 200;
+
+          const session = goalStore.load(goalId);
+          if (!session) {
+            res.end(`data: ${JSON.stringify({ kind: "goal-error", error: "goal not found" })}\n\n`);
+            return;
+          }
+
+          // Replay terminal state immediately on reconnect.
+          if (session.status === "done" || session.status === "failed" || session.status === "paused") {
+            res.write(`data: ${JSON.stringify({ kind: "goal-state", session })}\n\n`);
+          }
+
+          const send = (evt: GoalProgress) => {
+            res.write(`data: ${JSON.stringify(evt)}\n\n`);
+          };
+          if (!goalListeners.has(goalId)) goalListeners.set(goalId, new Set());
+          goalListeners.get(goalId)!.add(send);
+
+          req.on("close", () => {
+            goalListeners.get(goalId)?.delete(send);
+            if (goalListeners.get(goalId)?.size === 0) goalListeners.delete(goalId);
+          });
+          return;
+        }
+
+        if (!isStream && req.method === "GET") {
+          const session = goalStore.load(goalId);
+          if (!session) { sendJson(res, 404, { error: "goal not found" }); return; }
+          sendJson(res, 200, session);
+          return;
+        }
+
+        if (!isStream && req.method === "DELETE") {
+          const deleted = goalStore.delete(goalId);
+          if (!deleted) { sendJson(res, 404, { error: "goal not found" }); return; }
+          sendJson(res, 200, { deleted: goalId });
           return;
         }
       }

@@ -3464,6 +3464,160 @@ function ConversationDrawer({
   );
 }
 
+function GoalView({ goalId, onClose }) {
+  const [session, setSession] = React.useState(null);
+  const [steps, setSteps] = React.useState([]);
+  const [currentTokens, setCurrentTokens] = React.useState('');
+  const [waitState, setWaitState] = React.useState(null);
+  const [countdown, setCountdown] = React.useState('');
+  const [expandedStep, setExpandedStep] = React.useState(null);
+
+  React.useEffect(() => {
+    fetch('/api/goal/' + goalId)
+      .then(r => r.json())
+      .then(s => { setSession(s); setSteps(s.steps || []); })
+      .catch(() => {});
+
+    const es = new EventSource('/api/goal/' + goalId + '/stream');
+    es.onmessage = (e) => {
+      let evt;
+      try { evt = JSON.parse(e.data); } catch { return; }
+      if (evt.kind === 'goal-step-start') {
+        setCurrentTokens('');
+        setSteps(prev => {
+          const next = [...prev];
+          if (!next[evt.stepIndex]) next.push({ prompt: evt.prompt, status: 'running' });
+          return next;
+        });
+      } else if (evt.kind === 'goal-token') {
+        setCurrentTokens(prev => prev + evt.text);
+      } else if (evt.kind === 'goal-step-done') {
+        setSteps(prev => {
+          const next = [...prev];
+          if (next[evt.stepIndex]) next[evt.stepIndex] = { ...next[evt.stepIndex], result: evt.result, status: 'done' };
+          return next;
+        });
+        setCurrentTokens('');
+      } else if (evt.kind === 'goal-plan') {
+        setSteps(prev => {
+          const next = [...prev];
+          if (!next[evt.stepIndex]) next.push({ prompt: evt.nextPrompt, status: 'pending' });
+          return next;
+        });
+      } else if (evt.kind === 'quota-wait') {
+        setWaitState({ resumeAt: evt.resumeAt, providers: evt.providers || [] });
+      } else if (evt.kind === 'goal-done') {
+        setWaitState(null);
+        setCurrentTokens('');
+        fetch('/api/goal/' + goalId).then(r => r.json()).then(s => { setSession(s); setSteps(s.steps || []); }).catch(() => {});
+      } else if (evt.kind === 'goal-error') {
+        setSession(prev => prev ? { ...prev, status: 'failed' } : { goalId, description: '?', steps: [], status: 'failed', createdAt: 0, updatedAt: 0 });
+      } else if (evt.kind === 'goal-state' && evt.session) {
+        setSession(evt.session);
+        setSteps(evt.session.steps || []);
+        if (evt.session.status === 'paused' && evt.session.pausedUntil) {
+          setWaitState({ resumeAt: evt.session.pausedUntil, providers: [] });
+        }
+      }
+    };
+    return () => es.close();
+  }, [goalId]);
+
+  React.useEffect(() => {
+    if (!waitState) { setCountdown(''); return; }
+    const tick = () => {
+      const ms = Math.max(0, waitState.resumeAt - Date.now());
+      const s = Math.floor(ms / 1000);
+      const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+      const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+      const ss = String(s % 60).padStart(2, '0');
+      setCountdown(hh + ':' + mm + ':' + ss);
+      if (ms === 0) setWaitState(null);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [waitState]);
+
+  const status = session?.status || 'running';
+  const isDone = status === 'done';
+  const isFailed = status === 'failed';
+
+  return (
+    <div className="mm-goal-view">
+      <div className="mm-goal-header">
+        <button className="mm-goal-back" onClick={onClose} title="Back to chat">← back</button>
+        <div className="mm-goal-title">{session?.description || '…'}</div>
+        <span className={'mm-goal-status-badge ' + status}>{status}</span>
+      </div>
+
+      {waitState && (
+        <div className="mm-quota-wait-panel">
+          <div className="mm-quota-wait-label">⏸ waiting for quota…</div>
+          <div className="mm-quota-wait-timer">{countdown}</div>
+          {waitState.providers.length > 0 && (
+            <div className="mm-quota-wait-providers">
+              {waitState.providers.map(p => (
+                <div key={p.id} className="mm-quota-wait-provider">
+                  {p.id}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isDone && (
+        <div className="mm-goal-done-banner">
+          ✓ Goal complete — {steps.length} step{steps.length !== 1 ? 's' : ''}
+          <button className="mm-goal-back-btn" onClick={onClose}>back to chat</button>
+        </div>
+      )}
+      {isFailed && (
+        <div className="mm-goal-error-banner">
+          ✗ Goal failed
+          <button className="mm-goal-back-btn" onClick={onClose}>back to chat</button>
+        </div>
+      )}
+
+      <div className="mm-goal-steps">
+        {steps.map((step, i) => (
+          <div key={i} className={'mm-goal-step ' + (step.status || 'pending')}>
+            <div className="mm-goal-step-header" onClick={() => setExpandedStep(expandedStep === i ? null : i)}>
+              <span className="mm-goal-step-dot" />
+              <span className="mm-goal-step-num">Step {i + 1}</span>
+              <span className="mm-goal-step-prompt">{step.prompt}</span>
+              {step.result && <span className="mm-goal-step-chevron">{expandedStep === i ? '▼' : '▶'}</span>}
+            </div>
+            {expandedStep === i && step.result && (
+              <div className="mm-goal-step-body"><MarkdownProse text={step.result} /></div>
+            )}
+          </div>
+        ))}
+        {currentTokens && (
+          <div className="mm-goal-step running">
+            <div className="mm-goal-step-header">
+              <span className="mm-goal-step-dot" />
+              <span className="mm-goal-step-num">Step {steps.length + 1}</span>
+              <span className="mm-goal-step-prompt">working…</span>
+              <span className="mm-turn-caret" aria-hidden="true" />
+            </div>
+            <div className="mm-goal-step-body"><MarkdownProse text={currentTokens} /></div>
+          </div>
+        )}
+        {!currentTokens && !isDone && !isFailed && !waitState && steps.length === 0 && (
+          <div className="mm-goal-step pending">
+            <div className="mm-goal-step-header">
+              <span className="mm-goal-step-dot" />
+              <span className="mm-goal-step-prompt">planning first step…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function HeroMindmap() {
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
@@ -3492,6 +3646,8 @@ function HeroMindmap() {
   const activeSettingsCount = settingsActiveCount(settings);
   const [sessionsOpen, setSessionsOpen] = React.useState(false);
   const [filesOpen, setFilesOpen] = React.useState(false);
+  const [goalOpen, setGoalOpen] = React.useState(false);
+  const [activeGoalId, setActiveGoalId] = React.useState(null);
   const [fileDrawerPreload, setFileDrawerPreload] = React.useState(null);
   const openFileForEdit = React.useCallback((path, content) => {
     setFileDrawerPreload({ path, content });
@@ -3611,6 +3767,27 @@ function HeroMindmap() {
   const submit = async () => {
     const q = draft.trim();
     if (!q && (!attachments || attachments.length === 0)) return;
+
+    // /goal <description> — start an autonomous goal loop instead of a chat turn
+    if (q.startsWith('/goal ') || q === '/goal') {
+      const description = q.slice('/goal'.length).trim();
+      if (!description) return;
+      setDraft('');
+      try {
+        const res = await fetch('/api/goal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description }),
+        });
+        if (res.ok) {
+          const { goalId } = await res.json();
+          setActiveGoalId(goalId);
+          setGoalOpen(true);
+        }
+      } catch {}
+      return;
+    }
+
     // The user-visible prompt in chat is what they typed (or a placeholder
     // when attaching files with no extra prompt). The actual model input
     // includes the file contents prepended.
@@ -4083,6 +4260,14 @@ function HeroMindmap() {
             files
           </button>
           <button
+            className={'mm-nav-goals' + (goalOpen ? ' open' : '')}
+            onClick={() => setGoalOpen(true)}
+            title="View active goals (/goal <description> to start)"
+            aria-label="View goals"
+          >
+            goals
+          </button>
+          <button
             className={'mm-nav-settings' + (settingsOpen ? ' open' : '') + (activeSettingsCount > 0 ? ' active' : '')}
             onClick={() => setSettingsOpen(true)}
             title="Open settings (thinking depth, search, forced role)"
@@ -4139,6 +4324,9 @@ function HeroMindmap() {
         preload={fileDrawerPreload}
         onPreloadConsumed={() => setFileDrawerPreload(null)}
       />
+      {goalOpen && activeGoalId && (
+        <GoalView goalId={activeGoalId} onClose={() => setGoalOpen(false)} />
+      )}
 
       <div
         ref={stageRef}

@@ -864,4 +864,102 @@ describe("web server", () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error("role was not aborted")), 500)),
     ])).resolves.toBeUndefined();
   });
+
+  describe("goal endpoints", () => {
+    let goalDir: string;
+
+    beforeEach(() => {
+      goalDir = mkdtempSync(join(tmpdir(), "multi-agent-goals-"));
+    });
+    afterEach(() => rmSync(goalDir, { recursive: true, force: true }));
+
+    function spawnWithGoals() {
+      const port = pickPort();
+      const router = makeRouter([
+        { id: "gemini:1", cooldownUntil: 0, successCount: 0, rateLimitCount: 0 },
+      ]);
+      // Resolver returns quickly so the goal runner doesn't hang tests.
+      const resolver = makeResolver(async (_name, prompt) => {
+        if (prompt.includes("next concrete action") || prompt.includes("Completed steps")) {
+          return '{"nextPrompt":"","done":true,"summary":"Test goal complete"}';
+        }
+        return "step result";
+      });
+      const handle = startWebServer({
+        router, resolver, port,
+        sessionStorageDir: sessionDir,
+        roleInstructionsPath,
+        goalStorageDir: goalDir,
+      });
+      handles.push(handle);
+      return { url: `http://localhost:${port}` };
+    }
+
+    it("POST /api/goal returns a goalId", async () => {
+      const { url } = spawnWithGoals();
+      const r = await fetch(`${url}/api/goal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: "Test goal" }),
+      });
+      expect(r.status).toBe(200);
+      const body = await r.json() as any;
+      expect(typeof body.goalId).toBe("string");
+      expect(body.goalId).toMatch(/^goal_/);
+    });
+
+    it("GET /api/goals returns an array", async () => {
+      const { url } = spawnWithGoals();
+      // Create a goal first
+      await fetch(`${url}/api/goal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: "List test goal" }),
+      });
+      const r = await fetch(`${url}/api/goals`);
+      expect(r.status).toBe(200);
+      const body = await r.json() as any;
+      expect(Array.isArray(body.goals)).toBe(true);
+    });
+
+    it("DELETE /api/goal/:id removes the goal", async () => {
+      const { url } = spawnWithGoals();
+      const createRes = await fetch(`${url}/api/goal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: "Delete test goal" }),
+      });
+      const { goalId } = await createRes.json() as any;
+
+      const delRes = await fetch(`${url}/api/goal/${goalId}`, { method: "DELETE" });
+      expect(delRes.status).toBe(200);
+
+      // Should be gone from the list
+      const listRes = await fetch(`${url}/api/goals`);
+      const { goals } = await listRes.json() as any;
+      expect(goals.find((g: any) => g.goalId === goalId)).toBeUndefined();
+    });
+
+    it("GET /api/goal/:id returns the goal session", async () => {
+      const { url } = spawnWithGoals();
+      const createRes = await fetch(`${url}/api/goal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: "Get test goal" }),
+      });
+      const { goalId } = await createRes.json() as any;
+
+      const r = await fetch(`${url}/api/goal/${goalId}`);
+      expect(r.status).toBe(200);
+      const body = await r.json() as any;
+      expect(body.goalId).toBe(goalId);
+      expect(body.description).toBe("Get test goal");
+    });
+
+    it("DELETE /api/goal/:id 404s for unknown id", async () => {
+      const { url } = spawnWithGoals();
+      const r = await fetch(`${url}/api/goal/goal_nonexistent`, { method: "DELETE" });
+      expect(r.status).toBe(404);
+    });
+  });
 });
