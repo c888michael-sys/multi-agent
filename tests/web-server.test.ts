@@ -8,7 +8,7 @@
  * them in tests would just rewrap on every UI change.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startWebServer } from "../src/web/server.js";
@@ -588,6 +588,111 @@ describe("web server", () => {
     });
     expect((histories[0]![2] as { text: string }).text).toContain("Keep a steady tone.");
     expect((histories[0]![2] as { text: string }).text).toContain("Prefer direct plans.");
+  });
+
+  // ── File API tests ───────────────────────────────────────────────────────
+
+  describe("web file API", () => {
+    let fileRoot: string;
+    let fileHandles: Array<{ close: () => void }> = [];
+
+    beforeEach(() => {
+      fileRoot = mkdtempSync(join(tmpdir(), "multi-agent-file-root-"));
+      writeFileSync(join(fileRoot, "hello.txt"), "Hello, world!", "utf8");
+      mkdirSync(join(fileRoot, ".git"), { recursive: true });
+      mkdirSync(join(fileRoot, "node_modules"), { recursive: true });
+      mkdirSync(join(fileRoot, "src"), { recursive: true });
+      writeFileSync(join(fileRoot, "src", "main.ts"), "export const x = 1;", "utf8");
+    });
+
+    afterEach(() => {
+      for (const h of fileHandles) {
+        try { h.close(); } catch { /* ignore */ }
+      }
+      fileHandles = [];
+      rmSync(fileRoot, { recursive: true, force: true });
+    });
+
+    function spawnWithRoot(projectRoot: string) {
+      const port = pickPort();
+      const router = makeRouter([]);
+      const resolver = makeResolver(async (_n, p) => `reply:${p}`);
+      const handle = startWebServer({ router, resolver, port, projectRoot, sessionStorageDir: sessionDir });
+      fileHandles.push(handle);
+      return { port, url: `http://localhost:${port}` };
+    }
+
+    it("GET /api/files/root reports the configured project root", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/root`);
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.root).toBe(fileRoot);
+      expect(j.mode).toBe("read");
+      expect(j.maxBytes).toBe(262144);
+    });
+
+    it("GET /api/files lists directory entries and omits blocked names", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files?path=.`);
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.path).toBe(".");
+      const names: string[] = j.entries.map((e: any) => e.name);
+      expect(names).toContain("hello.txt");
+      expect(names).toContain("src");
+      expect(names).not.toContain(".git");
+      expect(names).not.toContain("node_modules");
+    });
+
+    it("GET /api/files/read returns content and a stable sha256", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/read?path=hello.txt`);
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.path).toBe("hello.txt");
+      expect(j.content).toBe("Hello, world!");
+      expect(j.truncated).toBe(false);
+      expect(typeof j.sha256).toBe("string");
+      expect(j.sha256).toHaveLength(64);
+      // Same hash on repeated calls
+      const r2 = await fetch(`${url}/api/files/read?path=hello.txt`);
+      const j2: any = await r2.json();
+      expect(j2.sha256).toBe(j.sha256);
+    });
+
+    it("GET /api/files/read 403s on path traversal", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/read?path=../secret.txt`);
+      expect(r.status).toBe(403);
+      const j: any = await r.json();
+      expect(j.error).toBeDefined();
+    });
+
+    it("GET /api/files/read 403s on .env", async () => {
+      writeFileSync(join(fileRoot, ".env"), "SECRET=password", "utf8");
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/read?path=.env`);
+      expect(r.status).toBe(403);
+    });
+
+    it("GET /api/files/read 413s when the file exceeds the cap", async () => {
+      writeFileSync(join(fileRoot, "large.txt"), Buffer.alloc(300_000, "x"));
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/read?path=large.txt`);
+      expect(r.status).toBe(413);
+      const j: any = await r.json();
+      expect(j.error).toMatch(/too large/i);
+    });
+
+    it("GET /api/files/read 415s for binary files", async () => {
+      writeFileSync(join(fileRoot, "image.bin"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x1a, 0x0a]));
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/read?path=image.bin`);
+      expect(r.status).toBe(415);
+      const j: any = await r.json();
+      expect(j.error).toMatch(/binary/i);
+    });
   });
 
   it("/api/chat-stream aborts in-flight role work when the client disconnects", async () => {

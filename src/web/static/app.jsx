@@ -3015,6 +3015,148 @@ class PhaseErrorBoundary extends React.Component {
   }
 }
 
+function FileDrawer({ open, onClose, attachments, setAttachments }) {
+  const [rootInfo, setRootInfo] = React.useState(null);
+  const [currentPath, setCurrentPath] = React.useState('.');
+  const [entries, setEntries] = React.useState([]);
+  const [selectedFile, setSelectedFile] = React.useState(null);
+  const [listError, setListError] = React.useState(null);
+  const [previewError, setPreviewError] = React.useState(null);
+  const [listLoading, setListLoading] = React.useState(false);
+  const [previewLoading, setPreviewLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!open) return;
+    fetch('/api/files/root').then(r => r.json()).then(j => setRootInfo(j)).catch(() => {});
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setListError(null);
+    setListLoading(true);
+    fetch('/api/files?path=' + encodeURIComponent(currentPath))
+      .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error ' + r.status); setEntries(j.entries || []); })
+      .catch(e => setListError(e.message))
+      .finally(() => setListLoading(false));
+  }, [open, currentPath]);
+
+  React.useEffect(() => {
+    if (!open) { setCurrentPath('.'); setEntries([]); setSelectedFile(null); setListError(null); setPreviewError(null); }
+  }, [open]);
+
+  function navigateTo(path) { setCurrentPath(path); setSelectedFile(null); setPreviewError(null); }
+
+  function loadFile(entry) {
+    setPreviewError(null);
+    setPreviewLoading(true);
+    setSelectedFile(null);
+    fetch('/api/files/read?path=' + encodeURIComponent(entry.path))
+      .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error ' + r.status); setSelectedFile(j); })
+      .catch(e => setPreviewError(e.message))
+      .finally(() => setPreviewLoading(false));
+  }
+
+  function attachFile() {
+    if (!selectedFile) return;
+    const current = attachments || [];
+    const totalCurrent = current.reduce((s, a) => s + (a.size || 0), 0);
+    if (totalCurrent + selectedFile.size > ATTACH_TOTAL_MAX_BYTES) {
+      setPreviewError('Would exceed total ' + (ATTACH_TOTAL_MAX_BYTES / 1024) + ' KB attachment cap');
+      return;
+    }
+    if (current.some(a => a.name === selectedFile.path)) { setPreviewError('This file is already attached'); return; }
+    setAttachments([...current, { name: selectedFile.path, size: selectedFile.size, content: selectedFile.content }]);
+    onClose();
+  }
+
+  function buildCrumbs() {
+    const rootLabel = rootInfo ? (rootInfo.root.replace(/\\/g, '/').split('/').pop() || 'root') : 'root';
+    if (!currentPath || currentPath === '.') return [{ label: rootLabel, path: '.' }];
+    const parts = currentPath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const crumbs = [{ label: rootLabel, path: '.' }];
+    let acc = '';
+    for (const part of parts) { acc = acc ? acc + '/' + part : part; crumbs.push({ label: part, path: acc }); }
+    return crumbs;
+  }
+
+  if (!open) return null;
+  const crumbs = buildCrumbs();
+  const alreadyAttached = selectedFile && (attachments || []).some(a => a.name === selectedFile.path);
+  const totalAttached = (attachments || []).reduce((s, a) => s + (a.size || 0), 0);
+  const wouldExceedCap = selectedFile && (totalAttached + selectedFile.size > ATTACH_TOTAL_MAX_BYTES);
+
+  return (
+    <aside className="mm-file-drawer" aria-label="Project file browser">
+      <div className="mm-session-backdrop" onClick={onClose} />
+      <div className="mm-file-panel">
+        <div className="mm-file-head">
+          <div>
+            <div className="mm-session-kicker">files</div>
+            <h2>Project Files</h2>
+          </div>
+          <button className="mm-session-close" onClick={onClose} aria-label="Close file browser">close</button>
+        </div>
+        <nav className="mm-file-crumbs" aria-label="Breadcrumb">
+          {crumbs.map((c, i) => (
+            <React.Fragment key={c.path}>
+              {i > 0 && <span className="mm-file-crumb-sep">/</span>}
+              {i === crumbs.length - 1
+                ? <span className="mm-file-crumb current">{c.label}</span>
+                : <button className="mm-file-crumb" onClick={() => navigateTo(c.path)}>{c.label}</button>}
+            </React.Fragment>
+          ))}
+        </nav>
+        <div className="mm-file-body">
+          <div className="mm-file-list-pane">
+            {listLoading && <div className="mm-file-status">loading…</div>}
+            {listError && <div className="mm-file-error">{listError}</div>}
+            {!listLoading && !listError && entries.map(entry => (
+              <button
+                key={entry.path}
+                className={'mm-file-entry ' + entry.kind + (selectedFile && selectedFile.path === entry.path ? ' selected' : '')}
+                onClick={() => entry.kind === 'dir' ? navigateTo(entry.path) : loadFile(entry)}
+                disabled={entry.kind === 'file' && !entry.readable}
+              >
+                <span className="mm-file-icon">{entry.kind === 'dir' ? '▶' : '·'}</span>
+                <span className="mm-file-name">{entry.name}</span>
+                {entry.kind === 'file' && entry.size != null && (
+                  <span className="mm-file-size">{entry.size >= 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B'}</span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="mm-file-preview-pane">
+            {previewLoading && <div className="mm-file-status">loading preview…</div>}
+            {previewError && <div className="mm-file-error">{previewError}</div>}
+            {!previewLoading && !previewError && selectedFile && (
+              <>
+                <div className="mm-file-preview-meta">
+                  <span className="mm-file-preview-path">{selectedFile.path}</span>
+                  <span className="mm-file-preview-size">{selectedFile.size >= 1024 ? (selectedFile.size / 1024).toFixed(0) + ' KB' : selectedFile.size + ' B'}</span>
+                </div>
+                <pre className="mm-file-preview-content">{selectedFile.content}</pre>
+                <div className="mm-file-preview-actions">
+                  {alreadyAttached
+                    ? <span className="mm-file-attached-note">✓ already attached</span>
+                    : <button
+                        className="mm-file-attach-btn"
+                        onClick={attachFile}
+                        disabled={!!wouldExceedCap}
+                        title={wouldExceedCap ? 'Would exceed total attachment cap' : 'Attach this file to the current chat prompt'}
+                      >attach to chat</button>}
+                </div>
+              </>
+            )}
+            {!previewLoading && !previewError && !selectedFile && (
+              <div className="mm-file-preview-empty">Select a file to preview.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 function ConversationDrawer({
   open,
   sessions,
@@ -3119,6 +3261,7 @@ function HeroMindmap() {
   }, []);
   const activeSettingsCount = settingsActiveCount(settings);
   const [sessionsOpen, setSessionsOpen] = React.useState(false);
+  const [filesOpen, setFilesOpen] = React.useState(false);
   const [sessionList, setSessionList] = React.useState([]);
   const [sessionQuery, setSessionQuery] = React.useState('');
   const [sessionBusy, setSessionBusy] = React.useState(false);
@@ -3695,6 +3838,14 @@ function HeroMindmap() {
             threads
           </button>
           <button
+            className={'mm-nav-files' + (filesOpen ? ' open' : '')}
+            onClick={() => setFilesOpen(true)}
+            title="Browse project files"
+            aria-label="Browse project files"
+          >
+            files
+          </button>
+          <button
             className={'mm-nav-settings' + (settingsOpen ? ' open' : '') + (activeSettingsCount > 0 ? ' active' : '')}
             onClick={() => setSettingsOpen(true)}
             title="Open settings (thinking depth, search, forced role)"
@@ -3742,6 +3893,12 @@ function HeroMindmap() {
         onDeleteSession={deleteSessionUi}
         onExportSession={exportSessionUi}
         onClearCurrent={clearCurrentSession}
+      />
+      <FileDrawer
+        open={filesOpen}
+        onClose={() => setFilesOpen(false)}
+        attachments={attachments}
+        setAttachments={setAttachments}
       />
 
       <div

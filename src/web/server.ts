@@ -15,7 +15,8 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { extname, join, dirname } from "node:path";
+import { extname, join, dirname, resolve } from "node:path";
+import { WebFileService, FILE_MAX_BYTES } from "./file-service.js";
 import { fileURLToPath } from "node:url";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
@@ -129,6 +130,8 @@ export interface ServerOptions {
   sessionStorageDir?: string;
   /** Override web-editable role-instruction file. Used by tests; default is ~/.multi-agent/role-instructions.json. */
   roleInstructionsPath?: string;
+  /** Project root exposed to the web file browser. Defaults to process.cwd(). */
+  projectRoot?: string;
 }
 
 /**
@@ -144,6 +147,7 @@ function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleRe
 
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
   const port = opts.port ?? 7421;
+  const fileService = new WebFileService(resolve(opts.projectRoot ?? process.cwd()));
 
   const server = createServer(async (req, res) => {
     try {
@@ -249,6 +253,63 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         });
         return;
       }
+
+      // ── File API (read-only Phase A) ──────────────────────────────────────
+
+      if (pathname === "/api/files/root" && req.method === "GET") {
+        sendJson(res, 200, {
+          root: fileService.root,
+          mode: "read",
+          maxBytes: FILE_MAX_BYTES,
+        });
+        return;
+      }
+
+      if (pathname === "/api/files" && req.method === "GET") {
+        const userPath = url.searchParams.get("path") ?? ".";
+        try {
+          const result = fileService.listDir(userPath);
+          sendJson(res, 200, result);
+        } catch (err) {
+          const e = err as NodeJS.ErrnoException & { code?: string };
+          if (e.code === "TRAVERSAL" || e.code === "BLOCKED") {
+            sendJson(res, 403, { error: e.message });
+          } else if (e.code === "NOT_FOUND") {
+            sendJson(res, 404, { error: e.message });
+          } else {
+            sendJson(res, 400, { error: e.message });
+          }
+        }
+        return;
+      }
+
+      if (pathname === "/api/files/read" && req.method === "GET") {
+        const userPath = url.searchParams.get("path");
+        if (!userPath) {
+          sendJson(res, 400, { error: "path query param required" });
+          return;
+        }
+        try {
+          const result = fileService.readText(userPath);
+          sendJson(res, 200, result);
+        } catch (err) {
+          const e = err as NodeJS.ErrnoException & { code?: string };
+          if (e.code === "TRAVERSAL" || e.code === "BLOCKED") {
+            sendJson(res, 403, { error: e.message });
+          } else if (e.code === "NOT_FOUND") {
+            sendJson(res, 404, { error: e.message });
+          } else if (e.code === "TOO_LARGE") {
+            sendJson(res, 413, { error: e.message });
+          } else if (e.code === "BINARY") {
+            sendJson(res, 415, { error: e.message });
+          } else {
+            sendJson(res, 400, { error: e.message });
+          }
+        }
+        return;
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
 
       if (pathname === "/api/sessions" && req.method === "GET") {
         sendJson(res, 200, { sessions: listSessionSummaries(opts.sessionStorageDir) });
