@@ -1248,6 +1248,13 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit }) {
                 title={'Apply this code to ' + edit.path}
               >apply → {edit.path}</button>
             ))}
+            {!streaming && (entry.elapsedMs > 0 || entry.tokenEstimate > 0) && (
+              <span className="mm-turn-timing">
+                {entry.elapsedMs > 0 && `took ${(entry.elapsedMs / 1000).toFixed(1)} s`}
+                {entry.elapsedMs > 0 && entry.tokenEstimate > 0 && ' · '}
+                {entry.tokenEstimate > 0 && `~${entry.tokenEstimate >= 1000 ? (entry.tokenEstimate / 1000).toFixed(1) + 'k' : entry.tokenEstimate} tok`}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -1308,6 +1315,27 @@ function InlineMarkdown({ text }) {
   return <>{parts.map((p, i) => typeof p === 'string' ? <React.Fragment key={i}>{p}</React.Fragment> : p)}</>;
 }
 
+function CodeBlock({ lang, text }) {
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    const hl = window.hljs;
+    if (!hl || !ref.current) return;
+    // Clear any prior highlight so re-renders with new text work correctly.
+    delete ref.current.dataset.highlighted;
+    ref.current.textContent = text;
+    try {
+      if (lang && hl.getLanguage(lang)) {
+        ref.current.className = 'language-' + lang;
+        hl.highlightElement(ref.current);
+      } else if (text.length <= 4096) {
+        ref.current.className = '';
+        hl.highlightElement(ref.current);
+      }
+    } catch {}
+  }, [text, lang]);
+  return <pre><code ref={ref}>{text}</code></pre>;
+}
+
 function MarkdownProse({ text }) {
   const rootRef = React.useRef(null);
   React.useEffect(() => {
@@ -1328,7 +1356,7 @@ function MarkdownProse({ text }) {
           const Tag = b.ordered ? 'ol' : 'ul';
           return <Tag key={i}>{b.items.map((x, j) => <li key={j}><InlineMarkdown text={x} /></li>)}</Tag>;
         }
-        if (b.type === 'code') return <pre key={i}><code>{b.text}</code></pre>;
+        if (b.type === 'code') return <CodeBlock key={i} lang={b.lang} text={b.text} />;
         if (b.type === 'table') {
           return (
             <div key={i} className="mm-md-table-wrap">
@@ -1357,11 +1385,12 @@ function parseMarkdownBlocks(text) {
     if (!line.trim()) { i++; continue; }
 
     if (/^```/.test(line.trim())) {
+      const lang = (line.trim().match(/^```(\w+)/) || [])[1] || '';
       const code = [];
       i++;
       while (i < lines.length && !/^```/.test((lines[i] || '').trim())) code.push(lines[i++]);
       if (i < lines.length) i++;
-      blocks.push({ type: 'code', text: code.join('\n') });
+      blocks.push({ type: 'code', lang, text: code.join('\n') });
       continue;
     }
 
@@ -3603,6 +3632,7 @@ function HeroMindmap() {
 
     const ac = new AbortController();
     streamAbortRef.current = ac;
+    const reqStartMs = performance.now();
 
     try {
       // Build per-turn body — settings drawer translates to backend opts:
@@ -3705,6 +3735,7 @@ function HeroMindmap() {
       text: finalText.trim(),
       servedBy: doneEvent?.servedBy || [],
       plan: doneEvent?.plan || lastStatus?.plan?.kind || null,
+      elapsedMs: Math.round(performance.now() - reqStartMs),
       tokenEstimate: doneEvent?.tokenEstimate || 0,
       tokenBudget: 100000,
       budgetPct: doneEvent?.budgetPct || 0,

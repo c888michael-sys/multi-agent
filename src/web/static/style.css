@@ -2629,6 +2629,16 @@
   cursor: pointer; white-space: nowrap;
 }
 .mm-turn-apply-btn:hover { color: var(--mm-fg); background: color-mix(in oklch, var(--accent) 16%, transparent); }
+.mm-turn-timing {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--mm-fg-dim);
+  opacity: 0.5;
+  user-select: none;
+  letter-spacing: 0.02em;
+}
+/* Keep highlight.js from overriding our pre container background. */
+.mm-turn-prose pre code.hljs { background: transparent; padding: 0; }
 
 /* Mobile: tighter padding, full-width bubbles */
 @media (max-width: 640px) {
