@@ -202,6 +202,14 @@ export class WebFileService {
     const rel = relative(this.root, abs).replace(/\\/g, "/");
     const isNew = expectedSha256 === null;
 
+    // Refuse to write through a symlink at the target path itself.
+    if (existsSync(abs)) {
+      const lst = lstatSync(abs);
+      if (lst.isSymbolicLink()) {
+        throw Object.assign(new Error("refusing to write through symlink"), { code: "TRAVERSAL" });
+      }
+    }
+
     if (!isNew) {
       // File must exist and hash must match.
       if (!existsSync(abs)) {
@@ -216,13 +224,22 @@ export class WebFileService {
         );
       }
     } else {
-      // New file — parent directory must exist inside root.
+      // New file — walk up to the deepest existing ancestor, resolve its
+      // realpath, and verify it's still inside realRoot before mkdir.
       const parentDir = dirname(abs);
-      const parentRel = relative(this.root, parentDir);
-      if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+      let ancestor = parentDir;
+      while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+      const realAncestor = realpathSync(ancestor);
+      const realAncRel = relative(this.realRoot, realAncestor);
+      if (realAncRel.startsWith("..") || isAbsolute(realAncRel)) {
         throw Object.assign(new Error("path escapes root"), { code: "TRAVERSAL" });
       }
       mkdirSync(parentDir, { recursive: true });
+      // Post-mkdir: re-verify the created parent is still inside realRoot.
+      const realParent = realpathSync(parentDir);
+      if (relative(this.realRoot, realParent).startsWith("..") || isAbsolute(relative(this.realRoot, realParent))) {
+        throw Object.assign(new Error("path escapes root"), { code: "TRAVERSAL" });
+      }
     }
 
     const buf = Buffer.from(nextContent, "utf8");
