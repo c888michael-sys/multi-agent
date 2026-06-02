@@ -591,7 +591,15 @@ Output ONLY the summary, no preamble.`;
     let nudges = 0;
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, opts);
+      // Until a tool has actually run, force a tool call (tool_choice required /
+      // Mistral "any"). This is what makes models like Codestral act instead of
+      // narrating "I will create the file...". Once at least one tool has run we
+      // switch back to auto so the model can produce its final text reply.
+      // Providers that don't honor tool_choice (Gemini/Gemma, Ollama) ignore it
+      // and rely on the narration nudge below.
+      const iterOpts: CompleteOptions =
+        toolsExecuted === 0 ? { ...opts, toolChoice: "required" } : opts;
+      const result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, iterOpts);
 
       if (result.kind === "text") {
         if (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text)) {

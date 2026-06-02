@@ -10,6 +10,7 @@ import {
   parseOpenAIToolResponse,
   extractTextFromCompletion,
   buildOpenAIToolsArray,
+  toolChoiceValue,
   buildChatBody,
   looksLikeRateLimit,
   retryAfterMsFromHeaders,
@@ -114,6 +115,8 @@ export class OpenRouterProvider implements Provider {
       messages: historyToOpenAIMessages(history),
       tools: buildOpenAIToolsArray(tools),
     };
+    const tc = toolChoiceValue(opts?.toolChoice, "openai");
+    if (tc) body.tool_choice = tc;
     if (opts?.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     if (opts?.temperature !== undefined) body.temperature = opts.temperature;
     const res = await chatCompletion(this.callOpts(body, opts?.signal));

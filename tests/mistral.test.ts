@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { MistralProvider } from "../src/providers/mistral.js";
-import { OpenAICompatError } from "../src/providers/openai-compat.js";
+import { OpenAICompatError, toolChoiceValue } from "../src/providers/openai-compat.js";
+import type { ToolDeclaration } from "../src/tools/types.js";
+
+const sampleTools: ToolDeclaration[] = [
+  {
+    name: "write_file",
+    description: "write a file",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  },
+];
 
 function fakeFetch(
   status: number,
@@ -48,6 +57,42 @@ describe("MistralProvider", () => {
     await p.complete("hi");
     expect(calledUrl).toBe("https://api.mistral.ai/v1/chat/completions");
     expect((body as { model: string }).model).toBe("codestral-latest");
+  });
+
+  it("maps toolChoice 'required' to Mistral's 'any' in completeWithTools", async () => {
+    let body: any;
+    const f = fakeFetch(
+      200,
+      { choices: [{ message: { content: "ok" } }] },
+      {},
+      (_url, init) => { body = init?.body ? JSON.parse(init.body as string) : undefined; },
+    );
+    const p = new MistralProvider({ id: "mistral:codestral", apiKey: "k", fetchImpl: f as typeof fetch });
+    await p.completeWithTools([{ kind: "user_text", text: "make a file" }], sampleTools, {
+      toolChoice: "required",
+    });
+    expect(body.tool_choice).toBe("any");
+  });
+
+  it("omits tool_choice when unset (defaults to auto)", async () => {
+    let body: any;
+    const f = fakeFetch(
+      200,
+      { choices: [{ message: { content: "ok" } }] },
+      {},
+      (_url, init) => { body = init?.body ? JSON.parse(init.body as string) : undefined; },
+    );
+    const p = new MistralProvider({ id: "mistral:codestral", apiKey: "k", fetchImpl: f as typeof fetch });
+    await p.completeWithTools([{ kind: "user_text", text: "hi" }], sampleTools);
+    expect(body.tool_choice).toBeUndefined();
+  });
+
+  it("toolChoiceValue maps required per dialect", () => {
+    expect(toolChoiceValue("required", "mistral")).toBe("any");
+    expect(toolChoiceValue("required", "openai")).toBe("required");
+    expect(toolChoiceValue("auto", "mistral")).toBe("auto");
+    expect(toolChoiceValue("none", "openai")).toBe("none");
+    expect(toolChoiceValue(undefined, "openai")).toBeUndefined();
   });
 
   it("throws OpenAICompatError on non-2xx", async () => {

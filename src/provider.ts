@@ -19,6 +19,17 @@ export interface CompleteOptions {
    */
   useSearch?: boolean;
   signal?: AbortSignal;
+  /**
+   * Tool-call policy for completeWithTools (OpenAI-compatible providers):
+   *   - "auto" (default): the model decides whether to call a tool.
+   *   - "required": the model MUST call at least one tool this call. Mistral
+   *     calls this "any" — providers map it. Used by the agentic tool loop to
+   *     force an initial action from models (e.g. Codestral) that otherwise
+   *     narrate intent instead of acting.
+   *   - "none": disable tool calls for this turn.
+   * Providers that don't support it (Gemini/Gemma, older Ollama) ignore it.
+   */
+  toolChoice?: "auto" | "required" | "none";
 }
 
 export interface Provider {

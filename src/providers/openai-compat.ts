@@ -248,6 +248,21 @@ export function buildChatBody(
   return body;
 }
 
+/**
+ * Map our generic toolChoice to the provider's wire value. Most OpenAI-compat
+ * providers (OpenAI, Groq, Cerebras, OpenRouter) use "required"; Mistral uses
+ * "any" for the same meaning. Returns undefined when unset so the body stays
+ * clean and the provider's own default ("auto") applies.
+ */
+export function toolChoiceValue(
+  choice: "auto" | "required" | "none" | undefined,
+  dialect: "openai" | "mistral",
+): string | undefined {
+  if (!choice) return undefined;
+  if (choice === "required" && dialect === "mistral") return "any";
+  return choice;
+}
+
 /** Build the OpenAI-style tools array from our generic ToolDeclaration. */
 export function buildOpenAIToolsArray(tools: ToolDeclaration[]): unknown {
   return tools.map((t) => ({
