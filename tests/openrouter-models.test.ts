@@ -97,4 +97,33 @@ describe("OpenRouter free model discovery", () => {
 
     expect(sorted.map((m) => m.id)).toEqual(["reasoning/small:free", "general/huge:free"]);
   });
+
+  it("does not assume missing pricing means free unless the id is explicitly free", () => {
+    const models = filterFreeOpenRouterTextModels([
+      {
+        id: "provider/unknown-price",
+        name: "Unknown Price",
+        context_length: 32768,
+        created: 1,
+        architecture: {
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+        },
+        supported_parameters: ["reasoning"],
+      },
+      {
+        id: "provider/free-by-id:free",
+        name: "Free By Id",
+        context_length: 32768,
+        created: 2,
+        architecture: {
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+        },
+        supported_parameters: ["reasoning"],
+      },
+    ]);
+
+    expect(models.map((m) => m.id)).toEqual(["provider/free-by-id:free"]);
+  });
 });

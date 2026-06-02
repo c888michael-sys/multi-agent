@@ -265,7 +265,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
     try {
       if (opts.cors) {
         res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type");
       }
       if (req.method === "OPTIONS") {
@@ -616,6 +616,15 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/role-instructions" && req.method === "PUT") {
+        const ct = req.headers["content-type"] ?? "";
+        if (!ct.includes("application/json")) {
+          sendJson(res, 415, { error: "Content-Type must be application/json" });
+          return;
+        }
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
         const body = await readBody(req);
         const parsed = safeJsonParse(body) as { instructions?: unknown } | null;
         if (!parsed || typeof parsed !== "object") {
@@ -651,6 +660,15 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/reasoning-model" && req.method === "PUT") {
+        const ct = req.headers["content-type"] ?? "";
+        if (!ct.includes("application/json")) {
+          sendJson(res, 415, { error: "Content-Type must be application/json" });
+          return;
+        }
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
         const body = await readBody(req);
         const parsed = safeJsonParse(body) as { model?: string | null } | null;
         if (parsed === null || !("model" in parsed)) {

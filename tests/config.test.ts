@@ -13,6 +13,7 @@ const ENV_KEYS = [
   "OPENROUTER_KEY",
   "CEREBRAS_KEY",
   "MISTRAL_KEY",
+  "MULTI_AGENT_MODEL_OVERRIDES",
 ] as const;
 
 const originalEnv = new Map<string, string | undefined>(
@@ -44,6 +45,9 @@ describe("provider config defaults", () => {
   it("uses a stable OpenRouter reasoning provider id", () => {
     resetProviderEnv();
     process.env.OPENROUTER_KEY = "test-openrouter";
+    const dir = mkdtempSync(join(tmpdir(), "multi-agent-config-"));
+    tempDirs.push(dir);
+    process.env.MULTI_AGENT_MODEL_OVERRIDES = join(dir, "models.json");
 
     const config = loadAllProviderConfigsFromEnv().find(
       (entry) => entry.provider.id === "openrouter:reasoning",

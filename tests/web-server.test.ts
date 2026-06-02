@@ -409,6 +409,7 @@ describe("web server", () => {
     const r = await fetch(`http://localhost:${port}/api/usage`, { method: "OPTIONS" });
     expect(r.status).toBe(204);
     expect(r.headers.get("access-control-allow-origin")).toBe("*");
+    expect(r.headers.get("access-control-allow-methods")).toContain("PUT");
   });
 
 ﻿  it("/api/sessions returns session summaries sorted by pinned and recency", async () => {
@@ -564,6 +565,30 @@ describe("web server", () => {
     expect(raw.global).toBe("Use direct language.");
   });
 
+  it("/api/role-instructions rejects non-JSON writes", async () => {
+    const { url } = spawn();
+    const saved = await fetch(`${url}/api/role-instructions`, {
+      method: "PUT",
+      body: JSON.stringify({ instructions: { global: "Nope" } }),
+    });
+
+    expect(saved.status).toBe(415);
+  });
+
+  it("/api/role-instructions rejects cross-origin writes", async () => {
+    const { url } = spawn();
+    const saved = await fetch(`${url}/api/role-instructions`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://example.com",
+      },
+      body: JSON.stringify({ instructions: { global: "Nope" } }),
+    });
+
+    expect(saved.status).toBe(403);
+  });
+
   it("/api/reasoning-models lists cached OpenRouter free models and persists the selection", async () => {
     const overridesPath = join(sessionDir, "model-overrides.json");
     const cachePath = join(sessionDir, "openrouter-free-models.json");
@@ -618,6 +643,30 @@ describe("web server", () => {
     const savedJson = await saved.json() as { selected: { model: string } };
     expect(savedJson.selected.model).toBe("general/strong-chat:free");
     expect(readFileSync(overridesPath, "utf8")).toContain("general/strong-chat:free");
+  });
+
+  it("/api/reasoning-model rejects non-JSON writes", async () => {
+    const { url } = spawn();
+    const saved = await fetch(`${url}/api/reasoning-model`, {
+      method: "PUT",
+      body: JSON.stringify({ model: null }),
+    });
+
+    expect(saved.status).toBe(415);
+  });
+
+  it("/api/reasoning-model rejects cross-origin writes", async () => {
+    const { url } = spawn();
+    const saved = await fetch(`${url}/api/reasoning-model`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://example.com",
+      },
+      body: JSON.stringify({ model: null }),
+    });
+
+    expect(saved.status).toBe(403);
   });
 
   it("/api/chat loads role instructions from disk for web sessions", async () => {

@@ -55,22 +55,29 @@ function numeric(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function pricingIsZero(value: unknown): boolean {
+function pricingIsExplicitZero(value: unknown): boolean {
+  if (typeof value === "number") return value === 0;
+  if (typeof value === "string" && value.trim()) return Number(value) === 0;
+  return false;
+}
+
+function optionalPricingIsZero(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   if (typeof value === "number") return value === 0;
-  if (typeof value === "string") return Number(value) === 0;
+  if (typeof value === "string" && value.trim()) return Number(value) === 0;
   return false;
 }
 
 function isFree(model: RawOpenRouterModel): boolean {
   const id = typeof model.id === "string" ? model.id : "";
   if (id.endsWith(":free")) return true;
-  const pricing = model.pricing ?? {};
+  const pricing = model.pricing;
+  if (!pricing || typeof pricing !== "object") return false;
   return (
-    pricingIsZero(pricing.prompt) &&
-    pricingIsZero(pricing.completion) &&
-    pricingIsZero(pricing.request) &&
-    pricingIsZero(pricing.internal_reasoning)
+    pricingIsExplicitZero(pricing.prompt) &&
+    pricingIsExplicitZero(pricing.completion) &&
+    optionalPricingIsZero(pricing.request) &&
+    optionalPricingIsZero(pricing.internal_reasoning)
   );
 }
 
