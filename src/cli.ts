@@ -528,10 +528,16 @@ async function cmdChat(
   powerful: boolean,
   local: boolean,
   mode: RoutingMode,
+  tools: ReturnType<FileTools["toolset"]>,
+  workdir: string,
 ): Promise<void> {
   const router = buildRouter({ local });
   const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
-  const session = new ChatSession({ resolver, id: sessionId, powerful });
+  if (tools.length > 0) {
+    const toolNames = tools.map((t) => t.name).join(", ");
+    console.error(`tools enabled (${toolNames}). workdir: ${workdir}\n`);
+  }
+  const session = new ChatSession({ resolver, id: sessionId, powerful, tools });
   const repl = new ChatRepl({ session, router, mode });
   await repl.run();
 }
@@ -670,6 +676,15 @@ Flags for 'chat':
   --powerful                      start in powerful mode (Gemini thinking=high
                                   on every call this session). Also toggleable
                                   mid-session via /power.
+  --allow-bash                    enable file tools (read_file, write_file,
+                                  list_dir) plus bash_exec for this session.
+                                  The model can read/write files and run shell
+                                  commands inside --workdir.
+  --workdir=<path>                scope file tools to this directory (default:
+                                  active project root). Implies --allow-bash's
+                                  file tools without bash exec.
+  --no-tools                      disable all tools even when --allow-bash or
+                                  --workdir are present.
 
 Flags for 'diagnose-routing':
   --live                          actually call every role in cloud and hybrid mode.
@@ -898,6 +913,9 @@ async function main(): Promise<void> {
         powerful: { type: "boolean", default: false },
         mode: { type: "string", default: "multi-agent" },
         local: { type: "boolean", default: false },
+        "allow-bash": { type: "boolean", default: false },
+        "no-tools": { type: "boolean", default: false },
+        workdir: { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -908,7 +926,19 @@ async function main(): Promise<void> {
       printHelp();
       process.exit(2);
     }
-    await cmdChat(sessionId, Boolean(cv.powerful), Boolean(cv.local), parseRoutingMode(cv.mode));
+    const allowBash = Boolean(cv["allow-bash"]);
+    const noTools = Boolean(cv["no-tools"]);
+    const chatWorkdir = resolvePath((cv.workdir as string | undefined) ?? getActiveProject().root);
+    const chatTools: ReturnType<FileTools["toolset"]> = [];
+    // Tools are opt-in for chat (unlike `ask` which enables them by default).
+    // --allow-bash enables read_file + write_file + list_dir + bash_exec.
+    // --workdir alone enables the three file tools without bash.
+    if (!noTools && (allowBash || cv.workdir !== undefined)) {
+      const ft = new FileTools(chatWorkdir);
+      chatTools.push(...ft.toolset());
+      if (allowBash) chatTools.push(new BashTool({ workdir: ft.workdir }).asTool());
+    }
+    await cmdChat(sessionId, Boolean(cv.powerful), Boolean(cv.local), parseRoutingMode(cv.mode), chatTools, chatWorkdir);
     return;
   }
 

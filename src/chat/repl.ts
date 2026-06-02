@@ -227,14 +227,20 @@ export class ChatRepl {
         this.println(formatUsageReport(this.router));
         return "continue";
       }
-      case "/info":
+      case "/info": {
+        const toolList = this.session.activeTools;
+        const toolLine = toolList.length > 0
+          ? `\ntools: ${toolList.join(", ")}`
+          : "";
         this.println(
           `session id: ${this.session.id}\n` +
             `role: ${this.session.role}, mode: ${this.mode}, smart-routing: ${this.session.smartRouting ? "on" : "off"}, powerful: ${this.session.isPowerful() ? "on" : "off"}\n` +
             `turns: ${this.session.turnCount()}, est. tokens: ${this.session.estimateTokens()} / ${this.session.tokenBudget}\n` +
-            `storage: ${this.session.storagePath}`,
+            `storage: ${this.session.storagePath}` +
+            toolLine,
         );
         return "continue";
+      }
       case "/save": {
         const name = rest[0];
         if (!name) {

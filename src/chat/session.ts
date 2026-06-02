@@ -7,7 +7,7 @@ import {
   formatRoleInstructionsForRole,
 } from "../roles/instructions.js";
 import type { CompleteOptions } from "../provider.js";
-import type { ConversationPart } from "../tools/types.js";
+import type { ConversationPart, Tool, ToolDeclaration } from "../tools/types.js";
 import { WebSearchTool } from "../tools/web-search.js";
 import { parsePlan, type Plan } from "../agents/role-orchestrator.js";
 import { LATEX_DIRECTIVE } from "../agents/prompts.js";
@@ -97,6 +97,14 @@ export interface ChatSessionOptions {
    * into the visible session transcript.
    */
   roleInstructions?: unknown;
+  /**
+   * File and shell tools available to specialist roles during this session.
+   * When non-empty, single-specialist turns run through a tool-calling loop
+   * (model can call tools, see results, and produce a final reply) instead of
+   * a plain chat completion. Each tool call is logged to stderr so the user
+   * can see what the model is doing. Default: no tools.
+   */
+  tools?: Tool[];
 }
 
 /**
@@ -181,6 +189,8 @@ export class ChatSession {
   private readonly charsPerToken: number;
   private readonly resolver: RoleResolver;
   private readonly roleInstructions?: unknown;
+  private readonly toolsByName: Map<string, Tool>;
+  private readonly toolDecls: ToolDeclaration[];
   private title?: string;
   private pinned = false;
   private powerful: boolean;
@@ -203,6 +213,9 @@ export class ChatSession {
     this.tokenBudget = opts.tokenBudget ?? DEFAULT_BUDGET;
     this.charsPerToken = opts.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN;
     this.roleInstructions = opts.roleInstructions;
+    const tools = opts.tools ?? [];
+    this.toolsByName = new Map(tools.map((t) => [t.name, t]));
+    this.toolDecls = tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
     this.createdAt = Date.now();
     this.updatedAt = this.createdAt;
     this.load();
@@ -214,6 +227,11 @@ export class ChatSession {
 
   setPowerful(value: boolean): void {
     this.powerful = value;
+  }
+
+  /** Names of tools registered for this session (empty when no tools). */
+  get activeTools(): string[] {
+    return [...this.toolsByName.keys()];
   }
 
   /**
@@ -279,19 +297,12 @@ export class ChatSession {
       if (!this.smartRouting || forcedRole) {
         const directRole = forcedRole ?? this.role;
         emit({ kind: "role-start", role: directRole, phase: "single" });
-        if (onProgress) {
-          reply = await this.runRoleChatStreamMaybeFallbackSearch(
-            directRole, this.historyForRole(directRole),
-            (text) => emit({ kind: "token", text }),
-            effectiveOpts,
-          );
-        } else {
-          reply = await this.runRoleChatMaybeFallbackSearch(
-            directRole,
-            this.historyForRole(directRole),
-            effectiveOpts,
-          );
-        }
+        reply = await this.runWithToolLoop(
+          directRole,
+          this.historyForRole(directRole),
+          effectiveOpts,
+          onProgress ? (text) => emit({ kind: "token", text }) : undefined,
+        );
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
       } else if (mode === "brainstorming") {
@@ -462,6 +473,74 @@ Output ONLY the summary, no preamble.`;
   }
 
   /**
+   * Run a specialist role, optionally through a tool-calling loop.
+   *
+   * When tools are registered (via ChatSessionOptions.tools), uses
+   * resolver.runRoleWithTools in a loop: model calls tools → results fed
+   * back → repeat until the model produces a text reply or maxIterations is
+   * reached. Each tool call is printed to stderr so the user can watch.
+   *
+   * When no tools are registered, falls back to the existing streaming/plain
+   * chat path (preserving web-search fallback behaviour for perception).
+   */
+  private async runWithToolLoop(
+    role: RoleName,
+    history: ConversationPart[],
+    opts: CompleteOptions,
+    onToken?: (text: string) => void,
+  ): Promise<string> {
+    if (this.toolDecls.length === 0) {
+      // No tools — use existing paths (web-search fallback for perception, etc.)
+      if (onToken) {
+        return this.runRoleChatStreamMaybeFallbackSearch(role, history, onToken, opts);
+      }
+      return this.runRoleChatMaybeFallbackSearch(role, history, opts);
+    }
+
+    const MAX_ITERATIONS = 10;
+    const workingHistory = [...history];
+
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, opts);
+
+      if (result.kind === "text") {
+        if (onToken) onToken(result.text);
+        return result.text;
+      }
+
+      // Execute each tool call, log it, feed the result back.
+      workingHistory.push({ kind: "model_calls", calls: result.calls });
+      for (const call of result.calls) {
+        const tool = this.toolsByName.get(call.name);
+        let resultText: string;
+        if (!tool) {
+          resultText = `ERROR: unknown tool '${call.name}'. Available: ${[...this.toolsByName.keys()].join(", ")}`;
+          console.error(`[tool] ${call.name}(${JSON.stringify(call.args)}) → ERROR: unknown tool`);
+        } else {
+          try {
+            resultText = await tool.execute(call.args);
+            const preview = resultText.length > 120 ? resultText.slice(0, 120) + "…" : resultText;
+            console.error(`[tool] ${call.name}(${JSON.stringify(call.args)}) → ${preview}`);
+          } catch (err) {
+            resultText = `ERROR: ${(err as Error).message}`;
+            console.error(`[tool] ${call.name} threw: ${(err as Error).message}`);
+          }
+        }
+        workingHistory.push({
+          kind: "tool_result",
+          name: call.name,
+          result: resultText,
+          ...(call.toolCallId !== undefined && { toolCallId: call.toolCallId }),
+        });
+      }
+    }
+
+    const truncMsg = `[truncated after ${MAX_ITERATIONS} tool iterations without a final text reply]`;
+    if (onToken) onToken(truncMsg);
+    return truncMsg;
+  }
+
+  /**
    * Smart-routing turn: ask orchestrator for a plan, then execute.
    * The plan preamble is injected into the planning call's history but never
    * persisted — chat history stays clean.
@@ -514,15 +593,12 @@ Output ONLY the summary, no preamble.`;
       fire({ kind: "role-start", role: plan.role, phase: "single", framing: plan.prompt });
       let reply: string;
       try {
-        if (emit) {
-          reply = await this.runRoleChatStreamMaybeFallbackSearch(
-            plan.role, specialistHistory,
-            (text) => emit({ kind: "token", text }),
-            opts,
-          );
-        } else {
-          reply = await this.runRoleChatMaybeFallbackSearch(plan.role, specialistHistory, opts);
-        }
+        reply = await this.runWithToolLoop(
+          plan.role,
+          specialistHistory,
+          opts,
+          emit ? (text) => emit({ kind: "token", text }) : undefined,
+        );
       } catch (err) {
         fire({ kind: "role-end", role: plan.role, ok: false, error: (err as Error).message });
         throw err;
