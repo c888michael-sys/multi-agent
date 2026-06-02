@@ -3138,6 +3138,8 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
   const [addLoading, setAddLoading] = React.useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = React.useState(null);
   const [pinLoading, setPinLoading] = React.useState(false);
+  // incremented to force a file-list re-fetch even when currentPath doesn't change
+  const [listKey, setListKey] = React.useState(0);
 
   function fetchProjects() {
     return fetch('/api/projects').then(r => r.json()).then(j => {
@@ -3165,13 +3167,15 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
       .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error ' + r.status); setEntries(j.entries || []); })
       .catch(e => setListError(e.message))
       .finally(() => setListLoading(false));
-  }, [open, currentPath]);
+  }, [open, currentPath, listKey]);
 
   React.useEffect(() => {
     if (!open) {
       setCurrentPath('.'); setEntries([]); setSelectedFile(null);
       setListError(null); setPreviewError(null);
       setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
+      setAddOpen(false); setAddName(''); setAddPath(''); setAddError(null);
+      setDeleteConfirmId(null);
     }
   }, [open]);
 
@@ -3230,7 +3234,11 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
     }).then(async r => {
       if (!r.ok) return;
       await Promise.all([fetchRoot(), fetchProjects()]);
-      navigateTo('.');
+      // Reset to root and force re-fetch even if currentPath is already '.'
+      setCurrentPath('.');
+      setSelectedFile(null); setPreviewError(null);
+      setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
+      setListKey(k => k + 1);
     }).catch(() => {}).finally(() => setProjSwitching(false));
   }
 
@@ -3259,7 +3267,10 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
       if (!r.ok) return;
       setDeleteConfirmId(null);
       await Promise.all([fetchRoot(), fetchProjects()]);
-      navigateTo('.');
+      setCurrentPath('.');
+      setSelectedFile(null); setPreviewError(null);
+      setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
+      setListKey(k => k + 1);
     }).catch(() => {});
   }
 

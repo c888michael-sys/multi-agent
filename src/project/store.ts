@@ -136,7 +136,7 @@ export function resolveAllowList(): string[] {
     // dirname(cwd) already contains cwd, so siblings are also covered.
     return [dirname(cwd)];
   }
-  const bases = env.split(delimiter).map((p) => resolve(p)).filter(Boolean);
+  const bases = env.split(delimiter).filter(Boolean).map((p) => resolve(p));
   // cwd is always implicitly allowed even when env var is set.
   if (!bases.some((b) => pathContains(b, cwd))) {
     bases.push(cwd);
