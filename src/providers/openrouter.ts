@@ -22,9 +22,9 @@ export interface OpenRouterProviderOptions {
   apiKey: string;
   /**
    * Model ID. For free-tier variants of paid models, append `:free` (e.g.
-   * `somemodel:free`). The default `qwen/qwen3.6-plus-preview` is an
-   * inherently free preview model — no `:free` suffix needed. Override for
-   * any other OpenRouter slug.
+   * `somemodel:free`). The default `qwen/qwen3-next-80b-a3b-instruct:free`
+   * is the free tier of Qwen3-Next 80B MoE (262K ctx). Override for any
+   * other OpenRouter slug.
    */
   model?: string;
   /** Optional attribution headers — OpenRouter uses these for analytics; not required. */
@@ -36,9 +36,8 @@ export interface OpenRouterProviderOptions {
 
 /**
  * OpenRouter provider — routes to many backend models via OpenAI-compatible
- * REST. Default model is Qwen 3.6 Plus Preview, a free preview model used
- * as the primary online reasoner. Append `:free` to the model slug only for
- * free variants of paid models — inherently free previews don't need it.
+ * REST. Default model is Qwen3-Next 80B MoE (free tier), used as the primary
+ * online reasoner. Append `:free` to slugs that have a paid + free variant.
  *
  * Provider id convention: `openrouter:<short-model-name>`.
  */
@@ -54,7 +53,7 @@ export class OpenRouterProvider implements Provider {
 
   constructor(opts: OpenRouterProviderOptions) {
     this.id = opts.id;
-    this.model = opts.model ?? "qwen/qwen3.6-plus-preview";
+    this.model = opts.model ?? "qwen/qwen3-next-80b-a3b-instruct:free";
     this.apiKey = opts.apiKey;
     this.baseUrl = opts.baseUrl ?? "https://openrouter.ai/api/v1";
     this.extraHeaders = {};

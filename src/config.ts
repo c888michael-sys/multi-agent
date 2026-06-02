@@ -382,16 +382,15 @@ export function loadGroqProvidersFromEnv(opts?: { model?: string }): Provider[] 
 
 /**
  * Load OpenRouter provider from env. Returns [] if OPENROUTER_KEY is unset.
- * Defaults to Qwen 3.6 Plus Preview — a free preview model on OpenRouter
- * used as the primary online reasoner. Override with `opts.model` for any
- * other OpenRouter slug.
+ * Defaults to Qwen3-Next 80B MoE (free tier) — 262K context, used as the
+ * primary online reasoner. Override with `opts.model` for any other slug.
  */
 export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provider[] {
   const key = (process.env.OPENROUTER_KEY ?? "").trim();
   if (!key) return [];
   return [
     new OpenRouterProvider({
-      id: "openrouter:qwen3.6-plus-preview",
+      id: "openrouter:qwen3-next-80b",
       apiKey: key,
       appName: "multi-agent",
       appUrl: "https://github.com/c888michael-sys/multi-agent",
