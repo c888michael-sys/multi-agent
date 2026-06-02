@@ -242,7 +242,7 @@ Priority plan, ordered by user value:
 - [ ] **Cross-model disagreement surfacing.** After brainstorming fan-out, run a background Cerebras call to identify where the 4 models agree and disagree, surface a `⚖ 3/4 agree · 1 dissent` bar with expandable per-claim breakdown. **Detailed worker plan below: "Cross-model disagreement surfacing."** Depends on lanes plan (needs per-role outputs).
 - [ ] **Cheap model verification pass.** After every turn, run a background Cerebras fact-check on the reply and surface a `⚠ N claim(s) to verify` pill in the turn footer, with per-claim reasons. **Detailed worker plan below: "Cheap model verification pass."**
 - [x] **/goal — quota-patient autonomous task loop.** `/goal <description>` in the composer starts a multi-step autonomous loop. When all quotas exhaust, shows a live countdown to the next provider reset and resumes automatically. `src/goal/` — `GoalSession`/`GoalStore`, `planNextStep`, `runGoalLoop`. Server: `POST /api/goal`, `GET /api/goals`, `GET /api/goal/:id`, `GET /api/goal/:id/stream` (SSE), `DELETE /api/goal/:id`. Frontend: `GoalView` component with step list, quota-wait countdown panel, done/failed banners. **Detailed worker plan below: "/goal — quota-patient autonomous task loop."**
-- [ ] **Switchable project (root folder + pinned file).** Let the user change the active project at runtime in both CLI and web. A project is a root folder plus an optional pinned focus file; one **global** active project at a time, backed by a registry the user manages (create / delete / switch), constrained to an allow-list of base dirs (`MULTI_AGENT_PROJECT_ROOTS`, defaults to the launch dir's parent). Shared store at `~/.multi-agent/projects.json` consumed by both surfaces. CLI: new `project` command (`list`/`current`/`add`/`use`/`remove`/`pin`/`unpin`) plus `/project` slash commands in the chat REPL; `ask`/`task`/`chat`/`serve` default their root to the active project. Web: a project selector at the top of the existing `files` drawer, with the web `WebFileService` rebuilt on switch. New endpoints `GET /api/projects`, `POST /api/projects`, `POST /api/projects/active`, `POST /api/projects/delete`, `POST /api/projects/pin`; `/api/files/root` carries active-project context. **Design doc: [`docs/specs/2026-06-02-switchable-project.md`](docs/specs/2026-06-02-switchable-project.md).**
+- [ ] **Switchable project (root folder + pinned file).** Let the user change the active project at runtime in both CLI and web. A project is a root folder plus an optional pinned focus file; one **global** active project at a time, backed by a registry the user manages (create / delete / switch), constrained to an allow-list of base dirs (`MULTI_AGENT_PROJECT_ROOTS`, defaults to the launch dir's parent). Shared store at `~/.multi-agent/projects.json` consumed by both surfaces. CLI: new `project` command (`list`/`current`/`add`/`use`/`remove`/`pin`/`unpin`) plus `/project` slash commands in the chat REPL; `ask`/`task`/`chat`/`serve` default their root to the active project. Web: a project selector at the top of the existing `files` drawer, with the web `WebFileService` rebuilt on switch. New endpoints `GET /api/projects`, `POST /api/projects`, `POST /api/projects/active`, `POST /api/projects/delete`, `POST /api/projects/pin`; `/api/files/root` carries active-project context. **Detailed worker plan below: "Switchable project (root folder + pinned file)."**
 
 ### Worker implementation plan: Web project file tools with permissions
 
@@ -730,6 +730,101 @@ Persist to `~/.multi-agent/goals/<goalId>.json`. Load/save pattern mirrors `Usag
 - Goal state persists to disk; killing and restarting the server does not lose goal progress (a reconnecting client sees the current step count).
 - All existing tests pass; new goal-session and planner tests cover the step-accumulation loop, `done: true` termination, and `quota-wait` event emission.
 - README backlog item updated in the same commit.
+
+### Worker implementation plan: Switchable project (root folder + pinned file)
+
+> **For agentic workers:** implement this task-by-task. Use `superpowers:test-driven-development` for each code task and `superpowers:verification-before-completion` before every commit. The first shippable PR is the **shared project store + CLI `project` command**; the **web selector + endpoints** is the second PR unless the user explicitly asks to keep going in the same branch.
+
+**Goal:** Let the user change the active project at runtime in both CLI and web. A project is a **root folder** plus an optional **pinned focus file**. There is one **global** active project at a time, backed by a registry the user manages (create / delete / switch), constrained to a configured allow-list of base directories.
+
+**Why now / current state:**
+
+- Web: `WebFileService` is constructed once at server boot from `opts.projectRoot ?? process.cwd()` (`src/web/server.ts:163`) and frozen for the server lifetime — no UI control or endpoint changes it.
+- CLI: `--workdir=<path>` scopes file tools per command (default cwd), but there is no persistent "current project" concept.
+
+**Chosen approach — shared project store + mutable web fileService.** A new `src/project/store.ts` owns `~/.multi-agent/projects.json` as the single source of truth, consumed by both CLI and web. The web server holds a reassignable `fileService` reference rebuilt on switch. CLI commands and chat-REPL slash commands read/write the same store. `ask`/`chat`/`serve`/`task` default their root to the active project; an explicit `--workdir` (or `serve` projectRoot) still wins. (Rejected: per-request fileService resolution — needless overhead for a single-user local app; web-only localStorage registry — can't be shared with the CLI.)
+
+#### Task 1 — shared project store
+
+**Files:** create `src/project/store.ts`; create `tests/project-store.test.ts`.
+
+Mirror the `src/roles/instructions.ts` version / normalize / read / write resilience pattern. Data file `~/.multi-agent/projects.json`:
+
+```jsonc
+{
+  "version": 1,
+  "activeId": "p_a1b2",
+  "projects": [
+    { "id": "p_a1b2", "name": "multi-agent",
+      "root": "C:\\Users\\Michael\\Desktop\\multi-agent",
+      "pinnedFile": null, "createdAt": 0, "updatedAt": 0 }
+  ]
+}
+```
+
+**Types:** `Project { id, name, root, pinnedFile: string | null, createdAt, updatedAt }`, `ProjectSet { version: 1, activeId: string, projects: Project[] }`.
+
+**API:** `readProjects(path?)` / `writeProjects(path, set)`, `listProjects()`, `getActiveProject()`, `addProject({ name, root, pinnedFile? })`, `setActiveProject(id)`, `removeProject(id)`, `setPinnedFile(id, relPath | null)`, `resolveAllowList()`, `assertWithinAllowList(root)`.
+
+**Rules:**
+
+- Project `name`s are unique (case-insensitive); duplicate → error.
+- A new `root` must resolve under one of the allow-list base directories.
+- `pinnedFile` (when set) must resolve under its own project `root`; stored as a root-relative POSIX path.
+- Removing the **active** project auto-reassigns `activeId` to the first remaining project; removing the **last** project is refused.
+- Corrupt/unreadable `projects.json` → seeded default: one project whose root is the launch cwd, marked active (same advisory-file philosophy as role-instructions and `state.json`).
+- IDs generated as `p_` + short random hex; `name` is a display label. Rename is out of scope for v1 (delete + recreate covers it).
+
+**Allow-list:** env var `MULTI_AGENT_PROJECT_ROOTS` — an OS path-delimited (`path.delimiter`) list of base dirs. **Default when unset:** the parent of the launch directory (`dirname(process.cwd())`), so from `Desktop\multi-agent` the user can pick any sibling project under `Desktop`; the launch cwd is always implicitly allowed. Validation reuses the lexical-containment (`relative(base, candidate)` not starting with `..` / not absolute) + `realpathSync` symlink re-check already in `WebFileService.resolveSafe` — factor that containment check into a shared helper so the store and the file service agree.
+
+**Tests:** add/use/remove/pin happy paths; allow-list rejection; traversal in `root` and in `pinnedFile`; last-project delete guard; active reassignment on delete; duplicate-name rejection; corrupt-file normalize → seeded default.
+
+#### Task 2 — CLI `project` command + REPL slash commands
+
+**Files:** modify `src/cli.ts`, `src/chat/repl.ts`; update `printHelp`.
+
+- New top-level `project` command: `list` (default), `current`, `add <name> <path>`, `use <name|id>`, `remove <name|id>`, `pin <path>`, `unpin`.
+- `/project ...` slash commands in the `chat` REPL mirroring those subcommands.
+- Default-root wiring: `ask` / `task` / `chat` / `serve` use the active project root when `--workdir` (or, for `serve`, the project root) is not explicitly passed; explicit flag always wins. `serve` gains `--project=<name|id>` to pick the active project for that launch.
+- Help text updated to document the `project` command and the new flag.
+
+#### Task 3 — web endpoints + dynamic fileService
+
+**Files:** modify `src/web/server.ts`; modify `tests/web-server.test.ts`.
+
+- Replace the single `const fileService` with a reassignable `let fileService`, plus `rebuildFileService()` that reads the active project root and reconstructs `WebFileService`.
+- `ServerOptions` gains `projectsPath?: string` (tests override; default real `~/.multi-agent/projects.json`). On boot, seed/read the store; initial `fileService` points at the active project's root. `opts.projectRoot`, when supplied, seeds/overrides the initial active project root (keeps existing test behavior).
+- New endpoints (state-changing ones reuse the existing localhost `Origin` guard used by the file write endpoints):
+  - `GET /api/projects` → `{ active, projects, allowList }`
+  - `POST /api/projects` `{ name, root, pinnedFile? }` → add; `403` outside allow-list, `409` duplicate name, `400` invalid body
+  - `POST /api/projects/active` `{ id }` → switch + `rebuildFileService()`; `404` unknown id
+  - `POST /api/projects/delete` `{ id }` → remove; `409` if last project
+  - `POST /api/projects/pin` `{ path: string | null }` → set the active project's pinned file; `403` if path escapes root, `404` if file missing
+- Extend `GET /api/files/root` response with `{ activeProjectId, projectName, pinnedFile }`.
+- **Tests:** list; add (allowed + rejected); switch active **actually re-points** `listDir` to the new root; delete (incl. last-project `409`); pin; and `/api/files/root` carries the project context.
+
+#### Task 4 — web UI (project selector in the files drawer)
+
+**Files:** modify `src/web/static/app.jsx`, `src/web/static/style.css`.
+
+A project selector at the **top of the existing files drawer**:
+
+- Dropdown listing all projects, active highlighted; selecting calls `/api/projects/active` then reloads the listing at `.`.
+- "＋ New" inline form: name + path fields validated against the allow-list, inline error on `403`/`409` (no `alert()`).
+- A trash/delete control per project (confirm inline); disabled when only one project remains.
+- A ★ toggle on the previewed file pins it as the active project's focus file (`POST /api/projects/pin`); the pinned file auto-opens when the drawer is opened.
+- All errors render inline, consistent with the existing blocked/binary/too-large states.
+
+**Error handling (all tasks):** allow-list rejection → `403` / clear non-zero-exit CLI error · switching to a project whose `root` no longer exists → kept in registry but flagged unavailable, file listing returns a not-found-style error and CLI/UI warn rather than crash · corrupt JSON → seeded default · duplicate name / last-project-delete → refused with a clear message.
+
+**YAGNI / out of scope for v1:** pinned file is a focus pointer only (UI auto-opens it, CLI reports it) — it does **not** auto-inject into chat context (possible later enhancement); project rename; per-session project roots (active project is global).
+
+**Acceptance criteria:**
+
+- `npm run cli -- project add demo C:\path\under\allowlist` then `project use demo` makes `ask`/`serve` default their root to that folder; `project remove demo` reassigns active and refuses when it's the last one.
+- In the web files drawer, switching projects re-points the file browser to the new root without a server restart; adding a path outside the allow-list shows an inline error; the ★ pin survives reload.
+- All existing tests pass; new `project-store` and web-endpoint tests cover the store rules and the switch-re-points-listDir behavior.
+- README roadmap item ticked in the same commit as the shipping code.
 
 ### UI/UX polish backlog
 
