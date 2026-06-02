@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Router } from "../src/router.js";
 import { RoleResolver } from "../src/roles/resolver.js";
 import { ChatSession, listSessions } from "../src/chat/session.js";
-import { FakeProvider, RateLimitedError } from "./fixtures.js";
+import { FakeProvider, ToolFakeProvider, RateLimitedError } from "./fixtures.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
 /**
@@ -349,6 +349,56 @@ describe("ChatSession smart routing (plan-based)", () => {
     ]);
     expect(result.reply).toBe("synthesized brainstorm");
     expect(p.calls[0]!.prompt).toContain("research-based perspective");
+  });
+
+  it("tool sessions bypass the planner and route directly through action-code's tool loop", async () => {
+    // Orchestration provider would handle planning IF the planner ran — but
+    // tool sessions must skip it entirely and go straight to action-code.
+    const orc = chatProvider(['{"kind":"direct","answer":"should not be used"}'], "orc");
+    // action-code: first call requests a tool, second call returns final text.
+    const code = new ToolFakeProvider("code", [
+      { kind: "calls", calls: [{ name: "make_dir", args: { name: "testing_website" } }] },
+      { kind: "text", text: "Created the folder testing_website." },
+    ]);
+    const router = new Router([orc, code], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "orc" }] },
+      { name: "action-code", description: "x", candidates: [{ providerId: "code" }] },
+    ]);
+
+    const executed: string[] = [];
+    const makeDirTool = {
+      name: "make_dir",
+      description: "create a directory",
+      parameters: {
+        type: "object" as const,
+        properties: { name: { type: "string" as const } },
+        required: ["name"],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        executed.push(String(args.name));
+        return `created ${args.name}`;
+      },
+    };
+
+    const s = new ChatSession({
+      resolver,
+      id: "tool-route",
+      storagePath: storage,
+      tools: [makeDirTool],
+    });
+
+    const result = await s.send("make a folder called testing_website");
+
+    // The tool actually ran (not just described).
+    expect(executed).toEqual(["testing_website"]);
+    // Routed to action-code, NOT the orchestration planner.
+    expect(result.servedBy).toEqual(["action-code"]);
+    expect(result.reply).toBe("Created the folder testing_website.");
+    // The orchestration planner was never called.
+    expect(orc.calls).toHaveLength(0);
+    // action-code saw two iterations: tool-request, then final text.
+    expect(code.toolCalls).toHaveLength(2);
   });
 
   it("uses Brave/DuckDuckGo search context when perception falls back from Gemini", async () => {

@@ -538,7 +538,9 @@ async function cmdChat(
   const localResolver = new RoleResolver(router, rolesFor(true), { onEvent: printRoleEvent });
   if (tools.length > 0) {
     const toolNames = tools.map((t) => t.name).join(", ");
-    console.error(`tools enabled (${toolNames}). workdir: ${workdir}\n`);
+    console.error(`tools enabled (${toolNames}). workdir: ${workdir}`);
+    console.error(`(tool sessions route each turn directly through action-code's tool loop — ` +
+      `the multi-agent/auto/brainstorming modes are bypassed so the model executes instead of describing)\n`);
   }
   if (startLocal) {
     console.error(`hybrid local mode ON — reasoning → ollama:qwen3.5-9b, action-code → ollama:qwen2.5-coder\n`);

@@ -291,7 +291,17 @@ export class ChatSession {
     // Per-turn role override: when the caller specifies a forceRole we
     // bypass smart routing for this turn only and call that role directly.
     // The session's smartRouting setting is preserved for future turns.
-    const forcedRole = routing?.forceRole;
+    //
+    // Tool sessions: when file/shell tools are registered, every turn routes
+    // straight through action-code's tool loop instead of the multi-agent
+    // planner/formatter pipeline. The pipeline's final answer always comes
+    // from the action-structural FORMATTER (which describes rather than
+    // executes), so agentic tasks like "make a folder" never actually ran a
+    // tool. Direct action-code routing is the reliable agentic path — the
+    // same shape as `ask --allow-bash`.
+    const toolForcedRole: RoleName | undefined =
+      this.toolDecls.length > 0 && !routing?.forceRole ? "action-code" : undefined;
+    const forcedRole = routing?.forceRole ?? toolForcedRole;
     const mode: RoutingMode =
       routing?.mode ?? (routing?.roundRobin === true ? "brainstorming" : "auto");
     const emit = (evt: ChatProgressEvent) => {
@@ -728,16 +738,7 @@ Output ONLY the summary, no preamble.`;
     opts: CompleteOptions,
     emit: (evt: ChatProgressEvent) => void,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: ChatPlan }> {
-    // When tools are registered, tell the planner so it routes file/shell/code
-    // tasks to action-code (which has tool access) rather than action-structural.
-    const toolNames = this.toolDecls.map((t) => t.name).join(", ");
-    const taskForPlanner =
-      this.toolDecls.length > 0
-        ? `${userInput}\n\n[Planning note: action-code has direct tool access (${toolNames}). ` +
-          `Assign file system operations, shell commands, running code, and any task that requires ` +
-          `actual execution to action-code — not action-structural.]`
-        : userInput;
-    const workflow = await runMultiAgentWorkflow(taskForPlanner, {
+    const workflow = await runMultiAgentWorkflow(userInput, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
         this.runWithToolLoop(role, this.historyWithFraming(role, prompt), opts),
