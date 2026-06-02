@@ -39,28 +39,24 @@ describe("parsePlan", () => {
     expect(parsePlan(wrapped)).toEqual({ kind: "direct", answer: "x" });
   });
 
-  it("falls back to action-structural-single on malformed JSON", () => {
+  it("falls back to direct-answer on malformed JSON", () => {
     const plan = parsePlan("garbage not json");
-    expect(plan.kind).toBe("single");
-    if (plan.kind === "single") {
-      expect(plan.role).toBe("action-structural");
-      expect(plan.prompt).toBe("garbage not json");
+    expect(plan.kind).toBe("direct");
+    if (plan.kind === "direct") {
+      expect(plan.answer).toBe("garbage not json");
     }
   });
 
-  it("falls back on invalid role name in single plan", () => {
+  it("falls back to direct-answer on invalid role name in single plan", () => {
     const plan = parsePlan('{"kind":"single","role":"nonexistent","prompt":"x"}');
-    expect(plan.kind).toBe("single");
-    if (plan.kind === "single") {
-      expect(plan.role).toBe("action-structural");
-    }
+    expect(plan.kind).toBe("direct");
   });
 
-  it("filters invalid roles from parallel tasks; falls back if zero valid remain", () => {
+  it("filters invalid roles from parallel tasks; falls back to direct if zero valid remain", () => {
     const plan = parsePlan(
       '{"kind":"parallel","tasks":[{"role":"bogus","prompt":"a"}]}',
     );
-    expect(plan.kind).toBe("single"); // fallback
+    expect(plan.kind).toBe("direct"); // fallback
   });
 
   it("keeps valid parallel tasks even when some are invalid", () => {
@@ -163,16 +159,15 @@ describe("RoleOrchestrator", () => {
     expect(p.calls).toHaveLength(4);
   });
 
-  it("falls back to single action-structural call when planner emits garbage", async () => {
+  it("falls back to direct answer when planner emits garbage", async () => {
     const p = new FakeProvider("x", [
-      { kind: "ok", text: "not json at all" }, // bad plan
-      { kind: "ok", text: "structural answer" }, // single fallback
+      { kind: "ok", text: "not json at all" }, // bad plan → direct fallback
     ]);
     const orch = new RoleOrchestrator({ resolver: makeResolver(p) });
 
     const result = await orch.runWithTrace("do something");
-    expect(result.plan.kind).toBe("single");
-    expect(result.finalOutput).toBe("structural answer");
+    expect(result.plan.kind).toBe("direct");
+    expect(result.finalOutput).toBe("not json at all");
   });
 
   it("single-role parallel-mode short-circuits synthesis", async () => {

@@ -239,22 +239,20 @@ describe("ChatSession smart routing (plan-based)", () => {
     expect(orc.calls).toHaveLength(2); // plan + synthesis
   });
 
-  it("malformed plan falls through to single action-structural call", async () => {
-    // parsePlan returns single+action-structural fallback for garbage; the
-    // specialist (action-structural here) then answers.
+  it("malformed plan falls back to direct answer from orchestrator", async () => {
+    // parsePlan returns direct fallback for garbage; orchestrator's raw
+    // response is shown as-is with no specialist call.
     const orc = chatProvider(["not valid json at all"], "orc");
-    const fallback = chatProvider(["recovered answer"], "struct");
-    const router = new Router([orc, fallback], { maxRetryWaitMs: 0 });
+    const router = new Router([orc], { maxRetryWaitMs: 0 });
     const resolver = new RoleResolver(router, [
       { name: "orchestration", description: "x", candidates: [{ providerId: "orc" }] },
-      { name: "action-structural", description: "x", candidates: [{ providerId: "struct" }] },
     ]);
     const s = new ChatSession({ resolver, id: "fb", storagePath: storage });
 
     const result = await s.send("anything");
-    expect(result.plan?.kind).toBe("single");
-    expect(result.servedBy).toEqual(["action-structural"]);
-    expect(result.reply).toBe("recovered answer");
+    expect(result.plan?.kind).toBe("direct");
+    expect(result.servedBy).toEqual(["orchestration"]);
+    expect(result.reply).toBe("not valid json at all");
   });
 
   it("smartRouting=false skips planning and calls the entry role directly", async () => {

@@ -38,8 +38,8 @@ const DEFAULT_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)
  *   3. Synthesizes per-role outputs into a final answer when applicable.
  *
  * Plans are returned as JSON from the orchestrator. Defensive parsing falls
- * back to a single action-structural call when the orchestrator's output is
- * malformed — better degraded service than a thrown error.
+ * back to a direct answer (the orchestrator's raw response) when the output is
+ * malformed — better degraded service than a thrown error or a garbled task.
  */
 export class RoleOrchestrator {
   private readonly resolver: RoleResolver;
@@ -186,14 +186,11 @@ Rules:
 
 /**
  * Defensive JSON parser for orchestrator plans. Strips common markdown
- * artifacts, falls back to action-structural-single when malformed.
+ * artifacts, falls back to direct-answer when malformed so the orchestrator's
+ * prose response is shown as-is rather than routed as a garbled task prompt.
  */
 export function parsePlan(raw: string): Plan {
-  const fallback: Plan = {
-    kind: "single",
-    role: "action-structural",
-    prompt: raw, // pass the original task description (or whatever we got) downstream
-  };
+  const fallback: Plan = { kind: "direct", answer: raw };
 
   // Strip ```json or ``` fences if the model wrapped the JSON.
   const cleaned = raw
