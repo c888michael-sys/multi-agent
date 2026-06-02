@@ -71,6 +71,88 @@ function historyToOllamaMessages(history: ConversationPart[]): OllamaMessage[] {
   return messages;
 }
 
+/**
+ * Extract balanced top-level JSON objects/arrays from a string, ignoring
+ * braces that appear inside JSON string literals. Handles content that has
+ * surrounding prose or markdown ```json fences. Returns each candidate's
+ * parsed value.
+ */
+function extractJsonCandidates(text: string): unknown[] {
+  const out: unknown[] = [];
+  const stripped = text.replace(/```(?:json)?/gi, "");
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let escape = false;
+  for (let i = 0; i < stripped.length; i++) {
+    const ch = stripped[i]!;
+    if (inStr) {
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === "{" || ch === "[") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        const slice = stripped.slice(start, i + 1);
+        try { out.push(JSON.parse(slice)); } catch { /* skip */ }
+        start = -1;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Coerce one parsed JSON value into a tool call if it matches the common
+ * inline shapes models emit: `{ name, arguments }`, `{ name, parameters }`,
+ * `{ tool, args }`, or an OpenAI-style `{ function: { name, arguments } }`.
+ * Returns null when it doesn't name one of the offered tools.
+ */
+function coerceToolCall(value: unknown, offered: ReadonlySet<string>): ToolCallRequest | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const fn = (v.function && typeof v.function === "object") ? (v.function as Record<string, unknown>) : v;
+  const name = fn.name ?? fn.tool ?? fn.tool_name;
+  if (typeof name !== "string" || !offered.has(name)) return null;
+  let rawArgs = fn.arguments ?? fn.args ?? fn.parameters ?? fn.input ?? {};
+  if (typeof rawArgs === "string") {
+    try { rawArgs = JSON.parse(rawArgs); } catch { rawArgs = {}; }
+  }
+  const args =
+    typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+      ? (rawArgs as Record<string, unknown>)
+      : {};
+  return { name, args };
+}
+
+/**
+ * Parse tool calls that a model emitted as text in the content field rather
+ * than in the structured tool_calls field. Scans for JSON objects/arrays and
+ * coerces any that name an offered tool. Returns [] when none are found.
+ */
+export function parseInlineToolCalls(content: string, offered: ReadonlySet<string>): ToolCallRequest[] {
+  if (!content.trim()) return [];
+  const calls: ToolCallRequest[] = [];
+  for (const candidate of extractJsonCandidates(content)) {
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        const c = coerceToolCall(item, offered);
+        if (c) calls.push(c);
+      }
+    } else {
+      const c = coerceToolCall(candidate, offered);
+      if (c) calls.push(c);
+    }
+  }
+  return calls;
+}
+
 export class OllamaProvider implements Provider {
   readonly id: string;
   readonly model: string;
@@ -284,7 +366,16 @@ export class OllamaProvider implements Provider {
       if (calls.length > 0) return { kind: "calls", calls };
     }
 
-    return { kind: "text", text: msg.content ?? "" };
+    // Fallback: some local models (qwen2.5-coder among them) emit tool calls
+    // as a JSON object in the CONTENT field instead of the structured
+    // tool_calls field, depending on the model's chat template. Detect and
+    // parse those so the loop can still execute the tool. Only treats the
+    // content as a call when it names a tool we actually offered.
+    const content = msg.content ?? "";
+    const inlineCalls = parseInlineToolCalls(content, new Set(tools.map((t) => t.name)));
+    if (inlineCalls.length > 0) return { kind: "calls", calls: inlineCalls };
+
+    return { kind: "text", text: content };
   }
 
   isRateLimitError(_err: unknown): boolean {

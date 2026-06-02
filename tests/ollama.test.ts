@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadOllamaProviders } from "../src/config.js";
-import { OllamaProvider } from "../src/providers/ollama.js";
+import { OllamaProvider, parseInlineToolCalls } from "../src/providers/ollama.js";
+import type { ToolDeclaration } from "../src/tools/types.js";
 
 describe("OllamaProvider", () => {
   it("retries with an installed same-family tag when the configured tag 404s", async () => {
@@ -85,6 +86,40 @@ describe("OllamaProvider", () => {
     expect(calls[2]!.body.model).toBe("deepseek-r1:32b-qwen-distill-q4_K_M");
   });
 
+  it("parses inline tool calls when the model emits them in completeWithTools content", async () => {
+    // qwen2.5-coder emits the call as JSON text in `content`, not in `tool_calls`.
+    const fetchImpl = (async (url: string) => {
+      if (url.endsWith("/api/chat")) {
+        return Response.json({
+          message: {
+            content: '{\n  "name": "bash",\n  "arguments": {\n    "command": "mkdir testing_website"\n  }\n}',
+            tool_calls: [],
+          },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const provider = new OllamaProvider({
+      id: "ollama:qwen2.5-coder",
+      model: "qwen2.5-coder:14b",
+      fetchImpl,
+    });
+
+    const tools: ToolDeclaration[] = [
+      {
+        name: "bash",
+        description: "run a shell command",
+        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      },
+    ];
+    const result = await provider.completeWithTools([{ kind: "user_text", text: "make a folder" }], tools);
+    expect(result.kind).toBe("calls");
+    if (result.kind === "calls") {
+      expect(result.calls).toEqual([{ name: "bash", args: { command: "mkdir testing_website" } }]);
+    }
+  });
+
   it("does not alias a requested 14b model to an installed 32b model", async () => {
     const calls: Array<{ url: string; body?: any }> = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -115,6 +150,58 @@ describe("OllamaProvider", () => {
       "http://localhost:11434/api/chat",
       "http://localhost:11434/api/tags",
     ]);
+  });
+});
+
+describe("parseInlineToolCalls", () => {
+  const offered = new Set(["bash", "read_file"]);
+
+  it("parses a bare {name, arguments} object", () => {
+    const calls = parseInlineToolCalls('{"name":"bash","arguments":{"command":"ls"}}', offered);
+    expect(calls).toEqual([{ name: "bash", args: { command: "ls" } }]);
+  });
+
+  it("parses a fenced ```json block", () => {
+    const calls = parseInlineToolCalls('```json\n{"name":"bash","arguments":{"command":"ls"}}\n```', offered);
+    expect(calls).toEqual([{ name: "bash", args: { command: "ls" } }]);
+  });
+
+  it("accepts the {name, parameters} and {tool, args} shapes", () => {
+    expect(parseInlineToolCalls('{"name":"bash","parameters":{"command":"pwd"}}', offered)).toEqual([
+      { name: "bash", args: { command: "pwd" } },
+    ]);
+    expect(parseInlineToolCalls('{"tool":"read_file","args":{"path":"a.txt"}}', offered)).toEqual([
+      { name: "read_file", args: { path: "a.txt" } },
+    ]);
+  });
+
+  it("parses an OpenAI-style {function:{name,arguments}} with stringified args", () => {
+    const calls = parseInlineToolCalls('{"function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}', offered);
+    expect(calls).toEqual([{ name: "bash", args: { command: "ls" } }]);
+  });
+
+  it("ignores JSON that names a tool we did not offer", () => {
+    expect(parseInlineToolCalls('{"name":"rm_rf","arguments":{}}', offered)).toEqual([]);
+  });
+
+  it("returns [] for plain prose with no tool JSON", () => {
+    expect(parseInlineToolCalls("To make a folder, run mkdir testing_website.", offered)).toEqual([]);
+  });
+
+  it("parses an array of calls", () => {
+    const calls = parseInlineToolCalls(
+      '[{"name":"bash","arguments":{"command":"ls"}},{"name":"read_file","arguments":{"path":"a"}}]',
+      offered,
+    );
+    expect(calls).toEqual([
+      { name: "bash", args: { command: "ls" } },
+      { name: "read_file", args: { path: "a" } },
+    ]);
+  });
+
+  it("does not choke on braces inside string literals", () => {
+    const calls = parseInlineToolCalls('{"name":"bash","arguments":{"command":"echo {hi}"}}', offered);
+    expect(calls).toEqual([{ name: "bash", args: { command: "echo {hi}" } }]);
   });
 });
 
