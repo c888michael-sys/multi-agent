@@ -180,6 +180,11 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     }).catch((err) => {
       console.error(`[goal] ${session.goalId} runner error:`, err);
+      if (session.status === "running") {
+        session.status = "failed";
+        goalStore.save(session);
+        notifyGoal(session.goalId, { kind: "goal-error", error: (err as Error).message ?? String(err) });
+      }
     });
   }
 
@@ -725,18 +730,23 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             res.write(`data: ${JSON.stringify({ kind: "goal-state", session })}\n\n`);
           }
 
+          const removeFromListeners = () => {
+            goalListeners.get(goalId)?.delete(send);
+            if (goalListeners.get(goalId)?.size === 0) goalListeners.delete(goalId);
+          };
           const send = (evt: GoalProgress) => {
+            if (res.destroyed) return;
             res.write(`data: ${JSON.stringify(evt)}\n\n`);
+            if (evt.kind === "goal-done" || evt.kind === "goal-error") {
+              removeFromListeners();
+              res.end();
+            }
           };
           if (!goalListeners.has(goalId)) goalListeners.set(goalId, new Set());
           goalListeners.get(goalId)!.add(send);
 
-          const cleanupListener = () => {
-            goalListeners.get(goalId)?.delete(send);
-            if (goalListeners.get(goalId)?.size === 0) goalListeners.delete(goalId);
-          };
-          req.on("close", cleanupListener);
-          res.on("close", cleanupListener);
+          req.on("close", removeFromListeners);
+          res.on("close", removeFromListeners);
           return;
         }
 

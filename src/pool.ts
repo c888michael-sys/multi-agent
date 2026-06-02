@@ -274,7 +274,7 @@ export class ProviderPool {
         );
         snap.rpdSource = "live";
         if (snap.liveQuotaFetchedAt === undefined) snap.liveQuotaFetchedAt = live.fetchedAt;
-      } else if (e.estimatedDailyBudget !== undefined) {
+      } else if (e.estimatedDailyBudget !== undefined && e.estimatedDailyBudget > 0) {
         snap.estimatedDailyBudget = e.estimatedDailyBudget;
         snap.remainingPct = Math.max(
           0,
