@@ -535,7 +535,20 @@ Output ONLY the summary, no preamble.`;
     }
 
     const MAX_ITERATIONS = 10;
-    const workingHistory = [...history];
+    // Inject a tool-use directive so the model knows it must call tools
+    // rather than describe the solution. Without this, models in chat context
+    // default to explaining rather than executing.
+    const toolNames = this.toolDecls.map((t) => t.name).join(", ");
+    const workingHistory: ConversationPart[] = [
+      ...history,
+      {
+        kind: "user_text",
+        text:
+          `[TOOL DIRECTIVE: You have these tools available: ${toolNames}. ` +
+          `You MUST call the appropriate tool to complete this task — do NOT describe or explain what you would do. ` +
+          `Execute it now using a tool call.]`,
+      },
+    ];
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       const result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, opts);
@@ -715,7 +728,16 @@ Output ONLY the summary, no preamble.`;
     opts: CompleteOptions,
     emit: (evt: ChatProgressEvent) => void,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: ChatPlan }> {
-    const workflow = await runMultiAgentWorkflow(userInput, {
+    // When tools are registered, tell the planner so it routes file/shell/code
+    // tasks to action-code (which has tool access) rather than action-structural.
+    const toolNames = this.toolDecls.map((t) => t.name).join(", ");
+    const taskForPlanner =
+      this.toolDecls.length > 0
+        ? `${userInput}\n\n[Planning note: action-code has direct tool access (${toolNames}). ` +
+          `Assign file system operations, shell commands, running code, and any task that requires ` +
+          `actual execution to action-code — not action-structural.]`
+        : userInput;
+    const workflow = await runMultiAgentWorkflow(taskForPlanner, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
         this.runWithToolLoop(role, this.historyWithFraming(role, prompt), opts),
