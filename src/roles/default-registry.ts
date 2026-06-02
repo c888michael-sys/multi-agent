@@ -1,4 +1,5 @@
 import type { RoleConfig } from "./types.js";
+import { OPENROUTER_REASONING_PROVIDER_ID } from "../models/reasoning-model-overrides.js";
 
 /**
  * Default role-to-provider mapping. Each role lists candidate providers in
@@ -12,7 +13,7 @@ import type { RoleConfig } from "./types.js";
  * Provider id convention:
  *   - Gemini accounts: `gemini:1`, `gemini:2`, `gemini:3`, ...
  *   - Other providers: `<provider>:<short-model-name>`
- *     e.g., `groq:llama-70b`, `openrouter:qwen3.6-plus-preview`,
+ *     e.g., `groq:llama-70b`, `openrouter:reasoning`,
  *     `mistral:codestral`, `cerebras:gpt-oss-120b`.
  *
  * This file is the single source of truth for role configuration. Adding a new
@@ -103,10 +104,9 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     description:
       "Plan-of-attack, hard decisions, deliberation. Highest-effort thinking mode.",
     candidates: [
-      // Primary: Qwen 3.6 Plus Preview on OpenRouter — free preview model,
-      // strong hybrid architecture covering both coding and non-coding
-      // deliberation. Independent quota pool from the Gemini slots.
-      { providerId: "openrouter:qwen3.6-plus-preview" },
+      // Primary: selected OpenRouter free text model. Defaults to Qwen3-Next
+      // 80B, but the model slug can be changed without touching fallbacks.
+      { providerId: OPENROUTER_REASONING_PROVIDER_ID },
       // Secondary: Gemini 3.5 Flash with `thinking=high` — extended reasoning.
       // Two keys (gemini:1, gemini:2) shared with orchestration.
       ...GEMINI_FLASH_SHARED.map((c) => ({ ...c, mode: { thinking: "high" as const } })),
@@ -126,9 +126,9 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       // Routing decisions are short, frequent, and don't need extended
       // reasoning — Flash defaults are the right shape.
       ...GEMINI_FLASH_SHARED,
-      // Backup: Qwen 3.6 Plus Preview for when both Gemini Flash slots are
-      // cooled. Same provider id as the reasoning primary.
-      { providerId: "openrouter:qwen3.6-plus-preview" },
+      // Backup: the selected OpenRouter reasoning model for when both Gemini
+      // Flash slots are cooled. Same provider id as the reasoning primary.
+      { providerId: OPENROUTER_REASONING_PROVIDER_ID },
       // Safety net: Gemma 4.
       ...GEMMA_FALLBACK,
     ],

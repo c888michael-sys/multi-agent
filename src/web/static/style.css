@@ -145,6 +145,17 @@
   box-shadow: 0 0 8px var(--accent-soft);
   animation: mmpulse 2.4s ease-in-out infinite;
 }
+.mm-status.warn {
+  border-color: oklch(0.70 0.12 60 / 0.55);
+  color: oklch(0.84 0.09 75);
+}
+.mm-status.warn i {
+  background: oklch(0.78 0.13 70);
+  box-shadow: 0 0 8px oklch(0.78 0.13 70 / 0.35);
+}
+.mm-status.local {
+  border-color: oklch(0.70 0.10 165 / 0.45);
+}
 @keyframes mmpulse { 50% { opacity: 0.35; } }
 
 /* ── Sidebar ─────────────────────────────────────────── */
@@ -3018,6 +3029,12 @@
 .mm-settings-row-select {
   gap: 8px;
 }
+.mm-settings-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
 .mm-settings-row-instructions {
   gap: 12px;
 }
@@ -3116,6 +3133,10 @@
   border-color: var(--accent-soft);
   color: var(--mm-fg);
   background: rgba(255, 255, 255, 0.03);
+}
+.mm-settings-reset:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* Nav header extensions — positioning container for brand / status,

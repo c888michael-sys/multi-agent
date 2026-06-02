@@ -109,6 +109,10 @@ import { MistralProvider } from "./providers/mistral.js";
 import { OllamaProvider } from "./providers/ollama.js";
 import type { Provider } from "./provider.js";
 import type { ProviderConfig } from "./pool.js";
+import {
+  OPENROUTER_REASONING_PROVIDER_ID,
+  readReasoningModelOverride,
+} from "./models/reasoning-model-overrides.js";
 
 /**
  * Local Ollama models we wire by default when --local is enabled.
@@ -169,7 +173,7 @@ export const LOCAL_OLLAMA_MODELS = {
 /**
  * Build the locally-hosted Ollama providers used by the hybrid mode.
  * Each is registered with a unique provider id so the role registry
- * can target them individually (e.g. `ollama:deepseek-r1` for reasoning,
+ * can target them individually (e.g. `ollama:qwen3.5-9b` for reasoning,
  * `ollama:qwen2.5-coder` for action-code). The base URL defaults to
  * http://localhost:11434 but can be overridden via OLLAMA_HOST env var
  * (useful if Ollama runs on another machine on the LAN).
@@ -390,11 +394,13 @@ export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provi
   if (!key) return [];
   return [
     new OpenRouterProvider({
-      id: "openrouter:qwen3-next-80b",
+      id: OPENROUTER_REASONING_PROVIDER_ID,
       apiKey: key,
       appName: "multi-agent",
       appUrl: "https://github.com/c888michael-sys/multi-agent",
-      ...(opts?.model && { model: opts.model }),
+      ...(opts?.model
+        ? { model: opts.model }
+        : { modelResolver: () => readReasoningModelOverride().model }),
     }),
   ];
 }

@@ -81,12 +81,39 @@ describe("OpenRouterProvider.complete", () => {
       },
     );
     const p = new OpenRouterProvider({
-      id: "openrouter:qwen3-next-80b",
+      id: "openrouter:reasoning",
       apiKey: "k",
       fetchImpl: f as typeof fetch,
     });
     await p.complete("hi");
     expect((sentBody as { model: string }).model).toBe("qwen/qwen3-next-80b-a3b-instruct:free");
+  });
+
+  it("uses a dynamic model resolver for each request", async () => {
+    let currentModel = "first/free:free";
+    const sentModels: string[] = [];
+    const f = fakeFetch(
+      200,
+      { choices: [{ message: { content: "x" } }] },
+      {},
+      (_url, init) => {
+        const body = init?.body ? JSON.parse(init.body as string) : undefined;
+        sentModels.push((body as { model: string }).model);
+      },
+    );
+    const p = new OpenRouterProvider({
+      id: "openrouter:reasoning",
+      apiKey: "k",
+      modelResolver: () => currentModel,
+      fetchImpl: f as typeof fetch,
+    });
+
+    await p.complete("one");
+    currentModel = "second/free:free";
+    await p.complete("two");
+
+    expect(sentModels).toEqual(["first/free:free", "second/free:free"]);
+    expect(p.model).toBe("second/free:free");
   });
 
   it("throws OpenAICompatError on non-2xx response", async () => {

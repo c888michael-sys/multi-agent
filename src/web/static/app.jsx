@@ -346,6 +346,53 @@ function isLocalProvider(id) {
   return typeof id === 'string' && id.startsWith('ollama:');
 }
 
+function SystemStatus({ useLocal }) {
+  const { usage } = useUsage(undefined, useLocal);
+  const roles = usage.roles || {};
+  if (Object.keys(roles).length === 0) {
+    return (
+      <div className={'mm-status' + (useLocal ? ' local' : '')} title="Waiting for usage snapshot">
+        <i />{useLocal ? 'HYBRID SYNCING' : 'ROLES SYNCING'}
+      </div>
+    );
+  }
+
+  const total = MM_AGENTS.length;
+  let unavailable = 0;
+  let cooling = 0;
+  let fallback = 0;
+
+  for (const a of MM_AGENTS) {
+    const role = roles[a.id];
+    if (!role || role.registered === false || role.status === 'unavailable') {
+      unavailable++;
+    } else if (role.status === 'temporarily-unavailable' || role.cooling) {
+      cooling++;
+    } else if (role.fallback) {
+      fallback++;
+    }
+  }
+
+  const ready = Math.max(0, total - unavailable - cooling);
+  const degraded = unavailable > 0 || cooling > 0 || fallback > 0;
+  const label = useLocal
+    ? `HYBRID ${ready}/${total} READY`
+    : `${ready}/${total} ROLES READY`;
+  const titleParts = [];
+  if (fallback) titleParts.push(`${fallback} on fallback`);
+  if (cooling) titleParts.push(`${cooling} cooling`);
+  if (unavailable) titleParts.push(`${unavailable} unavailable`);
+
+  return (
+    <div
+      className={'mm-status' + (degraded ? ' warn' : '') + (useLocal ? ' local' : '')}
+      title={titleParts.length ? titleParts.join(', ') : 'All visible roles have a ready provider'}
+    >
+      <i />{label}
+    </div>
+  );
+}
+
 // QuotaBanner — one-line strip above the composer that warns when any
 // role drops below 10 % remaining, falls back, becomes temporarily
 // unavailable, or the conservation pool flips to serial mode. Renders
@@ -467,6 +514,13 @@ function normalizeRoleInstructionPayload(value) {
   };
 }
 
+function reasoningModelLabel(model) {
+  if (!model) return 'unknown';
+  const ctx = model.contextLength ? ` · ${CompactNumber(model.contextLength)} ctx` : '';
+  const tag = model.reasoningCapable ? ' · reasoning' : '';
+  return `${model.name || model.id}${tag}${ctx}`;
+}
+
 function SettingsDrawer({ open, onClose, settings, onChange }) {
   const drawerRef = React.useRef(null);
   // Hybrid-mode health gate. When the user toggles 'Hybrid local models'
@@ -481,6 +535,10 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
   const [roleInstructionsPath, setRoleInstructionsPath] = React.useState('');
   const [roleInstructionsStatus, setRoleInstructionsStatus] = React.useState('');
   const [roleInstructionsSaving, setRoleInstructionsSaving] = React.useState(false);
+  const [reasoningModels, setReasoningModels] = React.useState([]);
+  const [reasoningSelected, setReasoningSelected] = React.useState(null);
+  const [reasoningModelStatus, setReasoningModelStatus] = React.useState('');
+  const [reasoningModelsLoading, setReasoningModelsLoading] = React.useState(false);
   // Close on Escape so the drawer doesn't trap focus.
   React.useEffect(() => {
     if (!open) return;
@@ -510,6 +568,30 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
       });
     return () => { cancelled = true; };
   }, [open]);
+
+  const loadReasoningModels = React.useCallback(async (refresh = false) => {
+    setReasoningModelsLoading(true);
+    setReasoningModelStatus(refresh ? 'refreshing...' : 'loading...');
+    try {
+      const res = await fetch(`/api/reasoning-models${refresh ? '?refresh=1' : ''}`);
+      const payload = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      setReasoningModels(Array.isArray(payload.models) ? payload.models : []);
+      setReasoningSelected(payload.selected || null);
+      const source = payload.source || 'unknown';
+      setReasoningModelStatus(`${source}${payload.stale ? ' stale' : ''} · ${(payload.models || []).length} free text models`);
+    } catch (err) {
+      setReasoningModelStatus(`Could not load OpenRouter models: ${err && err.message ? err.message : String(err)}`);
+      setReasoningModels([]);
+    } finally {
+      setReasoningModelsLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!open) return;
+    loadReasoningModels(false);
+  }, [open, loadReasoningModels]);
 
   const onToggleLocal = async (e) => {
     const wantsOn = e.target.checked;
@@ -574,6 +656,27 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     }
   };
 
+  const onReasoningModelChange = async (e) => {
+    const model = e.target.value;
+    setReasoningModelsLoading(true);
+    setReasoningModelStatus('saving...');
+    try {
+      const res = await fetch('/api/reasoning-model', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      const payload = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      setReasoningSelected(payload.selected || null);
+      setReasoningModelStatus('saved - next reasoning call will use this model');
+    } catch (err) {
+      setReasoningModelStatus(`Save failed: ${err && err.message ? err.message : String(err)}`);
+    } finally {
+      setReasoningModelsLoading(false);
+    }
+  };
+
   return (
     <>
       <div
@@ -613,6 +716,36 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                 ) : null}
               </span>
             </label>
+          </div>
+          <div className="mm-settings-row mm-settings-row-select">
+            <span className="mm-settings-name">Reasoning model</span>
+            <div className="mm-settings-inline">
+              <select
+                className="mm-settings-select"
+                value={reasoningSelected?.model || ''}
+                disabled={reasoningModelsLoading || reasoningModels.length === 0}
+                onChange={onReasoningModelChange}
+              >
+                {reasoningSelected && !reasoningModels.some((m) => m.id === reasoningSelected.model) ? (
+                  <option value={reasoningSelected.model}>{reasoningSelected.model} (selected)</option>
+                ) : null}
+                {reasoningModels.map((m) => (
+                  <option key={m.id} value={m.id}>{reasoningModelLabel(m)}</option>
+                ))}
+              </select>
+              <button
+                className="mm-settings-reset"
+                type="button"
+                onClick={() => loadReasoningModels(true)}
+                disabled={reasoningModelsLoading}
+              >
+                refresh
+              </button>
+            </div>
+            <span className="mm-settings-hint">
+              OpenRouter free text models only. General chat models are included; audio, image, embedding, rerank, and expired speciality models are filtered out. Gemini and Gemma remain the fallback chain.
+            </span>
+            {reasoningModelStatus ? <span className="mm-settings-hint">{reasoningModelStatus}</span> : null}
           </div>
           <div className="mm-settings-row">
             <label className="mm-settings-label">
@@ -823,7 +956,7 @@ function Sidebar({ phase, latestResponse, open, useLocal }) {
                 ' status-' + status.replace(/\s+/g, '-')
               }
               style={{ '--c': a.color }}
-              title={role.providerId ? `${role.providerId}${role.fallback ? ' (fallback)' : ''}` : 'No provider registered'}
+              title={role.providerId ? `${role.providerId}${role.model ? ' · ' + role.model : ''}${role.fallback ? ' (fallback)' : ''}` : 'No provider registered'}
             >
               <span className="dot" />
               <span className="name">{a.name.toLowerCase()}<span className="ext">.agent</span></span>
@@ -883,14 +1016,14 @@ function Sidebar({ phase, latestResponse, open, useLocal }) {
               }
               style={{ '--c': a.color }}
               title={role?.providerId
-                ? `${role.providerId}${role.fallback ? ' (fallback)' : ''}${localRow ? ' — local Ollama daemon' : ''}`
+                ? `${role.providerId}${role.model ? ' · ' + role.model : ''}${role.fallback ? ' (fallback)' : ''}${localRow ? ' — local Ollama daemon' : ''}`
                 : 'No provider registered'}
             >
               <div className="mm-rate-head">
                 <span className="mm-rate-label">{a.name.toLowerCase()}</span>
                 {isCooling
                   ? <span className="mm-rate-cooling">cooling {formatCountdown(liveCooldownMs)}</span>
-                  : <span className="mm-rate-provider">{role?.providerId || 'n/a'}{role?.fallback && !localRow ? ' ⤳' : ''}</span>}
+                  : <span className="mm-rate-provider">{role?.model || role?.providerId || 'n/a'}{role?.fallback && !localRow ? ' ⤳' : ''}</span>}
               </div>
               <div className="mm-rate-gauges">
                 <div
@@ -2955,10 +3088,14 @@ function routingValueFromSettings(s) {
 const VALID_FORCE_ROLES = new Set(['auto', 'orchestration', 'perception', 'reasoning', 'action-code', 'action-structural', 'action-repetitive']);
 const VALID_ROUTING_MODES = new Set(['smart', 'round-robin', 'multi-agent', 'brainstorming']);
 
+function runtimeDefaultUseLocal() {
+  return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.defaultUseLocal === true;
+}
+
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_LS_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS };
+    if (!raw) return { ...DEFAULT_SETTINGS, useLocal: runtimeDefaultUseLocal() };
     const parsed = JSON.parse(raw);
     return {
       serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
@@ -2968,7 +3105,7 @@ function loadSettings() {
       routingMode: VALID_ROUTING_MODES.has(parsed.routingMode) ? parsed.routingMode : DEFAULT_SETTINGS.routingMode,
     };
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, useLocal: runtimeDefaultUseLocal() };
   }
 }
 function saveSettings(s) {
@@ -4420,7 +4557,7 @@ function HeroMindmap() {
           Lattice
         </div>
         <div className="mm-nav-right">
-          <div className="mm-status"><i />5/5 AGENTS ONLINE</div>
+          <SystemStatus useLocal={settings.useLocal} />
           <button
             className={'mm-nav-sessions' + (sessionsOpen ? ' open' : '')}
             onClick={() => setSessionsOpen(true)}

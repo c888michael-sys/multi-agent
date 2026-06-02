@@ -37,6 +37,7 @@ import {
   formatUsageReport,
   attachConservationPolicy,
   FileStateStore,
+  InMemoryStateStore,
   FileTools,
   BashTool,
   WebSearchTool,
@@ -58,6 +59,13 @@ import {
   type RoleEvent,
   type RoutingMode,
 } from "./index.js";
+import { listOpenRouterFreeTextModels } from "./models/openrouter-models.js";
+import {
+  DEFAULT_OPENROUTER_REASONING_MODEL,
+  readReasoningModelOverride,
+  resetReasoningModelOverride,
+  writeReasoningModelOverride,
+} from "./models/reasoning-model-overrides.js";
 
 /** Stderr warning printer for role-resolution events. */
 function printRoleEvent(e: RoleEvent): void {
@@ -90,7 +98,7 @@ const VALID_ROLES: RoleName[] = [
 
 const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
 
-function buildRouter(opts?: { local?: boolean }): Router {
+function buildRouter(opts?: { local?: boolean; persistentState?: boolean }): Router {
   const configs = loadAllProviderConfigsFromEnv();
   if (opts?.local) {
     for (const p of loadOllamaProviders()) {
@@ -104,7 +112,9 @@ function buildRouter(opts?: { local?: boolean }): Router {
     printEnvDoctor();
     process.exit(1);
   }
-  const router = new Router(configs, { stateStore: new FileStateStore() });
+  const stateStore =
+    opts?.persistentState === false ? new InMemoryStateStore() : new FileStateStore();
+  const router = new Router(configs, { stateStore });
   // ConservationPolicy auto-ticks after every successful call. With
   // ProviderConfig budgets now wired, this drives the sidebar's quota
   // gauges and the round-robin → serial mode flip in real time.
@@ -300,7 +310,7 @@ function truncateOneLine(text: string, max = 140): string {
 }
 
 function routeMap(label: string, local: boolean): void {
-  const router = buildRouter({ local });
+  const router = buildRouter({ local, persistentState: false });
   const resolver = new RoleResolver(router, rolesFor(local));
   const snap = router.snapshot();
   const byId = new Map(snap.map((p) => [p.id, p]));
@@ -314,14 +324,85 @@ function routeMap(label: string, local: boolean): void {
     const registered = role.candidates.filter((c) => registeredIds.has(c.providerId));
     const ready = registered.find((c) => (byId.get(c.providerId)?.cooldownUntil ?? 0) <= now);
     const selected = ready?.providerId ?? registered[0]?.providerId ?? "(unavailable)";
+    const selectedModel = byId.get(selected)?.model;
     let status = "primary";
     if (selected === "(unavailable)") status = "unavailable";
     else if (selected !== primary) status = "fallback-ready";
     else if (!ready && registered.length > 0) status = "primary-cooling";
     console.log(
-      `${role.name.padEnd(19)} primary=${primary.padEnd(28)} selected=${selected.padEnd(28)} status=${status}`,
+      `${role.name.padEnd(19)} primary=${primary.padEnd(28)} selected=${selected.padEnd(28)}${selectedModel ? ` model=${selectedModel}` : ""} status=${status}`,
     );
   }
+}
+
+async function cmdModels(subArgs: string[]): Promise<void> {
+  const role = subArgs[0] ?? "reasoning";
+  if (role !== "reasoning") {
+    console.error("usage: models reasoning <get|list|refresh|set|reset>");
+    console.error("Only the reasoning role is customisable right now.");
+    process.exit(2);
+  }
+
+  const action = subArgs[1] ?? "get";
+  if (action === "get") {
+    const current = readReasoningModelOverride();
+    console.log(`reasoning OpenRouter model: ${current.model}${current.isDefault ? " (default)" : ""}`);
+    return;
+  }
+
+  if (action === "reset") {
+    const current = resetReasoningModelOverride();
+    console.log(`reasoning OpenRouter model reset to ${current.model}`);
+    return;
+  }
+
+  if (action === "list" || action === "refresh") {
+    const result = await listOpenRouterFreeTextModels({
+      apiKey: (process.env.OPENROUTER_KEY ?? "").trim() || undefined,
+      refresh: action === "refresh",
+    });
+    const current = readReasoningModelOverride();
+    console.log(
+      `OpenRouter free text models (${result.source}${result.stale ? ", stale cache" : ""}):`,
+    );
+    for (const model of result.models) {
+      const marker = model.id === current.model ? "*" : " ";
+      const reasoning = model.reasoningCapable ? " reasoning" : "";
+      const ctx = model.contextLength > 0 ? ` ctx=${model.contextLength}` : "";
+      console.log(`${marker} ${model.id}${reasoning}${ctx} - ${model.name}`);
+    }
+    return;
+  }
+
+  if (action === "set") {
+    const modelId = subArgs[2];
+    if (!modelId) {
+      console.error("usage: models reasoning set <openrouter-free-model-id>");
+      process.exit(2);
+    }
+    const result = await listOpenRouterFreeTextModels({
+      apiKey: (process.env.OPENROUTER_KEY ?? "").trim() || undefined,
+    });
+    const option = result.models.find((m) => m.id === modelId);
+    if (!option) {
+      console.error(`Error: '${modelId}' is not in the current OpenRouter free text-model list.`);
+      console.error("Run `models reasoning refresh` to update the list.");
+      process.exit(1);
+    }
+    const current = writeReasoningModelOverride(undefined, {
+      model: option.id,
+      name: option.name,
+      contextLength: option.contextLength,
+      reasoningCapable: option.reasoningCapable,
+    });
+    const fallback = DEFAULT_OPENROUTER_REASONING_MODEL === current.model ? " (default)" : "";
+    console.log(`reasoning OpenRouter model set to ${current.model}${fallback}`);
+    return;
+  }
+
+  console.error(`unknown models action: ${action}`);
+  console.error("usage: models reasoning <get|list|refresh|set|reset>");
+  process.exit(2);
 }
 
 async function printOllamaHealth(): Promise<void> {
@@ -477,6 +558,7 @@ async function cmdServe(port: number, local: boolean, projectRoot?: string): Pro
     resolver,
     localResolver,
     cloudResolver,
+    defaultUseLocal: local,
     port,
     projectRoot,
   });
@@ -565,6 +647,13 @@ Commands:
     remove <name|id>       remove a project (last project cannot be removed)
     pin <rel-path>         pin a file in the active project (root-relative)
     unpin                  clear the pinned file
+  models reasoning <cmd>   inspect or change the reasoning role's primary
+                           OpenRouter free text model. Commands:
+    get                    show selected reasoning model
+    list                   show cached/live free text models
+    refresh                refresh model list from OpenRouter
+    set <model-id>         select a free OpenRouter text model
+    reset                  restore Qwen3-Next default
 
 Flags for 'task':
   --mode=auto|multi-agent|brainstorming
@@ -763,6 +852,11 @@ async function main(): Promise<void> {
 
   if (command === "project") {
     cmdProject(argv.slice(1));
+    return;
+  }
+
+  if (command === "models") {
+    await cmdModels(argv.slice(1));
     return;
   }
 

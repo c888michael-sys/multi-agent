@@ -27,6 +27,8 @@ export interface OpenRouterProviderOptions {
    * other OpenRouter slug.
    */
   model?: string;
+  /** Optional dynamic model resolver. Used by the web dropdown so changes apply on the next call. */
+  modelResolver?: () => string;
   /** Optional attribution headers — OpenRouter uses these for analytics; not required. */
   appName?: string;
   appUrl?: string;
@@ -43,7 +45,8 @@ export interface OpenRouterProviderOptions {
  */
 export class OpenRouterProvider implements Provider {
   readonly id: string;
-  readonly model: string;
+  private readonly defaultModel: string;
+  private readonly modelResolver?: () => string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
@@ -53,13 +56,19 @@ export class OpenRouterProvider implements Provider {
 
   constructor(opts: OpenRouterProviderOptions) {
     this.id = opts.id;
-    this.model = opts.model ?? "qwen/qwen3-next-80b-a3b-instruct:free";
+    this.defaultModel = opts.model ?? "qwen/qwen3-next-80b-a3b-instruct:free";
+    if (opts.modelResolver) this.modelResolver = opts.modelResolver;
     this.apiKey = opts.apiKey;
     this.baseUrl = opts.baseUrl ?? "https://openrouter.ai/api/v1";
     this.extraHeaders = {};
     if (opts.appUrl) this.extraHeaders["HTTP-Referer"] = opts.appUrl;
     if (opts.appName) this.extraHeaders["X-Title"] = opts.appName;
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
+  }
+
+  get model(): string {
+    const resolved = this.modelResolver?.().trim();
+    return resolved || this.defaultModel;
   }
 
   /** Builds the chatCompletion args + onHeaders callback once. */

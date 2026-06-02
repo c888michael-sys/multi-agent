@@ -18,6 +18,7 @@ import type { ConversationPart } from "../src/tools/types.js";
 // ── Test doubles ─────────────────────────────────────────────────────────
 type Snap = {
   id: string;
+  model?: string;
   cooldownUntil: number;
   successCount: number;
   rateLimitCount: number;
@@ -77,10 +78,14 @@ describe("web server", () => {
   let handles: Array<{ close: () => void }> = [];
   let sessionDir: string;
   let roleInstructionsPath: string;
+  let originalOverridePath: string | undefined;
+  let originalModelCachePath: string | undefined;
 
   beforeEach(() => {
     sessionDir = mkdtempSync(join(tmpdir(), "multi-agent-web-sessions-"));
     roleInstructionsPath = join(sessionDir, "role-instructions.json");
+    originalOverridePath = process.env.MULTI_AGENT_MODEL_OVERRIDES;
+    originalModelCachePath = process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE;
   });
 
   afterEach(() => {
@@ -89,6 +94,10 @@ describe("web server", () => {
     }
     handles = [];
     rmSync(sessionDir, { recursive: true, force: true });
+    if (originalOverridePath === undefined) delete process.env.MULTI_AGENT_MODEL_OVERRIDES;
+    else process.env.MULTI_AGENT_MODEL_OVERRIDES = originalOverridePath;
+    if (originalModelCachePath === undefined) delete process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE;
+    else process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE = originalModelCachePath;
   });
 
   function spawn(opts: { snap?: Snap[]; handler?: (name: string, prompt: string) => Promise<string> } = {}) {
@@ -170,7 +179,7 @@ describe("web server", () => {
     expect(j.roles.orchestration.providerId).toBe("gemini:1");
     expect(j.roles.orchestration.successCount).toBe(3);
     expect(j.roles["action-structural"].providerId).toBe("groq:llama-70b");
-    // Reasoning's primary is openrouter:qwen3.6-plus-preview, which is absent
+    // Reasoning's primary is openrouter:reasoning, which is absent
     // from this test's mock snapshot, so the resolver falls back to gemini:1.
     expect(j.roles.reasoning.providerId).toBe("gemini:1");
     expect(j.roles.reasoning.fallback).toBe(true);
@@ -180,7 +189,7 @@ describe("web server", () => {
     const future = Date.now() + 60_000;
     const { url } = spawn({
       snap: [
-        { id: "openrouter:qwen3.6-plus-preview", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
+        { id: "openrouter:reasoning", model: "qwen/qwen3-next-80b-a3b-instruct:free", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
         { id: "gemini:1", cooldownUntil: future, successCount: 3, rateLimitCount: 1, remainingPct: 75 },
         { id: "gemini:2", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
         { id: "gemini:3", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
@@ -553,6 +562,62 @@ describe("web server", () => {
 
     const raw = JSON.parse(readFileSync(roleInstructionsPath, "utf8"));
     expect(raw.global).toBe("Use direct language.");
+  });
+
+  it("/api/reasoning-models lists cached OpenRouter free models and persists the selection", async () => {
+    const overridesPath = join(sessionDir, "model-overrides.json");
+    const cachePath = join(sessionDir, "openrouter-free-models.json");
+    process.env.MULTI_AGENT_MODEL_OVERRIDES = overridesPath;
+    process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE = cachePath;
+    writeFileSync(
+      cachePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          fetchedAt: Date.now(),
+          models: [
+            {
+              id: "general/strong-chat:free",
+              name: "Strong Chat",
+              contextLength: 131072,
+              created: 2,
+              reasoningCapable: false,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const { url } = spawn({
+      snap: [
+        {
+          id: "openrouter:reasoning",
+          model: "qwen/qwen3-next-80b-a3b-instruct:free",
+          cooldownUntil: 0,
+          successCount: 0,
+          rateLimitCount: 0,
+          remainingPct: 100,
+        },
+      ],
+    });
+
+    const listed = await fetch(`${url}/api/reasoning-models`);
+    expect(listed.status).toBe(200);
+    const listedJson = await listed.json() as { models: Array<{ id: string }>; selected: { model: string } };
+    expect(listedJson.models.map((m) => m.id)).toContain("general/strong-chat:free");
+    expect(listedJson.selected.model).toBe("qwen/qwen3-next-80b-a3b-instruct:free");
+
+    const saved = await fetch(`${url}/api/reasoning-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "general/strong-chat:free" }),
+    });
+    expect(saved.status).toBe(200);
+    const savedJson = await saved.json() as { selected: { model: string } };
+    expect(savedJson.selected.model).toBe("general/strong-chat:free");
+    expect(readFileSync(overridesPath, "utf8")).toContain("general/strong-chat:free");
   });
 
   it("/api/chat loads role instructions from disk for web sessions", async () => {

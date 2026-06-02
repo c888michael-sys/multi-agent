@@ -176,10 +176,20 @@ describe("default role registry", () => {
     return buildDefaultRoles({ local }).find((r) => r.name === roleName)!.candidates.map((c) => c.providerId);
   }
 
+  it("uses OpenRouter Qwen 3.6 Plus as the cloud reasoning primary", () => {
+    expect(candidateIds("reasoning", false).slice(0, 5)).toEqual([
+      "openrouter:reasoning",
+      "gemini:1",
+      "gemini:2",
+      "gemma:1",
+      "gemma:2",
+    ]);
+  });
+
   it("hybrid mode only prepends Ollama to reasoning and action-code", () => {
     expect(candidateIds("reasoning", true)[0]).toBe("ollama:qwen3.5-9b");
     expect(candidateIds("action-code", true)[0]).toBe("ollama:qwen2.5-coder");
-    expect(candidateIds("reasoning", false)[0]).toBe("openrouter:qwen3.6-plus-preview");
+    expect(candidateIds("reasoning", false)[0]).toBe("openrouter:reasoning");
 
     expect(candidateIds("orchestration", true)[0]).toBe("gemini:1");
     expect(candidateIds("mindmap-categorize", true)[0]).toBe("gemini:1");

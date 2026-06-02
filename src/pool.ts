@@ -41,6 +41,8 @@ export type QuotaSource = "live" | "estimated";
 
 export interface ProviderSnapshot {
   id: string;
+  /** Concrete model slug currently used by this provider. */
+  model: string;
   /** Absolute timestamp (ms since epoch) when the provider becomes available. */
   cooldownUntil: number;
   /** Milliseconds until the provider is available; 0 if already available. */
@@ -152,7 +154,7 @@ export class ProviderPool {
    *
    * If `idAllowList` is provided, only providers whose id is in the list are
    * considered. Used by role-based routing to constrain calls to specific
-   * providers (e.g., reasoning role only wants the DeepSeek R1 provider).
+   * providers (e.g., reasoning role only wants the selected OpenRouter provider).
    */
   pickAvailable(idAllowList?: ReadonlySet<string>): PickResult | null {
     const t = this.now();
@@ -245,6 +247,7 @@ export class ProviderPool {
 
       const snap: ProviderSnapshot = {
         id: e.provider.id,
+        model: e.provider.model,
         cooldownUntil: e.cooldownUntil,
         cooldownMsRemaining: Math.max(0, e.cooldownUntil - t),
         successCount: e.successCount,

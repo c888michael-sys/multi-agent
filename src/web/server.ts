@@ -39,6 +39,15 @@ import {
   writeRoleInstructions,
 } from "../roles/instructions.js";
 import { LOCAL_OLLAMA_MODELS } from "../config.js";
+import {
+  listOpenRouterFreeTextModels,
+} from "../models/openrouter-models.js";
+import {
+  DEFAULT_OPENROUTER_REASONING_MODEL,
+  readReasoningModelOverride,
+  resetReasoningModelOverride,
+  writeReasoningModelOverride,
+} from "../models/reasoning-model-overrides.js";
 import type { CompleteOptions } from "../provider.js";
 import type { RoutingMode } from "../agents/multi-agent-workflow.js";
 import { GoalStore, newGoalId, type GoalSession } from "../goal/goal-session.js";
@@ -138,6 +147,8 @@ export interface ServerOptions {
   localResolver?: RoleResolver;
   /** Optional cloud-mode resolver. Selected per request when `useLocal: false`. */
   cloudResolver?: RoleResolver;
+  /** Initial browser setting for hybrid mode. User-local settings can override it. */
+  defaultUseLocal?: boolean;
   port?: number;
   /** When true, allow cross-origin requests (browsers from other origins). Default false. */
   cors?: boolean;
@@ -164,6 +175,20 @@ function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleRe
   if (useLocal === true && opts.localResolver) return opts.localResolver;
   if (useLocal === false && opts.cloudResolver) return opts.cloudResolver;
   return opts.resolver;
+}
+
+function runtimeConfig(opts: ServerOptions): {
+  defaultUseLocal: boolean;
+  localModels: Array<{ role: string; providerId: string; model: string }>;
+} {
+  return {
+    defaultUseLocal: opts.defaultUseLocal === true,
+    localModels: Object.entries(LOCAL_OLLAMA_MODELS).map(([role, model]) => ({
+      role,
+      providerId: model.providerId,
+      model: process.env[model.modelEnv]?.trim() || model.model,
+    })),
+  };
 }
 
 /** Allowed Origin values for state-changing file endpoints (localhost only). */
@@ -322,8 +347,10 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         sendJson(res, 200, {
           mode: opts.router.getMode(),
           useLocal,
+          runtime: runtimeConfig(opts),
           providers: snap.map((p) => ({
             id: p.id,
+            model: p.model,
             successCount: p.successCount,
             rateLimitCount: p.rateLimitCount,
             remainingPct: p.remainingPct ?? null,
@@ -598,6 +625,64 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         const path = roleInstructionsPath(opts);
         const instructions = writeRoleInstructions(path, parsed.instructions ?? parsed);
         sendJson(res, 200, { path, instructions });
+        return;
+      }
+
+      if (pathname === "/api/reasoning-models" && req.method === "GET") {
+        try {
+          const refresh = url.searchParams.get("refresh") === "1";
+          const key = (process.env.OPENROUTER_KEY ?? "").trim();
+          const result = await listOpenRouterFreeTextModels({
+            apiKey: key || undefined,
+            refresh,
+          });
+          sendJson(res, 200, {
+            selected: readReasoningModelOverride(),
+            defaultModel: DEFAULT_OPENROUTER_REASONING_MODEL,
+            models: result.models,
+            source: result.source,
+            fetchedAt: result.fetchedAt,
+            stale: result.stale,
+          });
+        } catch (err) {
+          sendJson(res, 502, { error: (err as Error).message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/reasoning-model" && req.method === "PUT") {
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { model?: string | null } | null;
+        if (parsed === null || !("model" in parsed)) {
+          sendJson(res, 400, { error: "model (string or null) required" });
+          return;
+        }
+        if (parsed.model === null || parsed.model === DEFAULT_OPENROUTER_REASONING_MODEL) {
+          sendJson(res, 200, { selected: resetReasoningModelOverride() });
+          return;
+        }
+        if (typeof parsed.model !== "string" || !parsed.model.trim()) {
+          sendJson(res, 400, { error: "model must be a non-empty string or null" });
+          return;
+        }
+        try {
+          const key = (process.env.OPENROUTER_KEY ?? "").trim();
+          const result = await listOpenRouterFreeTextModels({ apiKey: key || undefined });
+          const option = result.models.find((m) => m.id === parsed.model);
+          if (!option) {
+            sendJson(res, 400, { error: "model is not in the current OpenRouter free text-model list" });
+            return;
+          }
+          const selected = writeReasoningModelOverride(undefined, {
+            model: option.id,
+            name: option.name,
+            contextLength: option.contextLength,
+            reasoningCapable: option.reasoningCapable,
+          });
+          sendJson(res, 200, { selected });
+        } catch (err) {
+          sendJson(res, 502, { error: (err as Error).message });
+        }
         return;
       }
 
@@ -877,7 +962,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       // /api/goal/:id and /api/goal/:id/stream
       const goalIdMatch = pathname.match(/^\/api\/goal\/([^/]+)(\/stream)?$/);
       if (goalIdMatch) {
-        const goalId = goalIdMatch[1];
+        const goalId = goalIdMatch[1]!;
         const isStream = !!goalIdMatch[2];
 
         if (isStream && req.method === "GET") {
@@ -943,6 +1028,17 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         if (existsSync(full) && statSync(full).isFile()) {
+          if (filePath === "/index.html") {
+            const runtime = JSON.stringify(runtimeConfig(opts));
+            const body = readFileSync(full, "utf8").replace(
+              "</head>",
+              `<script>window.__MULTI_AGENT_RUNTIME__ = ${runtime};</script>\n</head>`,
+            );
+            res.setHeader("Content-Type", MIME[".html"]!);
+            res.statusCode = 200;
+            res.end(body);
+            return;
+          }
           const body = readFileSync(full);
           res.setHeader("Content-Type", MIME[extname(full).toLowerCase()] ?? "application/octet-stream");
           res.statusCode = 200;
@@ -1041,6 +1137,7 @@ function roleUsageSnapshot(
     const cooling = !ready;
     roles[role.name] = {
       providerId: picked.id,
+      model: picked.model,
       primaryProviderId: primaryId,
       registered: true,
       status: cooling ? "temporarily-unavailable" : "ready",
@@ -1059,6 +1156,7 @@ function roleUsageSnapshot(
       cooling,
       candidates: registered.map((p) => ({
         providerId: p.id,
+        model: p.model,
         cooling: p.cooldownMsRemaining > 0,
         cooldownMsRemaining: p.cooldownMsRemaining,
         remainingPct: p.remainingPct ?? null,
