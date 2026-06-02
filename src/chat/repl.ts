@@ -3,6 +3,13 @@ import type { Router } from "../router.js";
 import type { ChatSession } from "./session.js";
 import { startSpinner } from "./spinner.js";
 import type { RoutingMode } from "../agents/multi-agent-workflow.js";
+import {
+  getActiveProject,
+  listProjects,
+  removeProject,
+  setActiveProject,
+  setPinnedFile,
+} from "../project/store.js";
 
 export interface ReplOptions {
   session: ChatSession;
@@ -21,6 +28,11 @@ const HELP_TEXT = `Slash commands (accept / or \\ prefix):
   /info               show session id, turn count, token estimate, mode flags
   /usage              show provider usage snapshot
   /power [on|off]     toggle "powerful" mode (Gemini thinking=high every call)
+  /project            list all projects (* = active)
+  /project current    show active project details
+  /project use <n>    switch active project by name or id
+  /project pin <p>    pin a file (root-relative path) in the active project
+  /project unpin      clear the pinned file
   /help               show this help
   /exit (or 'exit')   leave the session (history persists to disk)`;
 
@@ -282,6 +294,58 @@ export class ChatRepl {
         }
         this.session.truncateToRecent(n);
         this.println(`kept the most recent ${n} turn(s).`);
+        return "continue";
+      }
+      case "/project": {
+        const sub = rest[0] ?? "list";
+        if (sub === "list" || sub === "") {
+          const projects = listProjects();
+          const active = getActiveProject();
+          for (const p of projects) {
+            const marker = p.id === active.id ? "* " : "  ";
+            const pin = p.pinnedFile ? ` [pinned: ${p.pinnedFile}]` : "";
+            this.println(`${marker}${p.name} (${p.id}) — ${p.root}${pin}`);
+          }
+        } else if (sub === "current") {
+          const p = getActiveProject();
+          const pin = p.pinnedFile ? `\npinned: ${p.pinnedFile}` : "";
+          this.println(`${p.name} (${p.id})\nroot: ${p.root}${pin}`);
+        } else if (sub === "use") {
+          const nameOrId = rest[1];
+          if (!nameOrId) {
+            this.println("usage: /project use <name|id>");
+          } else {
+            const projects = listProjects();
+            const found =
+              projects.find((p) => p.id === nameOrId) ??
+              projects.find((p) => p.name.toLowerCase() === nameOrId.toLowerCase());
+            if (!found) {
+              this.println(`no project matching '${nameOrId}'`);
+            } else {
+              setActiveProject(found.id);
+              this.println(`active project → '${found.name}' (${found.root})`);
+            }
+          }
+        } else if (sub === "pin") {
+          const relPath = rest[1];
+          if (!relPath) {
+            this.println("usage: /project pin <relative-path>");
+          } else {
+            const active = getActiveProject();
+            try {
+              setPinnedFile(active.id, relPath);
+              this.println(`pinned '${relPath}' for project '${active.name}'`);
+            } catch (err) {
+              this.println(`error: ${(err as Error).message}`);
+            }
+          }
+        } else if (sub === "unpin") {
+          const active = getActiveProject();
+          setPinnedFile(active.id, null);
+          this.println(`unpinned file for project '${active.name}'`);
+        } else {
+          this.println(`unknown /project subcommand: ${sub}. Options: list, current, use, pin, unpin`);
+        }
         return "continue";
       }
       case "/exit":

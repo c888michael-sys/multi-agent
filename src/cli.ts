@@ -18,6 +18,17 @@
 import { parseArgs } from "node:util";
 import { resolve as resolvePath } from "node:path";
 import {
+  addProject,
+  assertWithinAllowList,
+  getActiveProject,
+  listProjects,
+  removeProject,
+  resolveAllowList,
+  setActiveProject,
+  setPinnedFile,
+  type Project,
+} from "./project/store.js";
+import {
   Router,
   Agent,
   Controller,
@@ -444,7 +455,7 @@ async function cmdChat(
   await repl.run();
 }
 
-async function cmdServe(port: number, local: boolean): Promise<void> {
+async function cmdServe(port: number, local: boolean, projectRoot?: string): Promise<void> {
   // Always register Ollama providers at boot so the web UI's per-request
   // `useLocal` toggle has something to route to. If the local daemon
   // isn't running, calls just fail with a fetch error — same shape as
@@ -467,6 +478,7 @@ async function cmdServe(port: number, local: boolean): Promise<void> {
     localResolver,
     cloudResolver,
     port,
+    projectRoot,
   });
   console.log(`multi-agent web UI live at ${url}`);
   console.log(`open it in a browser. Ctrl+C to stop.`);
@@ -545,6 +557,14 @@ Commands:
   doctor                   print env/provider diagnostics without secret values
   diagnose-routing         print route maps, local/cloud health, and optional
                            live probes for every role
+  project [subcommand]     manage projects (root folders). Subcommands:
+    list                   list all projects (* = active)
+    current                show active project details
+    add <name> <path>      register a new project
+    use <name|id>          switch the active project
+    remove <name|id>       remove a project (last project cannot be removed)
+    pin <rel-path>         pin a file in the active project (root-relative)
+    unpin                  clear the pinned file
 
 Flags for 'task':
   --mode=auto|multi-agent|brainstorming
@@ -568,6 +588,8 @@ Flags for 'diagnose-routing':
 
 Flags for 'serve':
   --port=<n>                      port to bind (default 7421)
+  --project=<name|id>             activate the named project before starting the server
+                                  (sets it as the global active project)
   --local                         default the web UI into hybrid local-model mode
                                   (Qwen 3.5 9B for reasoning, Qwen 2.5 Coder 14B for
                                   action-code via Ollama at localhost:11434). The web
@@ -594,7 +616,7 @@ Flags for 'ask' (tools — local file access is ON by default):
   --tools                         enable file tools (read_file, write_file, list_dir) — default
   --allow-bash                    additionally enable the bash tool (cmd.exe on Windows, /bin/sh elsewhere)
                                   no sandbox — runs anything you can run.
-  --workdir=<path>                scope tools to this directory (default: cwd)
+  --workdir=<path>                scope tools to this directory (default: active project root)
   --trace                         print each tool call and its result before the final answer
 
 Flags for 'ask' (role routing):
@@ -614,12 +636,133 @@ Examples:
 `);
 }
 
+// ---------------------------------------------------------------------------
+// project command helpers
+// ---------------------------------------------------------------------------
+
+function findProject(nameOrId: string, projects: Project[]): Project | undefined {
+  return (
+    projects.find((p) => p.id === nameOrId) ??
+    projects.find((p) => p.name.toLowerCase() === nameOrId.toLowerCase())
+  );
+}
+
+function printProjectList(storePath?: string): void {
+  const projects = listProjects(storePath);
+  const active = getActiveProject(storePath);
+  for (const p of projects) {
+    const marker = p.id === active.id ? "* " : "  ";
+    const pin = p.pinnedFile ? ` [pinned: ${p.pinnedFile}]` : "";
+    console.log(`${marker}${p.name} (${p.id}) — ${p.root}${pin}`);
+  }
+}
+
+function cmdProject(subArgs: string[]): void {
+  const sub = subArgs[0] ?? "list";
+  switch (sub) {
+    case "list":
+      printProjectList();
+      break;
+    case "current": {
+      const p = getActiveProject();
+      const pin = p.pinnedFile ? `\npinned: ${p.pinnedFile}` : "";
+      console.log(`${p.name} (${p.id})\nroot: ${p.root}${pin}`);
+      break;
+    }
+    case "add": {
+      const name = subArgs[1];
+      const path = subArgs[2];
+      if (!name || !path) {
+        console.error("usage: project add <name> <path>");
+        process.exit(2);
+      }
+      const absPath = resolvePath(path);
+      try {
+        const p = addProject({ name, root: absPath });
+        console.log(`added project '${p.name}' (${p.id}) at ${p.root}`);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+    case "use": {
+      const nameOrId = subArgs[1];
+      if (!nameOrId) {
+        console.error("usage: project use <name|id>");
+        process.exit(2);
+      }
+      const projects = listProjects();
+      const found = findProject(nameOrId, projects);
+      if (!found) {
+        console.error(`Error: no project matching '${nameOrId}'`);
+        process.exit(1);
+      }
+      setActiveProject(found.id);
+      console.log(`active project → '${found.name}' (${found.root})`);
+      break;
+    }
+    case "remove": {
+      const nameOrId = subArgs[1];
+      if (!nameOrId) {
+        console.error("usage: project remove <name|id>");
+        process.exit(2);
+      }
+      const projects = listProjects();
+      const found = findProject(nameOrId, projects);
+      if (!found) {
+        console.error(`Error: no project matching '${nameOrId}'`);
+        process.exit(1);
+      }
+      try {
+        removeProject(found.id);
+        console.log(`removed project '${found.name}'`);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+    case "pin": {
+      const relPath = subArgs[1];
+      if (!relPath) {
+        console.error("usage: project pin <relative-path>");
+        process.exit(2);
+      }
+      const active = getActiveProject();
+      try {
+        setPinnedFile(active.id, relPath);
+        console.log(`pinned '${relPath}' for project '${active.name}'`);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+    case "unpin": {
+      const active = getActiveProject();
+      setPinnedFile(active.id, null);
+      console.log(`unpinned file for project '${active.name}'`);
+      break;
+    }
+    default:
+      console.error(`unknown project subcommand: ${sub}`);
+      console.error("valid subcommands: list, current, add, use, remove, pin, unpin");
+      process.exit(2);
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
 
   if (!command || command === "--help" || command === "-h") {
     printHelp();
+    return;
+  }
+
+  if (command === "project") {
+    cmdProject(argv.slice(1));
     return;
   }
 
@@ -686,6 +829,7 @@ async function main(): Promise<void> {
       options: {
         port: { type: "string", default: "7421" },
         local: { type: "boolean", default: false },
+        project: { type: "string" },
       },
       allowPositionals: false,
       strict: true,
@@ -695,7 +839,20 @@ async function main(): Promise<void> {
       console.error(`Error: --port must be a valid port number (got: ${sv.port})`);
       process.exit(2);
     }
-    await cmdServe(port, Boolean(sv.local));
+    let serveRoot: string | undefined;
+    if (sv.project) {
+      const projects = listProjects();
+      const found = findProject(sv.project as string, projects);
+      if (!found) {
+        console.error(`Error: no project matching '${sv.project}'`);
+        process.exit(1);
+      }
+      setActiveProject(found.id);
+      serveRoot = found.root;
+    } else {
+      serveRoot = getActiveProject().root;
+    }
+    await cmdServe(port, Boolean(sv.local), serveRoot);
     return;
   }
 
@@ -800,7 +957,7 @@ async function main(): Promise<void> {
       }
       await cmdAskRole(prompt, roleArg as RoleName, completeOpts, localFlag);
     } else if (toolsEnabled || values["allow-bash"]) {
-      const workdir = (values.workdir as string | undefined) ?? process.cwd();
+      const workdir = (values.workdir as string | undefined) ?? getActiveProject().root;
       await cmdAskWithTools(
         prompt,
         workdir,

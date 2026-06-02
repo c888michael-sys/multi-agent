@@ -43,6 +43,19 @@ import type { CompleteOptions } from "../provider.js";
 import type { RoutingMode } from "../agents/multi-agent-workflow.js";
 import { GoalStore, newGoalId, type GoalSession } from "../goal/goal-session.js";
 import { runGoalLoop, type GoalProgress } from "../goal/runner.js";
+import {
+  addProject,
+  assertWithinAllowList,
+  getActiveProject,
+  listProjects,
+  readProjects,
+  removeProject,
+  resolveAllowList,
+  setActiveProject,
+  setPinnedFile,
+  writeProjects,
+  DEFAULT_PROJECTS_PATH,
+} from "../project/store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -136,6 +149,10 @@ export interface ServerOptions {
   projectRoot?: string;
   /** Override goal storage directory. Used by tests; default is ~/.multi-agent/goals. */
   goalStorageDir?: string;
+  /** Override projects registry path. Used by tests; default is ~/.multi-agent/projects.json. */
+  projectsPath?: string;
+  /** Override allowed base directories for new projects. Used by tests; default from MULTI_AGENT_PROJECT_ROOTS. */
+  allowList?: string[];
 }
 
 /**
@@ -160,7 +177,38 @@ function isAllowedOrigin(origin: string | undefined, port: number): boolean {
 
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
   const port = opts.port ?? 7421;
-  const fileService = new WebFileService(resolve(opts.projectRoot ?? process.cwd()));
+  const projectsPath = opts.projectsPath ?? DEFAULT_PROJECTS_PATH;
+  const serverAllowList = opts.allowList ?? resolveAllowList();
+
+  // When an isolated projectsPath is provided (test mode), write the initial state to
+  // disk immediately so that every in-request readProjects call returns consistent IDs.
+  // readProjects on a missing file generates a new random ID each call, which would make
+  // project lookups fail with NOT_FOUND on the very first API call.
+  if (opts.projectsPath) {
+    const set = readProjects(projectsPath);
+    if (opts.projectRoot) {
+      const active = set.projects.find((p) => p.id === set.activeId);
+      if (active) active.root = resolve(opts.projectRoot);
+    }
+    writeProjects(projectsPath, set);
+  }
+
+  // Root resolution:
+  //   1. opts.projectRoot without isolated store → use directly (backward compat, no store pollution)
+  //   2. Isolated store (opts.projectsPath given) → read from the now-persisted store
+  //   3. Neither → cwd (old default; CLI always passes projectRoot explicitly)
+  const initialRoot = !opts.projectsPath && opts.projectRoot
+    ? resolve(opts.projectRoot)
+    : opts.projectsPath
+      ? resolve(getActiveProject(projectsPath).root)
+      : resolve(process.cwd());
+
+  let fileService = new WebFileService(initialRoot);
+
+  function rebuildFileService(): void {
+    fileService = new WebFileService(resolve(getActiveProject(projectsPath).root));
+  }
+
   const goalStore = new GoalStore(opts.goalStorageDir);
   // In-memory listeners for SSE goal streams: goalId → set of write callbacks.
   const goalListeners = new Map<string, Set<(evt: GoalProgress) => void>>();
@@ -296,11 +344,131 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       // ── File API (read-only Phase A) ──────────────────────────────────────
 
       if (pathname === "/api/files/root" && req.method === "GET") {
+        const active = getActiveProject(projectsPath);
         sendJson(res, 200, {
           root: fileService.root,
           mode: "read",
           maxBytes: FILE_MAX_BYTES,
+          activeProjectId: active.id,
+          projectName: active.name,
+          pinnedFile: active.pinnedFile,
         });
+        return;
+      }
+
+      // ── Project API ────────────────────────────────────────────────────────
+
+      if (pathname === "/api/projects" && req.method === "GET") {
+        const active = getActiveProject(projectsPath);
+        sendJson(res, 200, {
+          active,
+          projects: listProjects(projectsPath),
+          allowList: serverAllowList,
+        });
+        return;
+      }
+
+      if (pathname === "/api/projects" && req.method === "POST") {
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { name?: string; root?: string; pinnedFile?: string | null } | null;
+        if (typeof parsed?.name !== "string" || typeof parsed?.root !== "string") {
+          sendJson(res, 400, { error: "name and root (strings) required" });
+          return;
+        }
+        try {
+          assertWithinAllowList(parsed.root, serverAllowList);
+          const project = addProject(
+            { name: parsed.name, root: parsed.root, pinnedFile: parsed.pinnedFile, allowList: serverAllowList },
+            projectsPath,
+          );
+          sendJson(res, 200, { project });
+        } catch (err) {
+          const e = err as Error & { code?: string };
+          if (e.code === "OUTSIDE_ALLOWLIST") sendJson(res, 403, { error: e.message });
+          else if (e.code === "DUPLICATE_NAME") sendJson(res, 409, { error: e.message });
+          else sendJson(res, 400, { error: e.message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/projects/active" && req.method === "POST") {
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { id?: string } | null;
+        if (typeof parsed?.id !== "string") {
+          sendJson(res, 400, { error: "id (string) required" });
+          return;
+        }
+        try {
+          setActiveProject(parsed.id, projectsPath);
+          rebuildFileService();
+          const active = getActiveProject(projectsPath);
+          sendJson(res, 200, { active });
+        } catch (err) {
+          const e = err as Error & { code?: string };
+          if (e.code === "NOT_FOUND") sendJson(res, 404, { error: e.message });
+          else sendJson(res, 400, { error: e.message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/projects/delete" && req.method === "POST") {
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { id?: string } | null;
+        if (typeof parsed?.id !== "string") {
+          sendJson(res, 400, { error: "id (string) required" });
+          return;
+        }
+        try {
+          const wasActive = getActiveProject(projectsPath).id === parsed.id;
+          removeProject(parsed.id, projectsPath);
+          if (wasActive) rebuildFileService();
+          sendJson(res, 200, { deleted: parsed.id });
+        } catch (err) {
+          const e = err as Error & { code?: string };
+          if (e.code === "LAST_PROJECT") sendJson(res, 409, { error: e.message });
+          else if (e.code === "NOT_FOUND") sendJson(res, 404, { error: e.message });
+          else sendJson(res, 400, { error: e.message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/projects/pin" && req.method === "POST") {
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as { path?: string | null } | null;
+        if (parsed === null || !("path" in parsed)) {
+          sendJson(res, 400, { error: "path (string or null) required" });
+          return;
+        }
+        const relPath = parsed.path;
+        if (relPath !== null && typeof relPath !== "string") {
+          sendJson(res, 400, { error: "path must be a string or null" });
+          return;
+        }
+        const active = getActiveProject(projectsPath);
+        try {
+          setPinnedFile(active.id, relPath, projectsPath);
+          sendJson(res, 200, { pinnedFile: relPath });
+        } catch (err) {
+          const e = err as Error & { code?: string };
+          if (e.code === "TRAVERSAL") sendJson(res, 403, { error: e.message });
+          else sendJson(res, 400, { error: e.message });
+        }
         return;
       }
 

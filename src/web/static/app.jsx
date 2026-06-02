@@ -3126,10 +3126,35 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
   const [diffLoading, setDiffLoading] = React.useState(false);
   const [applyLoading, setApplyLoading] = React.useState(false);
   const [applyError, setApplyError] = React.useState(null);
+  // project selector state
+  const [projects, setProjects] = React.useState([]);
+  const [projActiveId, setProjActiveId] = React.useState(null);
+  const [projAllowList, setProjAllowList] = React.useState([]);
+  const [projSwitching, setProjSwitching] = React.useState(false);
+  const [addOpen, setAddOpen] = React.useState(false);
+  const [addName, setAddName] = React.useState('');
+  const [addPath, setAddPath] = React.useState('');
+  const [addError, setAddError] = React.useState(null);
+  const [addLoading, setAddLoading] = React.useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = React.useState(null);
+  const [pinLoading, setPinLoading] = React.useState(false);
+
+  function fetchProjects() {
+    return fetch('/api/projects').then(r => r.json()).then(j => {
+      setProjects(j.projects || []);
+      setProjActiveId(j.active?.id || null);
+      setProjAllowList(j.allowList || []);
+    }).catch(() => {});
+  }
+
+  function fetchRoot() {
+    return fetch('/api/files/root').then(r => r.json()).then(j => setRootInfo(j)).catch(() => {});
+  }
 
   React.useEffect(() => {
     if (!open) return;
-    fetch('/api/files/root').then(r => r.json()).then(j => setRootInfo(j)).catch(() => {});
+    fetchRoot();
+    fetchProjects();
   }, [open]);
 
   React.useEffect(() => {
@@ -3184,6 +3209,73 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
       .catch(e => setPreviewError(e.message))
       .finally(() => setPreviewLoading(false));
   }, [open, preload]);
+
+  // Auto-open pinned file when drawer opens (if one is set)
+  React.useEffect(() => {
+    if (!open || !rootInfo?.pinnedFile) return;
+    setPreviewError(null); setPreviewLoading(true); setSelectedFile(null);
+    fetch('/api/files/read?path=' + encodeURIComponent(rootInfo.pinnedFile))
+      .then(async r => { const j = await r.json(); if (!r.ok) return; setSelectedFile(j); })
+      .catch(() => {})
+      .finally(() => setPreviewLoading(false));
+  }, [open, rootInfo?.pinnedFile]);
+
+  function switchProject(id) {
+    if (id === projActiveId) return;
+    setProjSwitching(true);
+    fetch('/api/projects/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then(async r => {
+      if (!r.ok) return;
+      await Promise.all([fetchRoot(), fetchProjects()]);
+      navigateTo('.');
+    }).catch(() => {}).finally(() => setProjSwitching(false));
+  }
+
+  function submitAddProject(e) {
+    e.preventDefault();
+    if (!addName.trim() || !addPath.trim()) return;
+    setAddLoading(true); setAddError(null);
+    fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: addName.trim(), root: addPath.trim() }),
+    }).then(async r => {
+      const j = await r.json();
+      if (!r.ok) { setAddError(j.error || 'Error ' + r.status); return; }
+      setAddOpen(false); setAddName(''); setAddPath('');
+      await fetchProjects();
+    }).catch(e => setAddError(e.message)).finally(() => setAddLoading(false));
+  }
+
+  function deleteProject(id) {
+    fetch('/api/projects/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then(async r => {
+      if (!r.ok) return;
+      setDeleteConfirmId(null);
+      await Promise.all([fetchRoot(), fetchProjects()]);
+      navigateTo('.');
+    }).catch(() => {});
+  }
+
+  function togglePin() {
+    if (!selectedFile) return;
+    const isPinned = rootInfo?.pinnedFile === selectedFile.path;
+    setPinLoading(true);
+    fetch('/api/projects/pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: isPinned ? null : selectedFile.path }),
+    }).then(async r => {
+      if (!r.ok) return;
+      await fetchRoot();
+    }).catch(() => {}).finally(() => setPinLoading(false));
+  }
 
   function navigateTo(path) {
     setCurrentPath(path); setSelectedFile(null); setPreviewError(null);
@@ -3281,6 +3373,70 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
           </div>
           <button className="mm-session-close" onClick={onClose} aria-label="Close file browser">close</button>
         </div>
+        {/* ── Project selector ── */}
+        {projects.length > 0 && (
+          <div className="mm-proj-selector">
+            <div className="mm-proj-row">
+              <select
+                className="mm-proj-select"
+                value={projActiveId || ''}
+                disabled={projSwitching}
+                onChange={e => switchProject(e.target.value)}
+                aria-label="Active project"
+              >
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <button
+                className="mm-proj-add-btn"
+                onClick={() => { setAddOpen(o => !o); setAddError(null); setAddName(''); setAddPath(''); }}
+                title="Add new project"
+                aria-label="Add new project"
+              >＋</button>
+              {projects.length > 1 && (
+                deleteConfirmId === projActiveId
+                  ? <span className="mm-proj-confirm">
+                      Remove?&nbsp;
+                      <button className="mm-proj-confirm-yes" onClick={() => deleteProject(projActiveId)}>yes</button>
+                      &nbsp;/&nbsp;
+                      <button className="mm-proj-confirm-no" onClick={() => setDeleteConfirmId(null)}>no</button>
+                    </span>
+                  : <button
+                      className="mm-proj-del-btn"
+                      onClick={() => setDeleteConfirmId(projActiveId)}
+                      title="Remove active project"
+                      aria-label="Remove active project"
+                    >🗑</button>
+              )}
+            </div>
+            {addOpen && (
+              <form className="mm-proj-add-form" onSubmit={submitAddProject}>
+                <input
+                  className="mm-proj-input"
+                  placeholder="Name"
+                  value={addName}
+                  onChange={e => setAddName(e.target.value)}
+                  required
+                />
+                <input
+                  className="mm-proj-input"
+                  placeholder="Path (absolute)"
+                  value={addPath}
+                  onChange={e => setAddPath(e.target.value)}
+                  required
+                />
+                <div className="mm-proj-add-actions">
+                  <button type="submit" className="mm-proj-save-btn" disabled={addLoading}>
+                    {addLoading ? 'Adding…' : 'Add'}
+                  </button>
+                  <button type="button" className="mm-proj-cancel-btn" onClick={() => setAddOpen(false)}>cancel</button>
+                </div>
+                {addError && <div className="mm-file-error">{addError}</div>}
+              </form>
+            )}
+          </div>
+        )}
         <nav className="mm-file-crumbs" aria-label="Breadcrumb">
           {crumbs.map((c, i) => (
             <React.Fragment key={c.path}>
@@ -3318,6 +3474,13 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
                 <div className="mm-file-preview-meta">
                   <span className="mm-file-preview-path">{selectedFile.path}</span>
                   <span className="mm-file-preview-size">{selectedFile.size >= 1024 ? (selectedFile.size / 1024).toFixed(0) + ' KB' : selectedFile.size + ' B'}</span>
+                  <button
+                    className={'mm-file-pin-btn' + (rootInfo?.pinnedFile === selectedFile.path ? ' pinned' : '')}
+                    onClick={togglePin}
+                    disabled={pinLoading}
+                    title={rootInfo?.pinnedFile === selectedFile.path ? 'Unpin this file' : 'Pin this file as project focus'}
+                    aria-label={rootInfo?.pinnedFile === selectedFile.path ? 'Unpin' : 'Pin'}
+                  >★</button>
                 </div>
                 <pre className="mm-file-preview-content">{selectedFile.content}</pre>
                 <div className="mm-file-preview-actions">

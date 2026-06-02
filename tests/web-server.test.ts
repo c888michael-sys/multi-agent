@@ -961,4 +961,181 @@ describe("web server", () => {
       expect(r.status).toBe(404);
     });
   });
+
+  describe("project endpoints", () => {
+    let projDir: string;
+    let projDir2: string;
+    let projStoreDir: string;
+    let projHandles: Array<{ close: () => void }> = [];
+
+    beforeEach(() => {
+      projDir = mkdtempSync(join(tmpdir(), "multi-agent-proj-a-"));
+      projDir2 = mkdtempSync(join(tmpdir(), "multi-agent-proj-b-"));
+      projStoreDir = mkdtempSync(join(tmpdir(), "multi-agent-proj-store-"));
+    });
+
+    afterEach(() => {
+      for (const h of projHandles) { try { h.close(); } catch { /* */ } }
+      projHandles = [];
+      rmSync(projDir, { recursive: true, force: true });
+      rmSync(projDir2, { recursive: true, force: true });
+      rmSync(projStoreDir, { recursive: true, force: true });
+    });
+
+    function spawnWithProjects() {
+      const port = pickPort();
+      const router = makeRouter([]);
+      const resolver = makeResolver(async (_n, p) => `reply:${p}`);
+      const projectsPath = join(projStoreDir, "projects.json");
+      const handle = startWebServer({
+        router, resolver, port,
+        projectRoot: projDir,
+        projectsPath,
+        allowList: [tmpdir()],
+        sessionStorageDir: sessionDir,
+      });
+      projHandles.push(handle);
+      return { port, url: `http://localhost:${port}`, projectsPath };
+    }
+
+    it("GET /api/projects returns active project and list", async () => {
+      const { url } = spawnWithProjects();
+      const r = await fetch(`${url}/api/projects`);
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.active).toBeDefined();
+      expect(Array.isArray(j.projects)).toBe(true);
+      expect(Array.isArray(j.allowList)).toBe(true);
+    });
+
+    it("GET /api/files/root includes activeProjectId and projectName", async () => {
+      const { url } = spawnWithProjects();
+      const r = await fetch(`${url}/api/files/root`);
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.activeProjectId).toBeDefined();
+      expect(typeof j.projectName).toBe("string");
+      expect(j.pinnedFile === null || typeof j.pinnedFile === "string").toBe(true);
+    });
+
+    it("POST /api/projects adds a new project within allow-list", async () => {
+      const { url } = spawnWithProjects();
+      const tmpBase = join(tmpdir());
+      const r = await fetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "second", root: projDir2 }),
+      });
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.project.name).toBe("second");
+      expect(j.project.id).toMatch(/^p_/);
+    });
+
+    it("POST /api/projects 409s on duplicate name", async () => {
+      const { url, projectsPath } = spawnWithProjects();
+      // Add once successfully
+      await fetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "dup", root: projDir2 }),
+      });
+      // Second attempt with same name
+      const r = await fetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "dup", root: projDir2 }),
+      });
+      expect(r.status).toBe(409);
+    });
+
+    it("POST /api/projects/active switches project and re-points listDir", async () => {
+      const { url } = spawnWithProjects();
+      // Write a sentinel file in projDir2
+      writeFileSync(join(projDir2, "sentinel.txt"), "found!", "utf8");
+
+      // Add second project
+      const addRes = await fetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "second", root: projDir2 }),
+      });
+      const { project } = await addRes.json() as any;
+
+      // Switch to it
+      const switchRes = await fetch(`${url}/api/projects/active`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: project.id }),
+      });
+      expect(switchRes.status).toBe(200);
+
+      // listDir should now show sentinel.txt from projDir2
+      const listRes = await fetch(`${url}/api/files?path=.`);
+      expect(listRes.status).toBe(200);
+      const list: any = await listRes.json();
+      expect(list.entries.some((e: any) => e.name === "sentinel.txt")).toBe(true);
+    });
+
+    it("POST /api/projects/active 404s for unknown id", async () => {
+      const { url } = spawnWithProjects();
+      const r = await fetch(`${url}/api/projects/active`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "p_nonexistent" }),
+      });
+      expect(r.status).toBe(404);
+    });
+
+    it("POST /api/projects/delete removes a project", async () => {
+      const { url } = spawnWithProjects();
+      const addRes = await fetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "todelete", root: projDir2 }),
+      });
+      const { project } = await addRes.json() as any;
+      const r = await fetch(`${url}/api/projects/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: project.id }),
+      });
+      expect(r.status).toBe(200);
+    });
+
+    it("POST /api/projects/delete 409s when only one project remains", async () => {
+      const { url, projectsPath } = spawnWithProjects();
+      const { readProjects } = await import("../src/project/store.js");
+      const set = readProjects(projectsPath);
+      const r = await fetch(`${url}/api/projects/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: set.activeId }),
+      });
+      expect(r.status).toBe(409);
+    });
+
+    it("POST /api/projects/pin sets pinned file", async () => {
+      const { url } = spawnWithProjects();
+      writeFileSync(join(projDir, "focus.ts"), "// focus", "utf8");
+      const r = await fetch(`${url}/api/projects/pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "focus.ts" }),
+      });
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.pinnedFile).toBe("focus.ts");
+    });
+
+    it("POST /api/projects/pin 403s on traversal", async () => {
+      const { url } = spawnWithProjects();
+      const r = await fetch(`${url}/api/projects/pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "../../escape.ts" }),
+      });
+      expect(r.status).toBe(403);
+    });
+  });
 });
