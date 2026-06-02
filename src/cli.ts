@@ -526,18 +526,31 @@ async function cmdDiagnoseRouting(live: boolean): Promise<void> {
 async function cmdChat(
   sessionId: string,
   powerful: boolean,
-  local: boolean,
+  startLocal: boolean,
   mode: RoutingMode,
   tools: ReturnType<FileTools["toolset"]>,
   workdir: string,
 ): Promise<void> {
-  const router = buildRouter({ local });
-  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
+  // Always register Ollama providers at startup so the /local toggle can
+  // switch to hybrid mode at any point during the session without a restart.
+  const router = buildRouter({ local: true });
+  const cloudResolver = new RoleResolver(router, rolesFor(false), { onEvent: printRoleEvent });
+  const localResolver = new RoleResolver(router, rolesFor(true), { onEvent: printRoleEvent });
   if (tools.length > 0) {
     const toolNames = tools.map((t) => t.name).join(", ");
     console.error(`tools enabled (${toolNames}). workdir: ${workdir}\n`);
   }
-  const session = new ChatSession({ resolver, id: sessionId, powerful, tools });
+  if (startLocal) {
+    console.error(`hybrid local mode ON — reasoning → ollama:qwen3.5-9b, action-code → ollama:qwen2.5-coder\n`);
+  }
+  const session = new ChatSession({
+    resolver: cloudResolver,
+    localResolver,
+    useLocal: startLocal,
+    id: sessionId,
+    powerful,
+    tools,
+  });
   const repl = new ChatRepl({ session, router, mode });
   await repl.run();
 }
@@ -685,6 +698,9 @@ Flags for 'chat':
                                   file tools without bash exec.
   --no-tools                      disable all tools even when --allow-bash or
                                   --workdir are present.
+  --local                         start in hybrid local mode (Ollama models for
+                                  reasoning + action-code). Toggle at any point
+                                  mid-session with /local.
 
 Flags for 'diagnose-routing':
   --live                          actually call every role in cloud and hybrid mode.

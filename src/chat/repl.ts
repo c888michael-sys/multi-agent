@@ -28,6 +28,7 @@ const HELP_TEXT = `Slash commands (accept / or \\ prefix):
   /info               show session id, turn count, token estimate, mode flags
   /usage              show provider usage snapshot
   /power [on|off]     toggle "powerful" mode (Gemini thinking=high every call)
+  /local [on|off]     toggle hybrid local mode (Ollama reasoning + code models)
   /project            list all projects (* = active)
   /project current    show active project details
   /project use <n>    switch active project by name or id
@@ -229,14 +230,16 @@ export class ChatRepl {
       }
       case "/info": {
         const toolList = this.session.activeTools;
-        const toolLine = toolList.length > 0
-          ? `\ntools: ${toolList.join(", ")}`
+        const toolLine = toolList.length > 0 ? `\ntools: ${toolList.join(", ")}` : "";
+        const localLine = this.session.hasLocalResolver()
+          ? `\nhybrid local: ${this.session.isUsingLocal() ? "ON" : "OFF"} (/local to toggle)`
           : "";
         this.println(
           `session id: ${this.session.id}\n` +
             `role: ${this.session.role}, mode: ${this.mode}, smart-routing: ${this.session.smartRouting ? "on" : "off"}, powerful: ${this.session.isPowerful() ? "on" : "off"}\n` +
             `turns: ${this.session.turnCount()}, est. tokens: ${this.session.estimateTokens()} / ${this.session.tokenBudget}\n` +
             `storage: ${this.session.storagePath}` +
+            localLine +
             toolLine,
         );
         return "continue";
@@ -289,6 +292,27 @@ export class ChatRepl {
             (this.session.isPowerful()
               ? " — Gemini will now use thinking=high on every call this session."
               : ""),
+        );
+        return "continue";
+      }
+      case "/local": {
+        if (!this.session.hasLocalResolver()) {
+          this.println(
+            `hybrid local mode unavailable — start the session with --local to register Ollama providers.\n` +
+            `  (Ollama providers are always registered at startup; if you see this, the session was\n` +
+            `   created without a localResolver — try restarting with no extra flags.)`,
+          );
+          return "continue";
+        }
+        const arg = (rest[0] ?? "").toLowerCase();
+        if (arg === "on") this.session.setUseLocal(true);
+        else if (arg === "off") this.session.setUseLocal(false);
+        else this.session.setUseLocal(!this.session.isUsingLocal());
+        this.println(
+          `hybrid local mode: ${this.session.isUsingLocal() ? "ON" : "OFF"}` +
+            (this.session.isUsingLocal()
+              ? " — reasoning → ollama:qwen3.5-9b, action-code → ollama:qwen2.5-coder."
+              : " — back to cloud providers."),
         );
         return "continue";
       }

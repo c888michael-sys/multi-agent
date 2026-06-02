@@ -49,7 +49,20 @@ Output ONLY the JSON. No markdown fences, no commentary.]`;
 const PLAN_ACK = "Understood. I'll respond with a single JSON plan for every user message.";
 
 export interface ChatSessionOptions {
+  /** Cloud (default) resolver. Always required. */
   resolver: RoleResolver;
+  /**
+   * Local resolver — prepends Ollama models for reasoning and action-code.
+   * When provided, the session can switch between cloud and local at runtime
+   * via `setUseLocal()` / the `/local` REPL command. If omitted, the toggle
+   * has no effect (falls back to the cloud resolver).
+   */
+  localResolver?: RoleResolver;
+  /**
+   * Whether to start in hybrid local mode. Requires `localResolver` to have
+   * any effect. Default false.
+   */
+  useLocal?: boolean;
   /** Persisted session id; used as the filename. */
   id: string;
   /** Which role is the entry point for chat turns. Default "orchestration". */
@@ -187,7 +200,13 @@ export class ChatSession {
   readonly autoSummarizeAtPct: number;
   readonly keepRecentTurns: number;
   private readonly charsPerToken: number;
-  private readonly resolver: RoleResolver;
+  private readonly _cloudResolver: RoleResolver;
+  private readonly _localResolver: RoleResolver | undefined;
+  private _useLocal: boolean;
+  /** Returns whichever resolver is active for the current turn. */
+  private get resolver(): RoleResolver {
+    return (this._useLocal && this._localResolver) ? this._localResolver : this._cloudResolver;
+  }
   private readonly roleInstructions?: unknown;
   private readonly toolsByName: Map<string, Tool>;
   private readonly toolDecls: ToolDeclaration[];
@@ -200,7 +219,9 @@ export class ChatSession {
   private updatedAt: number;
 
   constructor(opts: ChatSessionOptions) {
-    this.resolver = opts.resolver;
+    this._cloudResolver = opts.resolver;
+    this._localResolver = opts.localResolver;
+    this._useLocal = opts.useLocal ?? false;
     this.id = opts.id;
     this.role = opts.role ?? "orchestration";
     this.smartRouting = opts.smartRouting ?? true;
@@ -228,6 +249,10 @@ export class ChatSession {
   setPowerful(value: boolean): void {
     this.powerful = value;
   }
+
+  isUsingLocal(): boolean { return this._useLocal; }
+  hasLocalResolver(): boolean { return this._localResolver !== undefined; }
+  setUseLocal(value: boolean): void { this._useLocal = value; }
 
   /** Names of tools registered for this session (empty when no tools). */
   get activeTools(): string[] {
