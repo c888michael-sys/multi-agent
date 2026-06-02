@@ -48,6 +48,23 @@ Output ONLY the JSON. No markdown fences, no commentary.]`;
 
 const PLAN_ACK = "Understood. I'll respond with a single JSON plan for every user message.";
 
+/**
+ * Heuristic: does this text read as the model NARRATING what it intends to do
+ * (rather than a finished answer)? Used by the agentic tool loop to detect
+ * "I will create the file..." replies that came back as text instead of a
+ * tool call, so we can nudge the model to actually call the tool.
+ */
+export function looksLikeUnfinishedIntent(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // A reply that already contains substantial code/output is probably a real
+  // answer, not just intent — don't nudge those.
+  if (t.includes("```") && t.length > 200) return false;
+  return /\b(I (will|'ll|am going to|can|should)|let'?s|let me|first,?|to (create|build|make|write|set up|do)\b|here'?s how|i'?m going to|next,? I|i'?ll start)\b/i.test(
+    t,
+  );
+}
+
 export interface ChatSessionOptions {
   /** Cloud (default) resolver. Always required. */
   resolver: RoleResolver;
@@ -565,30 +582,54 @@ Output ONLY the summary, no preamble.`;
       },
     ];
 
+    // Some models (Codestral especially) narrate intent — "I will create the
+    // HTML file..." — as a text reply instead of actually calling a tool. When
+    // that happens before any tool has run, nudge once or twice to force the
+    // call rather than accepting the narration as the final answer.
+    const MAX_NUDGES = 2;
+    let toolsExecuted = 0;
+    let nudges = 0;
+
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       const result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, opts);
 
       if (result.kind === "text") {
+        if (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text)) {
+          nudges++;
+          // Leading \n so the note isn't clobbered by the REPL spinner's \r.
+          console.error(`\n[tool] model described instead of acting — nudging it to call a tool`);
+          workingHistory.push({ kind: "model_text", text: result.text });
+          workingHistory.push({
+            kind: "user_text",
+            text:
+              `[You described what you would do but did NOT call any tool. Stop describing. ` +
+              `Call the tool(s) NOW to actually perform the work. Use ${toolNames}.]`,
+          });
+          continue;
+        }
         if (onToken) onToken(result.text);
         return result.text;
       }
 
-      // Execute each tool call, log it, feed the result back.
+      // Execute each tool call, log it, feed the result back. Leading \n on
+      // every log line keeps it on its own row instead of being overwritten
+      // by the spinner's \r redraw.
       workingHistory.push({ kind: "model_calls", calls: result.calls });
       for (const call of result.calls) {
         const tool = this.toolsByName.get(call.name);
         let resultText: string;
         if (!tool) {
           resultText = `ERROR: unknown tool '${call.name}'. Available: ${[...this.toolsByName.keys()].join(", ")}`;
-          console.error(`[tool] ${call.name}(${JSON.stringify(call.args)}) → ERROR: unknown tool`);
+          console.error(`\n[tool] ${call.name}(${JSON.stringify(call.args)}) → ERROR: unknown tool`);
         } else {
           try {
             resultText = await tool.execute(call.args);
+            toolsExecuted++;
             const preview = resultText.length > 120 ? resultText.slice(0, 120) + "…" : resultText;
-            console.error(`[tool] ${call.name}(${JSON.stringify(call.args)}) → ${preview}`);
+            console.error(`\n[tool] ${call.name}(${JSON.stringify(call.args)}) → ${preview}`);
           } catch (err) {
             resultText = `ERROR: ${(err as Error).message}`;
-            console.error(`[tool] ${call.name} threw: ${(err as Error).message}`);
+            console.error(`\n[tool] ${call.name} threw: ${(err as Error).message}`);
           }
         }
         workingHistory.push({

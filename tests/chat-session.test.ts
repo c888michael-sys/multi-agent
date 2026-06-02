@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Router } from "../src/router.js";
 import { RoleResolver } from "../src/roles/resolver.js";
-import { ChatSession, listSessions } from "../src/chat/session.js";
+import { ChatSession, listSessions, looksLikeUnfinishedIntent } from "../src/chat/session.js";
 import { FakeProvider, ToolFakeProvider, RateLimitedError } from "./fixtures.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
@@ -26,6 +26,23 @@ function chatProvider(replies: string[], id = "chat") {
   };
   return p;
 }
+
+describe("looksLikeUnfinishedIntent", () => {
+  it("flags narration of intent", () => {
+    expect(looksLikeUnfinishedIntent("I will create the HTML file.")).toBe(true);
+    expect(looksLikeUnfinishedIntent("Let's start by creating it.")).toBe(true);
+    expect(looksLikeUnfinishedIntent("First, I will set up the folder.")).toBe(true);
+    expect(looksLikeUnfinishedIntent("To build the page, I need a file.")).toBe(true);
+  });
+
+  it("does not flag finished answers or substantial code", () => {
+    expect(looksLikeUnfinishedIntent("The answer is 42.")).toBe(false);
+    expect(looksLikeUnfinishedIntent("Done. The folder now exists.")).toBe(false);
+    expect(looksLikeUnfinishedIntent("")).toBe(false);
+    const bigCode = "```html\n" + "<div></div>\n".repeat(40) + "```";
+    expect(looksLikeUnfinishedIntent(bigCode)).toBe(false);
+  });
+});
 
 describe("ChatSession", () => {
   let dir: string;
@@ -424,6 +441,43 @@ describe("ChatSession smart routing (plan-based)", () => {
     expect(orc.calls).toHaveLength(0);
     // action-code saw two iterations: tool-request, then final text.
     expect(code.toolCalls).toHaveLength(2);
+  });
+
+  it("nudges the model when it narrates intent instead of calling a tool", async () => {
+    // Codestral-style: first reply describes intent (no tool), then after the
+    // nudge it actually calls the tool, then returns final text.
+    const code = new ToolFakeProvider("code", [
+      { kind: "text", text: "I will create the HTML file. Let's start by creating it." },
+      { kind: "calls", calls: [{ name: "make_dir", args: { name: "site" } }] },
+      { kind: "text", text: "Done — folder created." },
+    ]);
+    const router = new Router([code], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "action-code", description: "x", candidates: [{ providerId: "code" }] },
+    ]);
+
+    const executed: string[] = [];
+    const makeDirTool = {
+      name: "make_dir",
+      description: "create a directory",
+      parameters: {
+        type: "object" as const,
+        properties: { name: { type: "string" as const } },
+        required: ["name"],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        executed.push(String(args.name));
+        return `created ${args.name}`;
+      },
+    };
+
+    const s = new ChatSession({ resolver, id: "nudge", storagePath: storage, tools: [makeDirTool] });
+    const result = await s.send("make a folder called site");
+
+    expect(executed).toEqual(["site"]);
+    expect(result.reply).toBe("Done — folder created.");
+    // 3 model calls: narration → (nudge) → tool call → final text.
+    expect(code.toolCalls).toHaveLength(3);
   });
 
   it("uses Brave/DuckDuckGo search context when perception falls back from Gemini", async () => {
