@@ -35,7 +35,10 @@ const HELP_TEXT = `Slash commands (accept / or \\ prefix):
   /project pin <p>    pin a file (root-relative path) in the active project
   /project unpin      clear the pinned file
   /help               show this help
-  /exit (or 'exit')   leave the session (history persists to disk)`;
+  /exit (or 'exit')   leave the session (history persists to disk)
+
+Ctrl+C                interrupt the response in progress (returns to prompt);
+                      press again at the idle prompt to leave the session`;
 
 /**
  * Interactive REPL on top of a ChatSession. Synchronous input loop via
@@ -53,6 +56,8 @@ export class ChatRepl {
   private readonly rl: ReadlineInterface;
   private readonly output: NodeJS.WritableStream;
   private exiting = false;
+  /** Non-null while a turn is in flight; Ctrl+C aborts it. */
+  private activeAbort: AbortController | null = null;
 
   constructor(opts: ReplOptions) {
     this.session = opts.session;
@@ -109,6 +114,22 @@ export class ChatRepl {
     this.rl.on("line", onLine);
     this.rl.on("close", onClose);
 
+    // Ctrl+C: while a turn is generating, interrupt it and return to the
+    // prompt (the CLI analog of the web stop button). At the idle prompt,
+    // Ctrl+C exits cleanly. Registering a SIGINT listener overrides Node's
+    // default "kill the process" behavior.
+    const onSigint = () => {
+      if (this.activeAbort) {
+        this.activeAbort.abort();
+      } else {
+        this.println("\n(interrupted — use /exit or Ctrl+C again to leave)");
+        this.exiting = true;
+        onClose();
+        try { this.rl.close(); } catch { /* already closed */ }
+      }
+    };
+    process.on("SIGINT", onSigint);
+
     const nextLine = (): Promise<string | null> => {
       if (queue.length > 0) return Promise.resolve(queue.shift()!);
       if (inputClosed) return Promise.resolve(null);
@@ -142,6 +163,7 @@ export class ChatRepl {
     }
     this.rl.off("line", onLine);
     this.rl.off("close", onClose);
+    process.off("SIGINT", onSigint);
     try {
       this.rl.close();
     } catch {
@@ -179,16 +201,31 @@ export class ChatRepl {
     }
 
     let result;
+    const controller = new AbortController();
+    this.activeAbort = controller;
     const stopSpinner = startSpinner(
-      this.session.isPowerful() ? "thinking (powerful mode)..." : "thinking...",
+      this.session.isPowerful()
+        ? "thinking (powerful mode)... [Ctrl+C to interrupt]"
+        : "thinking... [Ctrl+C to interrupt]",
       process.stderr,
     );
     try {
-      result = await this.session.send(message, undefined, undefined, { mode: this.mode });
+      result = await this.session.send(
+        message,
+        { signal: controller.signal },
+        undefined,
+        { mode: this.mode },
+      );
     } catch (err) {
       stopSpinner();
-      this.println(`error: ${(err as Error).message}`);
+      if (controller.signal.aborted) {
+        this.println("⏸ interrupted — partial response discarded.");
+      } else {
+        this.println(`error: ${(err as Error).message}`);
+      }
       return;
+    } finally {
+      this.activeAbort = null;
     }
     stopSpinner();
     if (result.summarizedTurns) {

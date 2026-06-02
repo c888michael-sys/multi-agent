@@ -147,7 +147,13 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:
-      "You are the code-action agent. Produce code that runs. No prose unless asked.",
+      "You are the code-action agent. Produce complete, working code. " +
+      "When building UI or web pages, make them polished and production-quality: " +
+      "thoughtful layout, real CSS styling, sensible typography and spacing, " +
+      "responsive design, and meaningful sample content — never bare-bones, " +
+      "unstyled placeholders. Create every file the task needs (separate HTML, " +
+      "CSS, and JS files when appropriate). Don't stop at a skeleton; finish the " +
+      "job. No prose unless asked.",
   },
   {
     name: "action-structural",

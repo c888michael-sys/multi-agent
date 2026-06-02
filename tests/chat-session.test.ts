@@ -153,6 +153,31 @@ describe("ChatSession", () => {
     await s.send("3");
     expect(s.turnCount()).toBe(3);
   });
+
+  it("aborting the signal interrupts the turn and rolls back history", async () => {
+    // Signal-aware provider: throws when the (router-combined) signal is
+    // aborted, exactly as a real provider's fetch does on Ctrl+C.
+    const p = new FakeProvider("chat", []);
+    (p as unknown as {
+      completeChat: (h: ConversationPart[], opts?: { signal?: AbortSignal }) => Promise<string>;
+    }).completeChat = async (_h, opts) => {
+      if (opts?.signal?.aborted) throw new Error("aborted");
+      return "should never be returned";
+    };
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "abort", storagePath: storage, smartRouting: false });
+
+    const controller = new AbortController();
+    controller.abort(); // pre-aborted: the router passes an aborted signal to the provider
+
+    await expect(s.send("hi", { signal: controller.signal })).rejects.toThrow();
+    // The user message must be rolled back so a re-send doesn't double it.
+    expect(s.turnCount()).toBe(0);
+    expect(s.snapshot().history).toEqual([]);
+  });
 });
 
 describe("ChatSession smart routing (plan-based)", () => {

@@ -544,7 +544,10 @@ Output ONLY the summary, no preamble.`;
       return this.runRoleChatMaybeFallbackSearch(role, history, opts);
     }
 
-    const MAX_ITERATIONS = 10;
+    // Higher than the one-shot ToolRunner cap (10): building a multi-file
+    // project (a website with separate HTML/CSS/JS, etc.) needs many
+    // read/write/bash calls in one turn. Ctrl+C interrupts if it runs away.
+    const MAX_ITERATIONS = 25;
     // Inject a tool-use directive so the model knows it must call tools
     // rather than describe the solution. Without this, models in chat context
     // default to explaining rather than executing.
@@ -555,8 +558,10 @@ Output ONLY the summary, no preamble.`;
         kind: "user_text",
         text:
           `[TOOL DIRECTIVE: You have these tools available: ${toolNames}. ` +
-          `You MUST call the appropriate tool to complete this task — do NOT describe or explain what you would do. ` +
-          `Execute it now using a tool call.]`,
+          `You MUST call the appropriate tool(s) to complete this task — do NOT describe or explain what you would do. ` +
+          `Execute now using tool calls. Do the task COMPLETELY: create every file it needs and finish the whole job ` +
+          `across as many tool calls as required (you can call tools repeatedly). For web pages or UI, write real, ` +
+          `polished, styled output — not a bare skeleton. Only stop calling tools when the task is fully done.]`,
       },
     ];
 
