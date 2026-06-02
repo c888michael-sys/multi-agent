@@ -131,15 +131,21 @@ export function writeProjects(path: string, set: ProjectSet): void {
  */
 export function resolveAllowList(): string[] {
   const cwd = process.cwd();
+  // The built-in projects/ folder is always allowed regardless of env config.
+  const builtinProjects = join(cwd, "projects");
   const env = process.env["MULTI_AGENT_PROJECT_ROOTS"];
   if (!env) {
-    // dirname(cwd) already contains cwd, so siblings are also covered.
-    return [dirname(cwd)];
+    // dirname(cwd) covers siblings; builtinProjects covers the in-repo workspace.
+    return [dirname(cwd), builtinProjects];
   }
   const bases = env.split(delimiter).filter(Boolean).map((p) => resolve(p));
   // cwd is always implicitly allowed even when env var is set.
   if (!bases.some((b) => pathContains(b, cwd))) {
     bases.push(cwd);
+  }
+  // builtinProjects is always allowed.
+  if (!bases.some((b) => pathContains(b, builtinProjects))) {
+    bases.push(builtinProjects);
   }
   return bases;
 }

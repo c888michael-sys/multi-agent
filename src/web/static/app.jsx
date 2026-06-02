@@ -3432,7 +3432,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
                 />
                 <input
                   className="mm-proj-input"
-                  placeholder="Path (absolute)"
+                  placeholder={rootInfo ? rootInfo.root.replace(/[^\\/]+$/, 'projects/my-project') : 'Absolute path'}
                   value={addPath}
                   onChange={e => setAddPath(e.target.value)}
                   required

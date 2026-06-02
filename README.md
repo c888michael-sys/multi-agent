@@ -775,7 +775,7 @@ Mirror the `src/roles/instructions.ts` version / normalize / read / write resili
 - Corrupt/unreadable `projects.json` → seeded default: one project whose root is the launch cwd, marked active (same advisory-file philosophy as role-instructions and `state.json`).
 - IDs generated as `p_` + short random hex; `name` is a display label. Rename is out of scope for v1 (delete + recreate covers it).
 
-**Allow-list:** env var `MULTI_AGENT_PROJECT_ROOTS` — an OS path-delimited (`path.delimiter`) list of base dirs. **Default when unset:** the parent of the launch directory (`dirname(process.cwd())`), so from `Desktop\multi-agent` the user can pick any sibling project under `Desktop`; the launch cwd is always implicitly allowed. Validation reuses the lexical-containment (`relative(base, candidate)` not starting with `..` / not absolute) + `realpathSync` symlink re-check already in `WebFileService.resolveSafe` — factor that containment check into a shared helper so the store and the file service agree.
+**Allow-list:** env var `MULTI_AGENT_PROJECT_ROOTS` — an OS path-delimited (`path.delimiter`) list of base dirs. **Default when unset:** the parent of the launch directory (`dirname(process.cwd())`) plus the built-in `projects/` folder inside the repo (always included), so from `Desktop\multi-agent` the user can pick any sibling project under `Desktop`; the launch cwd is always implicitly allowed. Validation reuses the lexical-containment (`relative(base, candidate)` not starting with `..` / not absolute) + `realpathSync` symlink re-check already in `WebFileService.resolveSafe` — factor that containment check into a shared helper so the store and the file service agree.
 
 **Tests:** add/use/remove/pin happy paths; allow-list rejection; traversal in `root` and in `pinnedFile`; last-project delete guard; active reassignment on delete; duplicate-name rejection; corrupt-file normalize → seeded default.
 
@@ -851,6 +851,7 @@ See `docs/specs/2026-05-22-stages-2-and-3.md` for what's been built without keys
 multi-agent/
   README.md             — this file
   CLAUDE.md             — standing rules for any Claude session in this repo
+  projects/             — local project workspaces (gitignored; always on the allow-list)
   src/
     index.ts            — public exports + the convenience complete() entry
     cli.ts              — CLI (ask, agents, usage, --help)

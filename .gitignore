@@ -19,3 +19,7 @@ Thumbs.db
 
 # graphify build output (regenerable; not source)
 graphify-out/
+
+# Local project workspaces — not source, never pushed to GitHub
+projects/*
+!projects/.gitkeep
