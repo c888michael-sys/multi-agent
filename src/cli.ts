@@ -125,8 +125,8 @@ function buildRouter(opts?: { local?: boolean; persistentState?: boolean }): Rou
 /** Roles registry for the run — local-aware when --local is set.
  * Always routes through buildDefaultRoles so the mindmap-categorize
  * cloud/reserved prepend applies in both modes, not just local. */
-function rolesFor(local: boolean) {
-  return buildDefaultRoles({ local });
+function rolesFor(local: boolean, toolCapable = false) {
+  return buildDefaultRoles({ local, toolCapable });
 }
 
 function printEnvDoctor(): void {
@@ -534,8 +534,11 @@ async function cmdChat(
   // Always register Ollama providers at startup so the /local toggle can
   // switch to hybrid mode at any point during the session without a restart.
   const router = buildRouter({ local: true });
-  const cloudResolver = new RoleResolver(router, rolesFor(false), { onEvent: printRoleEvent });
-  const localResolver = new RoleResolver(router, rolesFor(true), { onEvent: printRoleEvent });
+  // When tools are active, reorder action-code to lead with function-calling
+  // models (Codestral can't call tools and returns empty otherwise).
+  const toolCapable = tools.length > 0;
+  const cloudResolver = new RoleResolver(router, rolesFor(false, toolCapable), { onEvent: printRoleEvent });
+  const localResolver = new RoleResolver(router, rolesFor(true, toolCapable), { onEvent: printRoleEvent });
   if (tools.length > 0) {
     const toolNames = tools.map((t) => t.name).join(", ");
     console.error(`tools enabled (${toolNames}). workdir: ${workdir}`);

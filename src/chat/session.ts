@@ -589,6 +589,7 @@ Output ONLY the summary, no preamble.`;
     const MAX_NUDGES = 2;
     let toolsExecuted = 0;
     let nudges = 0;
+    const toolLog: string[] = [];
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       // Until a tool has actually run, force a tool call (tool_choice required /
@@ -599,7 +600,25 @@ Output ONLY the summary, no preamble.`;
       // and rely on the narration nudge below.
       const iterOpts: CompleteOptions =
         toolsExecuted === 0 ? { ...opts, toolChoice: "required" } : opts;
-      const result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, iterOpts);
+
+      let result;
+      try {
+        result = await this.resolver.runRoleWithTools(role, workingHistory, this.toolDecls, iterOpts);
+      } catch (err) {
+        // User interrupt (Ctrl+C) must propagate so the turn rolls back.
+        if (opts?.signal?.aborted) throw err;
+        // Some models (notably Groq's Llama) intermittently emit a malformed
+        // tool call that the provider rejects with a 400. If we've already
+        // done useful work this turn, don't crash — summarize what happened.
+        // If nothing has run yet, it's a genuine failure: rethrow.
+        if (toolsExecuted === 0) throw err;
+        console.error(`\n[tool] provider error after ${toolsExecuted} call(s): ${(err as Error).message.slice(0, 140)}`);
+        const summary =
+          `Done — completed ${toolsExecuted} tool action(s):\n` +
+          toolLog.map((l) => `  • ${l}`).join("\n");
+        if (onToken) onToken(summary);
+        return summary;
+      }
 
       if (result.kind === "text") {
         if (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text)) {
@@ -633,6 +652,7 @@ Output ONLY the summary, no preamble.`;
           try {
             resultText = await tool.execute(call.args);
             toolsExecuted++;
+            toolLog.push(`${call.name}(${JSON.stringify(call.args)})`);
             const preview = resultText.length > 120 ? resultText.slice(0, 120) + "…" : resultText;
             console.error(`\n[tool] ${call.name}(${JSON.stringify(call.args)}) → ${preview}`);
           } catch (err) {

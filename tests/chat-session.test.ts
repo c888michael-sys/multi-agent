@@ -443,6 +443,42 @@ describe("ChatSession smart routing (plan-based)", () => {
     expect(code.toolCalls).toHaveLength(2);
   });
 
+  it("recovers gracefully when the provider errors mid-loop after a tool ran", async () => {
+    // First call returns a tool call (executes); the second call throws (no
+    // more scripted responses), simulating e.g. a Groq 400 tool_use_failed.
+    // The turn should NOT crash — it summarizes the work already done.
+    const code = new ToolFakeProvider("code", [
+      { kind: "calls", calls: [{ name: "make_dir", args: { name: "site" } }] },
+    ]);
+    const router = new Router([code], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "action-code", description: "x", candidates: [{ providerId: "code" }] },
+    ]);
+
+    const executed: string[] = [];
+    const makeDirTool = {
+      name: "make_dir",
+      description: "create a directory",
+      parameters: {
+        type: "object" as const,
+        properties: { name: { type: "string" as const } },
+        required: ["name"],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        executed.push(String(args.name));
+        return `created ${args.name}`;
+      },
+    };
+
+    const s = new ChatSession({ resolver, id: "recover", storagePath: storage, tools: [makeDirTool] });
+    const result = await s.send("make a folder called site");
+
+    // The tool ran and the turn completed with a summary instead of throwing.
+    expect(executed).toEqual(["site"]);
+    expect(result.reply).toContain("completed 1 tool action");
+    expect(result.reply).toContain("make_dir");
+  });
+
   it("nudges the model when it narrates intent instead of calling a tool", async () => {
     // Codestral-style: first reply describes intent (no tool), then after the
     // nudge it actually calls the tool, then returns final text.

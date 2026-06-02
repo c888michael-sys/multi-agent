@@ -62,14 +62,30 @@ const LOCAL_ACTION_CODE = { providerId: "ollama:qwen2.5-coder" };
 // Ollama daemon that may not exist on the current web device.
 const CLOUD_CATEGORIZE = { providerId: "gemini:1" };
 
+// Providers verified to support OpenAI-style function calling (tool_choice).
+// action-code's normal primary, Mistral Codestral, does NOT — it returns
+// empty text when asked to call a tool — so tool-driven agentic sessions
+// (CLI `chat --allow-bash`) must lead action-code with these instead. Local
+// ollama:qwen2.5-coder also calls tools (inline-parsed), so it stays first
+// when hybrid mode is on. Probed live 2026-06: groq llama-3.3-70b,
+// cerebras gpt-oss-120b ✅; codestral, open-mistral-nemo ❌.
+const TOOL_CAPABLE_ACTION_CODE = [
+  { providerId: "groq:llama-70b" },
+  { providerId: "cerebras:gpt-oss-120b" },
+];
+
 /**
  * Build the role registry. With `local: true`, prepend the local Ollama
  * candidates to the reasoning and action-code chains. In every mode, put
  * Gemini Flash at the front of mindmap-categorize so the mindmap burst
- * never depends on local Ollama availability. All other roles stay
- * untouched.
+ * never depends on local Ollama availability.
+ *
+ * With `toolCapable: true`, reorder the action-code chain so function-calling
+ * models lead — Codestral can't do tool calls, so agentic tool loops would
+ * otherwise get an empty reply. Local ollama candidates (which DO call tools)
+ * stay first; the tool-capable cloud models slot in ahead of Codestral/Gemma.
  */
-export function buildDefaultRoles(opts?: { local?: boolean }): RoleConfig[] {
+export function buildDefaultRoles(opts?: { local?: boolean; toolCapable?: boolean }): RoleConfig[] {
   const roles = DEFAULT_ROLES.map((r) => ({ ...r, candidates: [...r.candidates] }));
   const categorize = roles.find((r) => r.name === "mindmap-categorize");
   if (categorize) categorize.candidates.unshift(CLOUD_CATEGORIZE);
@@ -78,6 +94,20 @@ export function buildDefaultRoles(opts?: { local?: boolean }): RoleConfig[] {
     if (reasoning) reasoning.candidates.unshift(LOCAL_REASONING);
     const actionCode = roles.find((r) => r.name === "action-code");
     if (actionCode) actionCode.candidates.unshift(LOCAL_ACTION_CODE);
+  }
+  if (opts?.toolCapable) {
+    const actionCode = roles.find((r) => r.name === "action-code");
+    if (actionCode) {
+      const existing = actionCode.candidates;
+      const ollamaFirst = existing.filter((c) => c.providerId.startsWith("ollama:"));
+      const rest = existing.filter((c) => !c.providerId.startsWith("ollama:"));
+      const seen = new Set<string>();
+      actionCode.candidates = [...ollamaFirst, ...TOOL_CAPABLE_ACTION_CODE, ...rest].filter((c) => {
+        if (seen.has(c.providerId)) return false;
+        seen.add(c.providerId);
+        return true;
+      });
+    }
   }
   return roles;
 }
