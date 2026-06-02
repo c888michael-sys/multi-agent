@@ -130,6 +130,7 @@ describe("web server", () => {
     expect(body).toContain("ConversationDrawer");
     expect(body).toContain("mm-nav-sessions");
     expect(body).toContain("Open saved threads");
+    expect(body).toContain("delete all threads");
   });
 
   it("keeps project-file attachments compatible with the composer attachment shape", () => {
@@ -533,6 +534,46 @@ describe("web server", () => {
     const r = await fetch(`${url}/api/sessions/delete-me`, { method: "DELETE" });
     expect(r.status).toBe(200);
     expect(existsSync(join(sessionDir, "delete-me.json"))).toBe(false);
+  });
+
+  it("DELETE /api/sessions removes all saved session files", async () => {
+    writeFileSync(join(sessionDir, "first.json"), JSON.stringify({
+      version: 1,
+      id: "first",
+      history: [],
+    }), "utf8");
+    writeFileSync(join(sessionDir, "second.json"), JSON.stringify({
+      version: 1,
+      id: "second",
+      history: [],
+    }), "utf8");
+
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/sessions`, { method: "DELETE" });
+    expect(r.status).toBe(200);
+    const j: any = await r.json();
+    expect(j.deleted).toBe(2);
+    expect(existsSync(join(sessionDir, "first.json"))).toBe(false);
+    expect(existsSync(join(sessionDir, "second.json"))).toBe(false);
+    const listed = await fetch(`${url}/api/sessions`);
+    const listedJson: any = await listed.json();
+    expect(listedJson.sessions).toEqual([]);
+  });
+
+  it("DELETE /api/sessions rejects cross-origin requests", async () => {
+    writeFileSync(join(sessionDir, "kept.json"), JSON.stringify({
+      version: 1,
+      id: "kept",
+      history: [],
+    }), "utf8");
+
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/sessions`, {
+      method: "DELETE",
+      headers: { Origin: "https://example.com" },
+    });
+    expect(r.status).toBe(403);
+    expect(existsSync(join(sessionDir, "kept.json"))).toBe(true);
   });
 
   it("/api/role-instructions reads and writes the editable local instruction file", async () => {

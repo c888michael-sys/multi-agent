@@ -9,6 +9,7 @@
  *   GET  /                       static index.html
  *   GET  /<asset>                static files from src/web/static/
  *   GET  /api/sessions           list saved session summaries
+ *   DELETE /api/sessions         delete all saved sessions
  *   POST /api/chat               { sessionId, message } -> { reply, servedBy, ... }
  *   POST /api/sessions/:id/clear wipe session history
  *   GET  /api/usage              router usage snapshot as plain text
@@ -23,6 +24,7 @@ import type { RoleResolver } from "../roles/resolver.js";
 import type { RoleName } from "../roles/types.js";
 import {
   ChatSession,
+  deleteAllSessions,
   deleteSession,
   duplicateSession,
   exportSessionRaw,
@@ -606,6 +608,15 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/sessions" && req.method === "GET") {
         sendJson(res, 200, { sessions: listSessionSummaries(opts.sessionStorageDir) });
+        return;
+      }
+      if (pathname === "/api/sessions" && req.method === "DELETE") {
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin deletes are not allowed" });
+          return;
+        }
+        const deleted = deleteAllSessions(opts.sessionStorageDir);
+        sendJson(res, 200, { deleted, sessions: [] });
         return;
       }
 

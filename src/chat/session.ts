@@ -958,6 +958,14 @@ export function deleteSession(id: string, storageDir?: string): boolean {
   return true;
 }
 
+export function deleteAllSessions(storageDir?: string): number {
+  let deleted = 0;
+  for (const id of listSessions(storageDir)) {
+    if (deleteSession(id, storageDir)) deleted++;
+  }
+  return deleted;
+}
+
 export function exportSessionRaw(id: string, storageDir?: string): RawSessionFile | null {
   return readSessionFile(id, storageDir);
 }

@@ -3712,6 +3712,7 @@ function ConversationDrawer({
   onTogglePin,
   onDuplicateSession,
   onDeleteSession,
+  onDeleteAllSessions,
   onExportSession,
   onClearCurrent,
 }) {
@@ -3745,6 +3746,7 @@ function ConversationDrawer({
           />
           <button onClick={onRefresh} disabled={busy}>{busy ? 'syncing' : 'refresh'}</button>
           <button onClick={onClearCurrent}>clear current</button>
+          <button className="danger" onClick={onDeleteAllSessions} disabled={busy || sessions.length === 0}>delete all threads</button>
         </div>
         <div className="mm-session-list">
           {filtered.length === 0 ? (
@@ -4406,17 +4408,22 @@ function HeroMindmap() {
     setPhase('imploding');
     setTimeout(() => setPhase('response'), IMPLODE_DURATION_MS);
   };
-  const reset = () => {
-    const oldSession = sessionId;
+  const startEmptyThread = () => {
     const nextSession = resetSessionId();
     setSessionId(nextSession);
-    fetch(`/api/sessions/${encodeURIComponent(oldSession)}/clear`, { method: 'POST' }).catch(() => {});
+    setLiveTurn(null);
     setPhase('idle');
     setCurrentPrompt('');
     setDraft('');
     setAttachments([]);
     setResponses([]);
     clearPersistedStack();
+    return nextSession;
+  };
+  const reset = () => {
+    const oldSession = sessionId;
+    startEmptyThread();
+    fetch(`/api/sessions/${encodeURIComponent(oldSession)}/clear`, { method: 'POST' }).catch(() => {});
     refreshSessions();
   };
 
@@ -4502,15 +4509,31 @@ function HeroMindmap() {
       const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('delete failed');
       if (session.id === sessionId) {
-        const nextSession = resetSessionId();
-        setSessionId(nextSession);
-        setResponses([]);
-        clearPersistedStack();
-        setPhase('idle');
+        startEmptyThread();
       }
       await refreshSessions();
     } catch (e) {
       window.alert('Could not delete that thread: ' + (e?.message || 'unknown error'));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const deleteAllSessionsUi = async () => {
+    const count = sessionList.length;
+    if (count === 0) return;
+    if (!window.confirm(`Delete all ${count} saved thread${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    stopStream();
+    setSessionBusy(true);
+    try {
+      const res = await fetch('/api/sessions', { method: 'DELETE' });
+      if (!res.ok) throw new Error('delete all failed');
+      startEmptyThread();
+      setSessionList([]);
+      setSessionQuery('');
+      setSessionsOpen(false);
+    } catch (e) {
+      window.alert('Could not delete all threads: ' + (e?.message || 'unknown error'));
     } finally {
       setSessionBusy(false);
     }
@@ -4628,6 +4651,7 @@ function HeroMindmap() {
         onTogglePin={togglePinSession}
         onDuplicateSession={duplicateSessionUi}
         onDeleteSession={deleteSessionUi}
+        onDeleteAllSessions={deleteAllSessionsUi}
         onExportSession={exportSessionUi}
         onClearCurrent={clearCurrentSession}
       />

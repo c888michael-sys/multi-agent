@@ -3559,6 +3559,13 @@
 .mm-session-close:hover,
 .mm-session-tools button:hover,
 .mm-session-actions button:hover { color: var(--mm-fg); border-color: var(--accent); }
+.mm-session-tools button.danger,
+.mm-session-actions button.danger { color: oklch(0.74 0.12 28); }
+.mm-session-tools button.danger:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.mm-session-tools button.danger:hover { border-color: oklch(0.67 0.17 28); color: oklch(0.78 0.15 28); }
 .mm-session-actions button.danger:hover { border-color: oklch(0.67 0.17 28); color: oklch(0.78 0.15 28); }
 .mm-session-tools { margin-bottom: 14px; flex-wrap: wrap; }
 .mm-session-tools input {
