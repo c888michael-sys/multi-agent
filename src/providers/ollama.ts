@@ -12,6 +12,9 @@
 import type { Provider, CompleteOptions } from "../provider.js";
 import type {
   ConversationPart,
+  ToolDeclaration,
+  ToolCallRequest,
+  CompleteWithToolsResult,
 } from "../tools/types.js";
 
 export interface OllamaProviderOptions {
@@ -41,6 +44,8 @@ export interface OllamaProviderOptions {
 interface OllamaMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  /** Present on assistant turns that requested tool calls. */
+  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
 }
 
 function historyToOllamaMessages(history: ConversationPart[]): OllamaMessage[] {
@@ -50,6 +55,15 @@ function historyToOllamaMessages(history: ConversationPart[]): OllamaMessage[] {
       messages.push({ role: "user", content: part.text });
     } else if (part.kind === "model_text") {
       messages.push({ role: "assistant", content: part.text });
+    } else if (part.kind === "model_calls") {
+      // Replay a prior assistant tool-call turn so the model can see its history.
+      messages.push({
+        role: "assistant",
+        content: "",
+        tool_calls: part.calls.map((c) => ({
+          function: { name: c.name, arguments: c.args },
+        })),
+      });
     } else if (part.kind === "tool_result") {
       messages.push({ role: "tool", content: part.result });
     }
@@ -206,6 +220,71 @@ export class OllamaProvider implements Provider {
     }
     // Stream ended without an explicit done marker ? return whatever we got.
     return full;
+  }
+
+  /**
+   * Tool-calling via Ollama's native `/api/chat` `tools` field (supported
+   * since Ollama 0.3.0). Passes tool declarations as OpenAI-compatible
+   * function descriptors; reads back `message.tool_calls` when the model
+   * decides to invoke a tool, or `message.content` when it produces text.
+   *
+   * Not all local models support function calling — ones that don't will
+   * either return an empty tool_calls array (treated as text) or produce
+   * garbled output. qwen2.5-coder and qwen3.5 support it natively.
+   */
+  async completeWithTools(
+    history: ConversationPart[],
+    tools: ToolDeclaration[],
+    opts?: CompleteOptions,
+  ): Promise<CompleteWithToolsResult> {
+    const ollamaTools = tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+    const body = {
+      model: this.resolvedModel,
+      messages: historyToOllamaMessages(history),
+      tools: ollamaTools,
+      stream: false,
+      options: this.buildOllamaOptions(opts),
+    };
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Ollama API ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const json = (await res.json()) as {
+      message?: {
+        content?: string;
+        tool_calls?: Array<{
+          function?: { name?: string; arguments?: unknown };
+        }>;
+      };
+    };
+    const msg = json.message;
+    if (!msg) return { kind: "text", text: "" };
+
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      const calls: ToolCallRequest[] = msg.tool_calls
+        .filter((c) => typeof c.function?.name === "string")
+        .map((c) => {
+          const args = c.function!.arguments;
+          return {
+            name: c.function!.name as string,
+            args:
+              typeof args === "object" && args !== null && !Array.isArray(args)
+                ? (args as Record<string, unknown>)
+                : {},
+          };
+        });
+      if (calls.length > 0) return { kind: "calls", calls };
+    }
+
+    return { kind: "text", text: msg.content ?? "" };
   }
 
   isRateLimitError(_err: unknown): boolean {
