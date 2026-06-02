@@ -4266,8 +4266,8 @@ function HeroMindmap() {
           <button
             className={'mm-nav-goals' + (goalOpen ? ' open' : '')}
             onClick={() => setGoalOpen(v => !v)}
-            title="View active goals (/goal <description> to start)"
-            aria-label="View goals"
+            data-tip="Long-running tasks. Start one with /goal in chat."
+            aria-label={goalOpen ? 'Close goals panel' : 'Open goals panel'}
           >
             goals
           </button>

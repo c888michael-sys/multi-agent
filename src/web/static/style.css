@@ -3771,11 +3771,56 @@
 
 /* ── Goal view ────────────────────────────────────────────────────────────── */
 .mm-nav-goals {
-  padding: 4px 10px; border-radius: 6px; border: 0.5px solid var(--mm-line);
-  background: transparent; color: var(--mm-fg-dim); font-size: 11px;
-  letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 0.5px solid var(--mm-line);
+  background: color-mix(in oklch, var(--mm-bg) 72%, transparent);
+  color: var(--mm-fg-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
 }
-.mm-nav-goals:hover, .mm-nav-goals.open { color: var(--mm-fg); border-color: var(--accent); }
+.mm-nav-goals:hover {
+  color: var(--mm-fg);
+  border-color: color-mix(in oklch, var(--accent) 45%, var(--mm-line));
+}
+.mm-nav-goals.open {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: var(--accent-faint);
+}
+/* CSS tooltip shown on hover */
+.mm-nav-goals::after {
+  content: attr(data-tip);
+  pointer-events: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  max-width: 220px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 0.5px solid var(--mm-line-strong);
+  background: var(--mm-surface);
+  color: var(--mm-fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  line-height: 1.5;
+  white-space: normal;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 500;
+}
+.mm-nav-goals:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
 
 .mm-goal-view {
   position: fixed; inset: 0; z-index: 400;
