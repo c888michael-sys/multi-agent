@@ -106,8 +106,8 @@ The candidate order each role uses today, after live calibration against the act
 
 | Role | Chain (priority order) | Notes |
 |---|---|---|
-| **orchestration** | `gemini:1 → gemini:2 → openrouter:deepseek-v4-flash → gemma:1 → gemma:2` | Light-touch routing decisions; Gemini Flash is the right shape. Falls to DeepSeek V4 Flash on OpenRouter when both Flash keys are cool, then to Gemma 4 31B (different model = independent quota pool on the same Google project) as the safety net. |
-| **reasoning** | `gemini:1 (thinking=high) → gemini:2 (thinking=high) → openrouter:deepseek-v4-flash → gemma:1 → gemma:2` | Same chain shape but `thinking=high` mode on the Gemini hops; reasoning quality on Gemini Flash with extended thinking is at least as good as DeepSeek V4 Flash on Aider/GPQA, and the DeepSeek slot is preserved as the dedicated-reasoning fallback. DeepSeek R1 free was retired by OpenRouter (404 on every `:free` slug). In **hybrid mode** (`--local` / web settings toggle), `ollama:deepseek-r1` is prepended and defaults to `deepseek-r1:14b` with 32K context. |
+| **orchestration** | `gemini:1 → gemini:2 → openrouter:qwen3.6-plus-preview → gemma:1 → gemma:2` | Light-touch routing decisions; Gemini Flash is the right shape. Falls to Qwen 3.6 Plus Preview on OpenRouter when both Flash keys are cool, then to Gemma 4 31B as the safety net. |
+| **reasoning** | `openrouter:qwen3.6-plus-preview → gemini:1 (thinking=high) → gemini:2 (thinking=high) → gemma:1 → gemma:2` | **Qwen 3.6 Plus Preview** (free preview on OpenRouter, 1M context, strong hybrid architecture) leads as the primary for both coding and non-coding deliberation. Gemini Flash with `thinking=high` is the secondary fallback. In **hybrid mode** (`--local` / web settings toggle), `ollama:qwen3.5-9b` is prepended and defaults to `qwen3.5:9b` with 32K context. |
 | **perception** | `gemini:3 (useSearch=true) → gemma:1 → gemma:2` | **`gemini:3` is reserved exclusively for perception** — it is NOT listed in orchestration or reasoning candidates, so heavy chat traffic can't drain the one Flash slot that has Google Search grounding. Gemma fallback exists for liveness even though it loses live web data when it takes over. |
 | **action-code** | `mistral:codestral → gemma:1 → gemma:2` | Mistral Codestral, code-specialized, ~1 B tokens / month free. Gemma falls in below. Gemini Flash is intentionally NOT in this chain — it's reserved for perception/orchestration/reasoning where it actually matters. In **hybrid mode**, `ollama:qwen2.5-coder` (native 32 K context) is prepended. |
 | **action-structural** | `groq:llama-70b → gemma:1 → gemma:2` | Groq Llama 3.3 70B, 1000 RPD on its own quota. |
@@ -119,78 +119,6 @@ The candidate order each role uses today, after live calibration against the act
 **Why `gemini:3` is reserved.** Without isolation, the chat orchestrator can fire 3-6 Gemini Flash calls per turn (plan → specialists → synthesis → mindmap pre-fetch), which would burn through all three Flash keys' daily 20-RPD caps within an hour of testing. Reserving one key for perception means searches against live web data still work even when chat has eaten the other two keys.
 
 **Gemma 4 replaces Gemma 3.** As of May 2026 the active safety-net slug is `gemma-4-31b-it`. The old `gemma-3-27b-it` slug now hard-404s on `generateContent`, so future Gemma retirements should be handled by updating the default `model` argument in `loadGemmaProvidersFromEnv()` in `src/config.ts`; the provider implementation is model-agnostic because Gemma uses the same `GoogleGenerativeAI` SDK as Gemini.
-
----
-
-## Planned: reasoning model swap → Qwen 3.6 Plus (online) + local Qwen 3.5 9B (hybrid)
-
-> **Status: PLANNED — not yet implemented.** The "live config" table above is still accurate (DeepSeek). This section is the worker spec for the change; the table, roadmap, and UI strings get updated *as part of* the implementing commit, not before. For agentic workers: implement task-by-task, run the full verification block at the end before committing, and keep README ↔ code in sync in the same commit.
-
-**Goal.** Make **Qwen 3.6 Plus** (OpenRouter, slug `qwen/qwen3.6-plus`) the **primary** online reasoner for the single `reasoning` role (which covers *both* coding and non-coding deliberation), with the existing Gemini→Gemma chain preserved *behind* it. In **hybrid mode**, swap the local reasoner from DeepSeek-R1 to **Qwen 3.5 9B** (`qwen3.5:9b`). DeepSeek is removed from the reasoning path entirely.
-
-**Target chains after this change:**
-
-| Role | New chain |
-|---|---|
-| **reasoning** | `openrouter:qwen3.6-plus → gemini:1 (thinking=high) → gemini:2 (thinking=high) → gemma:1 → gemma:2` |
-| **reasoning** (hybrid `--local`) | `ollama:qwen3.5-9b` prepended → `openrouter:qwen3.6-plus → gemini:1 (high) → gemini:2 (high) → gemma:1 → gemma:2` |
-| **orchestration** | `gemini:1 → gemini:2 → openrouter:qwen3.6-plus → gemma:1 → gemma:2` (backup slot follows the renamed provider id) |
-
-**Critical constraint — Qwen 3.6 Plus is a PRICED route, not a `:free` model.** The model slug is exactly `qwen/qwen3.6-plus` with **no `:free` suffix**. The current OpenRouter provider defaults to `deepseek/deepseek-v4-flash:free` and its docstring says free models *must* end in `:free` — that guidance no longer applies to this route and must be corrected. Do not assign the `:free` ~50/day shared-budget RPD estimate to this route; it has no static RPD cap and should rely on live `X-RateLimit-*` headers (the sidebar/usage gauge should show successful calls until headers report a cap).
-
-### Task 1 — role registry (`src/roles/default-registry.ts`)
-
-- `LOCAL_REASONING`: change `{ providerId: "ollama:deepseek-r1" }` → `{ providerId: "ollama:qwen3.5-9b" }` (and update the doc comment at ~line 48).
-- `reasoning` role `candidates` (~lines 105–118): make `{ providerId: "openrouter:qwen3.6-plus" }` the **first** entry (primary), followed by the two `GEMINI_FLASH_SHARED` entries with `mode: { thinking: "high" }`, then `GEMMA_FALLBACK`. Remove the old `{ providerId: "openrouter:deepseek-v4-flash" }` entry. Update the comments to describe Qwen 3.6 Plus as the primary online reasoner for both coding and non-coding work.
-- `orchestration` role (~lines 123–135): replace the backup `{ providerId: "openrouter:deepseek-v4-flash" }` with `{ providerId: "openrouter:qwen3.6-plus" }` (same position — after the two Flash slots, before Gemma). This is required because the OpenRouter provider id is being renamed; leaving the old id makes the orchestration backup a dead reference.
-- Update the provider-id example in the file header comment (~line 15) from `openrouter:deepseek-v4-flash` to `openrouter:qwen3.6-plus`.
-
-### Task 2 — provider registration + defaults (`src/config.ts`)
-
-- `LOCAL_OLLAMA_MODELS.reasoning` (~lines 132–139): `providerId` `ollama:deepseek-r1` → `ollama:qwen3.5-9b`; `model` `deepseek-r1:14b` → `qwen3.5:9b`. Keep `numCtx: 32_768`, the 15-min `requestTimeoutMs`, and the `OLLAMA_REASONING_MODEL` / `OLLAMA_REASONING_NUM_CTX` env overrides. Update the nearby doc comment (~line 124, "14B + 14B"/DeepSeek wording, and ~line 172 example).
-- `loadOpenRouterProvidersFromEnv` (~lines 383–401): `id` `openrouter:deepseek-v4-flash` → `openrouter:qwen3.6-plus`; update the docstring (~line 385) to describe Qwen 3.6 Plus as a priced reasoning route.
-- Verify the per-prefix RPD/budget handling for the `openrouter` prefix does not stamp the qwen route with a free-tier daily cap; prefer live headers.
-
-### Task 3 — OpenRouter provider default (`src/providers/openrouter.ts`)
-
-- Default `model` (~line 58): `deepseek/deepseek-v4-flash:free` → `qwen/qwen3.6-plus`.
-- Rewrite the `model?` option docstring (~lines 23–29) and the class docstring (~lines 37–44): the new default is a **priced** route (no `:free`), so the "free models MUST end with `:free`" note becomes "append `:free` only for free variants; the default `qwen/qwen3.6-plus` is a paid route."
-
-### Task 4 — env + CLI/UI strings
-
-- `.env.example`: line ~20 ("DeepSeek V4 Flash for the reasoning role's backup slot") → describe `OPENROUTER_KEY` powering Qwen 3.6 Plus as the primary reasoner; lines ~44–47 example `OLLAMA_REASONING_MODEL=deepseek-r1:14b` → `qwen3.5:9b`.
-- `src/cli.ts` (~lines 572, 579): help text "DeepSeek-R1 14B for reasoning" / "reasoning→ollama:deepseek-r1" → Qwen 3.5 9B / `ollama:qwen3.5-9b`.
-- `src/web/static/app.jsx` (~line 610): settings hint "route reasoning → DeepSeek-R1 14B" → "Qwen 3.5 9B". (The `<think>`-stripping comments at ~260/275/4003 mention DeepSeek-R1 as a generic example of a reasoning model and may stay.)
-- `src/web/server.ts` (~line 264): comment example `ollama:deepseek-r1` → `ollama:qwen3.5-9b`.
-
-### Task 5 — tests (must be updated to match)
-
-- `tests/roles.test.ts:180`: `candidateIds("reasoning", true)[0]` expect `ollama:qwen3.5-9b`. Add/adjust an assertion that the cloud reasoning primary is `openrouter:qwen3.6-plus`.
-- `tests/openrouter.test.ts` (~73–89): rename the test and expect model `qwen/qwen3.6-plus` and id `openrouter:qwen3.6-plus`.
-- `tests/ollama.test.ts`: default-model assertion (~line 129) → `qwen3.5:9b`; provider-id lookups `ollama:deepseek-r1` → `ollama:qwen3.5-9b` (~lines 129, 146, 165). The standalone installed-tag-fallback fixtures (~lines 12–85, model `deepseek-r1:32b`) are model-agnostic and may stay or be renamed for clarity.
-- `tests/web-server.test.ts`: `required` model list assertion (~line 223) → `["qwen3.5:9b", "qwen2.5-coder:14b"]`; the mock `/api/tags` models (~line 211) and the cooldown-state fixture id (~line 184, `openrouter:deepseek-v4-flash` → `openrouter:qwen3.6-plus`) updated to match the new registry.
-
-### Task 6 — docs (same commit)
-
-- Role-chains table above: update the **reasoning** row (line ~110) and **orchestration** row (line ~109) to the new chains; note Qwen 3.6 Plus is the primary online reasoner for both coding and non-coding and is a priced route (live-header RPD).
-- Roadmap line ~170 ("OpenRouter provider + DeepSeek V4 Flash as `reasoning`") → reflect Qwen 3.6 Plus as primary reasoning.
-- Hybrid setup table (~line 898) and pull instruction (~line 906, `ollama pull deepseek-r1:14b` → `ollama pull qwen3.5:9b`, ~9 GB), and the fallback example at ~line 979.
-- Top-of-file status blurb if it names the reasoning model.
-- Delete this **Planned** section (or mark it ✓ done) once the change ships.
-
-### Verification (run before committing)
-
-```powershell
-npm run typecheck
-npm test                 # all tests green, including the updated reasoning/ollama/openrouter/web-server specs
-npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL   # app.jsx still parses
-```
-
-Live smoke (optional, costs a request): with `OPENROUTER_KEY` set, `npm run cli -- ask "..." --role=reasoning` should route to `openrouter:qwen3.6-plus`; `npm run cli -- doctor` should list `openrouter:qwen3.6-plus` among registered providers.
-
-### Reference implementation (consult, don't blindly apply)
-
-A prior agent implemented this exact swap on this same base but bundled in extra, out-of-scope changes (diagnose read-only, web-runtime model config, status/quota alignment). Those commits were reverted off `main` and parked on the **local-only** branch `backup/wrong-qwen-routing-d1f895a`. `git diff d63e43b backup/wrong-qwen-routing-d1f895a -- src/roles/default-registry.ts src/config.ts src/providers/openrouter.ts` shows a clean reference for the model-swap portion. Use it to cross-check, but implement only the model swap described above unless the user asks for the bundled extras.
 
 ---
 
@@ -239,7 +167,7 @@ A prior agent implemented this exact swap on this same base but bundled in extra
 - [x] Stage 4: multi-turn conversation + context window management (`chat <session-id>` REPL with persistent history, `/clear` `/truncate` `/info` `/usage` `/help` `/exit` slash commands, 80%/95% budget warnings with confirm-to-continue, role-based failover for chat calls)
 - [x] Stage 6: role abstraction layer (`RoleConfig` / `RoleResolver`) — routes role calls to constrained provider subsets, falls back through candidates, validates registration
 - [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
-- [x] Stage 6: OpenRouter provider + DeepSeek V4 Flash as `reasoning` (live-verified; R1 free retired by OpenRouter, V4-Flash is the current free reasoning option)
+- [x] Stage 6: OpenRouter provider + Qwen 3.6 Plus Preview as `reasoning` primary (live-verified; free preview model, 1M context)
 - [x] Stage 6: Cerebras provider + GPT-OSS 120B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, GPT-OSS 120B is the right shape for bulk/speed)
 - [x] Stage 6: Mistral provider + Codestral as `action-code` (live-verified via `--role=action-code`)
 - [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
@@ -967,7 +895,7 @@ If you have an Ollama daemon running on the same machine (or on your LAN), you c
 
 | Role | Local model | Where it usually goes (cloud) |
 |---|---|---|
-| `reasoning` | `deepseek-r1:14b` | `gemini:1` / `gemini:2` with `thinking=high` |
+| `reasoning` | `qwen3.5:9b` | `openrouter:qwen3.6-plus-preview`, then `gemini:1` / `gemini:2` with `thinking=high` |
 | `action-code` | `qwen2.5-coder:14b` | `mistral:codestral` |
 
 All other roles (orchestration, perception, action-structural, action-repetitive) continue to use their cloud chains regardless of this toggle — perception in particular needs Google Search grounding and cannot be swapped to a local model.
@@ -975,13 +903,13 @@ All other roles (orchestration, perception, action-structural, action-repetitive
 Setup:
 
 1. Install Ollama (https://ollama.com).
-2. `ollama pull deepseek-r1:14b` (about 9 GB; safer default for the reasoning role).
+2. `ollama pull qwen3.5:9b` (about 5.2 GB; default for the reasoning role).
 3. `ollama pull qwen2.5-coder:14b` (middle-ground coder model; override if you intentionally want 32B).
 4. Enable via either path:
    - **CLI**: pass `--local` to any command — `npm run cli -- task --local "..."`, `npm run cli -- chat --local my-session`, `npm run cli -- serve --local`.
    - **Web UI**: open the settings drawer (top-right gear), toggle "Hybrid local models." The toggle persists in `localStorage[lattice.settings.v1]`; each chat-stream request sends an explicit `useLocal: true` or `useLocal: false`, so the server picks the resolver that matches the visible toggle instead of inheriting the process default.
 
-Override the daemon URL with `OLLAMA_HOST=http://other-host:11434` in `.env` if Ollama runs on a different machine. The cloud chain is preserved as fallback in local mode — if the daemon is down or the model isn't pulled, the role gracefully falls through to the original cloud candidate. To use a bigger/smaller local pair without code changes, set `OLLAMA_REASONING_MODEL` and/or `OLLAMA_CODER_MODEL`; use `OLLAMA_NUM_CTX` for both roles or `OLLAMA_REASONING_NUM_CTX` / `OLLAMA_CODER_NUM_CTX` when mixing sizes. For example, a 32B reasoner plus 14B coder compromise can use `OLLAMA_REASONING_MODEL=deepseek-r1:32b`, `OLLAMA_REASONING_NUM_CTX=16384`, `OLLAMA_CODER_MODEL=qwen2.5-coder:14b`, and `OLLAMA_CODER_NUM_CTX=32768`.
+Override the daemon URL with `OLLAMA_HOST=http://other-host:11434` in `.env` if Ollama runs on a different machine. The cloud chain is preserved as fallback in local mode — if the daemon is down or the model isn't pulled, the role gracefully falls through to the original cloud candidate. To use a bigger/smaller local pair without code changes, set `OLLAMA_REASONING_MODEL` and/or `OLLAMA_CODER_MODEL`; use `OLLAMA_NUM_CTX` for both roles or `OLLAMA_REASONING_NUM_CTX` / `OLLAMA_CODER_NUM_CTX` when mixing sizes. For example, a larger reasoner plus 14B coder can use `OLLAMA_REASONING_MODEL=qwen3.5:32b`, `OLLAMA_REASONING_NUM_CTX=16384`, `OLLAMA_CODER_MODEL=qwen2.5-coder:14b`, and `OLLAMA_CODER_NUM_CTX=32768`.
 
 Cross-device note: GitHub does not include `.env`. On every device that runs the CLI or web server, create its own `.env` with the cloud keys (`GEMINI_KEY_1`, etc.). If the file lives outside the repo, point the app at it before launch: PowerShell one-off example: `$env:MULTI_AGENT_ENV='C:\path\to\.env'; npm run cli -- doctor`; persistent example: `setx MULTI_AGENT_ENV "C:\path\to\.env"` then open a new terminal. `DOTENV_CONFIG_PATH` is accepted as an alias. If local Ollama runs on a different device from the web server, set `OLLAMA_HOST=http://<that-device-ip>:11434` in the web server device's `.env`. To diagnose what a device actually loaded, run `npm run cli -- doctor` from the intended clone and check the printed `cwd` before changing env-loading code.
 
@@ -1048,7 +976,7 @@ The orchestrator's plan-generation output is parsed as JSON with defensive fallb
 
 When a role's primary candidate is exhausted, the resolver:
 
-1. **Falls back through the role's own candidate list first** (e.g., reasoning: `gemini:1` thinking=high → `gemini:2` thinking=high → `openrouter:deepseek-v4-flash` → `gemma:1/2/3`).
+1. **Falls back through the role's own candidate list first** (e.g., reasoning: `openrouter:qwen3.6-plus-preview` → `gemini:1` thinking=high → `gemini:2` thinking=high → `gemma:1/2`).
 2. **If the role's whole candidate list is exhausted**, borrows ANY healthy provider from outside the role's list as a last-resort substitute. Capabilities may degrade — for example, a borrow that subs Groq for perception loses Google Search grounding.
 3. **If nothing in the pool can serve**, throws `AllProvidersExhaustedError`.
 

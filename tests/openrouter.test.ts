@@ -70,7 +70,7 @@ describe("OpenRouterProvider.complete", () => {
     expect(capturedHeaders?.["X-Title"]).toBe("test-app");
   });
 
-  it("defaults to deepseek-v4-flash:free model", async () => {
+  it("defaults to qwen3.6-plus-preview model", async () => {
     let sentBody: unknown;
     const f = fakeFetch(
       200,
@@ -81,12 +81,12 @@ describe("OpenRouterProvider.complete", () => {
       },
     );
     const p = new OpenRouterProvider({
-      id: "openrouter:deepseek-v4-flash",
+      id: "openrouter:qwen3.6-plus-preview",
       apiKey: "k",
       fetchImpl: f as typeof fetch,
     });
     await p.complete("hi");
-    expect((sentBody as { model: string }).model).toBe("deepseek/deepseek-v4-flash:free");
+    expect((sentBody as { model: string }).model).toBe("qwen/qwen3.6-plus-preview");
   });
 
   it("throws OpenAICompatError on non-2xx response", async () => {

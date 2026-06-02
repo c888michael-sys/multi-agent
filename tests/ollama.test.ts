@@ -126,7 +126,7 @@ describe("loadOllamaProviders", () => {
     delete process.env.OLLAMA_CODER_MODEL;
     try {
       const providers = loadOllamaProviders();
-      expect(providers.find((p) => p.id === "ollama:deepseek-r1")?.model).toBe("deepseek-r1:14b");
+      expect(providers.find((p) => p.id === "ollama:qwen3.5-9b")?.model).toBe("qwen3.5:9b");
       expect(providers.find((p) => p.id === "ollama:qwen2.5-coder")?.model).toBe("qwen2.5-coder:14b");
     } finally {
       if (oldReasoning === undefined) delete process.env.OLLAMA_REASONING_MODEL;
@@ -139,11 +139,11 @@ describe("loadOllamaProviders", () => {
   it("allows per-role local model overrides from env", () => {
     const oldReasoning = process.env.OLLAMA_REASONING_MODEL;
     const oldCoder = process.env.OLLAMA_CODER_MODEL;
-    process.env.OLLAMA_REASONING_MODEL = "deepseek-r1:32b";
+    process.env.OLLAMA_REASONING_MODEL = "qwen3.5:32b";
     process.env.OLLAMA_CODER_MODEL = "qwen2.5-coder:32b";
     try {
       const providers = loadOllamaProviders();
-      expect(providers.find((p) => p.id === "ollama:deepseek-r1")?.model).toBe("deepseek-r1:32b");
+      expect(providers.find((p) => p.id === "ollama:qwen3.5-9b")?.model).toBe("qwen3.5:32b");
       expect(providers.find((p) => p.id === "ollama:qwen2.5-coder")?.model).toBe("qwen2.5-coder:32b");
     } finally {
       if (oldReasoning === undefined) delete process.env.OLLAMA_REASONING_MODEL;
@@ -162,7 +162,7 @@ describe("loadOllamaProviders", () => {
     process.env.OLLAMA_CODER_NUM_CTX = "32768";
     try {
       const providers = loadOllamaProviders();
-      expect((providers.find((p) => p.id === "ollama:deepseek-r1") as any)?.numCtx).toBe(16384);
+      expect((providers.find((p) => p.id === "ollama:qwen3.5-9b") as any)?.numCtx).toBe(16384);
       expect((providers.find((p) => p.id === "ollama:qwen2.5-coder") as any)?.numCtx).toBe(32768);
     } finally {
       if (oldGlobal === undefined) delete process.env.OLLAMA_NUM_CTX;

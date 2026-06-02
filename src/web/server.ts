@@ -261,7 +261,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         // `?local=1` makes the snapshot read role candidates from the
         // local-prepend resolver so the sidebar's per-role primary/fallback
         // attribution reflects the hybrid-mode chains (reasoning →
-        // ollama:deepseek-r1, action-code → ollama:qwen2.5-coder).
+        // ollama:qwen3.5-9b, action-code → ollama:qwen2.5-coder).
         const useLocal = url.searchParams.get("local") === "1";
         const activeResolver = resolverFor(opts, useLocal);
         const snap = opts.router.snapshot();

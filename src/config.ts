@@ -130,8 +130,8 @@ import type { ProviderConfig } from "./pool.js";
  */
 export const LOCAL_OLLAMA_MODELS = {
   reasoning: {
-    providerId: "ollama:deepseek-r1",
-    model: "deepseek-r1:14b",
+    providerId: "ollama:qwen3.5-9b",
+    model: "qwen3.5:9b",
     numCtx: 32_768,
     requestTimeoutMs: 15 * 60_000,
     modelEnv: "OLLAMA_REASONING_MODEL",
@@ -382,16 +382,16 @@ export function loadGroqProvidersFromEnv(opts?: { model?: string }): Provider[] 
 
 /**
  * Load OpenRouter provider from env. Returns [] if OPENROUTER_KEY is unset.
- * Defaults to DeepSeek V4 Flash (free variant). R1 free was retired by
- * OpenRouter — V4 Flash is the current best free reasoning option in the
- * same family. Override with `opts.model` for any other OpenRouter slug.
+ * Defaults to Qwen 3.6 Plus Preview — a free preview model on OpenRouter
+ * used as the primary online reasoner. Override with `opts.model` for any
+ * other OpenRouter slug.
  */
 export function loadOpenRouterProvidersFromEnv(opts?: { model?: string }): Provider[] {
   const key = (process.env.OPENROUTER_KEY ?? "").trim();
   if (!key) return [];
   return [
     new OpenRouterProvider({
-      id: "openrouter:deepseek-v4-flash",
+      id: "openrouter:qwen3.6-plus-preview",
       apiKey: key,
       appName: "multi-agent",
       appUrl: "https://github.com/c888michael-sys/multi-agent",

@@ -170,18 +170,17 @@ describe("web server", () => {
     expect(j.roles.orchestration.providerId).toBe("gemini:1");
     expect(j.roles.orchestration.successCount).toBe(3);
     expect(j.roles["action-structural"].providerId).toBe("groq:llama-70b");
-    // Reasoning's NEW primary chain begins with gemini:1 (Flash + thinking=high),
-    // so it's the primary not a fallback — even though OpenRouter / Gemma are
-    // missing from this test's provider set.
+    // Reasoning's primary is openrouter:qwen3.6-plus-preview, which is absent
+    // from this test's mock snapshot, so the resolver falls back to gemini:1.
     expect(j.roles.reasoning.providerId).toBe("gemini:1");
-    expect(j.roles.reasoning.fallback).toBe(false);
+    expect(j.roles.reasoning.fallback).toBe(true);
   });
 
   it("/api/usage.json marks a role temporarily unavailable when all candidates are cooling", async () => {
     const future = Date.now() + 60_000;
     const { url } = spawn({
       snap: [
-        { id: "openrouter:deepseek-v4-flash", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
+        { id: "openrouter:qwen3.6-plus-preview", cooldownUntil: future, successCount: 0, rateLimitCount: 2 },
         { id: "gemini:1", cooldownUntil: future, successCount: 3, rateLimitCount: 1, remainingPct: 75 },
         { id: "gemini:2", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
         { id: "gemini:3", cooldownUntil: future, successCount: 0, rateLimitCount: 1, remainingPct: 80 },
@@ -208,7 +207,7 @@ describe("web server", () => {
       const url = String(input);
       if (url === "http://localhost:11434/api/tags") {
         return Response.json({
-          models: [{ name: "deepseek-r1:14b" }, { name: "qwen2.5-coder:32b" }],
+          models: [{ name: "qwen3.5:9b" }, { name: "qwen2.5-coder:32b" }],
         });
       }
       return oldFetch(input, init);
@@ -220,7 +219,7 @@ describe("web server", () => {
       expect(r.status).toBe(200);
       const j: any = await r.json();
       expect(j.reachable).toBe(true);
-      expect(j.required).toEqual(["deepseek-r1:14b", "qwen2.5-coder:14b"]);
+      expect(j.required).toEqual(["qwen3.5:9b", "qwen2.5-coder:14b"]);
       expect(j.missing).toEqual(["qwen2.5-coder:14b"]);
     } finally {
       globalThis.fetch = oldFetch;

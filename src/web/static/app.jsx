@@ -607,7 +607,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                   Hybrid local models
                   {hybridChecking ? <span className="mm-settings-hint" style={{ marginLeft: 8 }}>checking…</span> : null}
                 </span>
-                <span className="mm-settings-hint">route reasoning → DeepSeek-R1 14B and action-code → Qwen 2.5 Coder 14B on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
+                <span className="mm-settings-hint">route reasoning → Qwen 3.5 9B and action-code → Qwen 2.5 Coder 14B on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
                 {hybridError ? (
                   <span className="mm-settings-error" role="alert">{hybridError}</span>
                 ) : null}

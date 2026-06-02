@@ -12,7 +12,7 @@ import type { RoleConfig } from "./types.js";
  * Provider id convention:
  *   - Gemini accounts: `gemini:1`, `gemini:2`, `gemini:3`, ...
  *   - Other providers: `<provider>:<short-model-name>`
- *     e.g., `groq:llama-70b`, `openrouter:deepseek-v4-flash`,
+ *     e.g., `groq:llama-70b`, `openrouter:qwen3.6-plus-preview`,
  *     `mistral:codestral`, `cerebras:gpt-oss-120b`.
  *
  * This file is the single source of truth for role configuration. Adding a new
@@ -45,14 +45,14 @@ const GEMMA_FALLBACK = [
  * Local-mode candidates — when the hybrid toggle is on, these get
  * prepended to the matching role's chain so they win when registered.
  *
- *   reasoning      → ollama:deepseek-r1   (DeepSeek-R1 14B by default, locally hosted)
+ *   reasoning      → ollama:qwen3.5-9b    (Qwen 3.5 9B by default, locally hosted)
  *   action-code    → ollama:qwen2.5-coder (Qwen 2.5 Coder, locally hosted)
  *
  * Cloud candidates remain in the chain as fallback if the local daemon
  * is unreachable or the model isn't pulled. All other roles are
  * unchanged in local mode.
  */
-const LOCAL_REASONING = { providerId: "ollama:deepseek-r1" };
+const LOCAL_REASONING = { providerId: "ollama:qwen3.5-9b" };
 const LOCAL_ACTION_CODE = { providerId: "ollama:qwen2.5-coder" };
 // Mindmap categorization needs a strong, reliable JSON-follower at the
 // front of its chain. It stays cloud/reserved in both cloud and hybrid
@@ -103,15 +103,13 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     description:
       "Plan-of-attack, hard decisions, deliberation. Highest-effort thinking mode.",
     candidates: [
-      // Primary: Gemini 3.5 Flash with `thinking=high` — extended reasoning,
-      // close to GPT-4-class on GPQA when given the full thinking budget.
-      // Two keys (gemini:1, gemini:2) shared with orchestration so we
-      // don't waste a slot on a rarely-called role.
+      // Primary: Qwen 3.6 Plus Preview on OpenRouter — free preview model,
+      // strong hybrid architecture covering both coding and non-coding
+      // deliberation. Independent quota pool from the Gemini slots.
+      { providerId: "openrouter:qwen3.6-plus-preview" },
+      // Secondary: Gemini 3.5 Flash with `thinking=high` — extended reasoning.
+      // Two keys (gemini:1, gemini:2) shared with orchestration.
       ...GEMINI_FLASH_SHARED.map((c) => ({ ...c, mode: { thinking: "high" as const } })),
-      // Backup: DeepSeek V4 Flash on OpenRouter (284B MoE / 13B active,
-      // native reasoning). Independent quota pool. R1 free was retired
-      // by OpenRouter — V4 Flash is the current free option.
-      { providerId: "openrouter:deepseek-v4-flash" },
       // Safety net: Gemma 4 31B on any of the three Gemini keys (separate
       // per-model quota; ~14,400 RPD per key on free tier).
       ...GEMMA_FALLBACK,
@@ -128,9 +126,9 @@ export const DEFAULT_ROLES: RoleConfig[] = [
       // Routing decisions are short, frequent, and don't need extended
       // reasoning — Flash defaults are the right shape.
       ...GEMINI_FLASH_SHARED,
-      // Backup: DeepSeek V4 Flash for when both Gemini Flash slots are
-      // cooled. Slower but a real second opinion on routing.
-      { providerId: "openrouter:deepseek-v4-flash" },
+      // Backup: Qwen 3.6 Plus Preview for when both Gemini Flash slots are
+      // cooled. Same provider id as the reasoning primary.
+      { providerId: "openrouter:qwen3.6-plus-preview" },
       // Safety net: Gemma 4.
       ...GEMMA_FALLBACK,
     ],

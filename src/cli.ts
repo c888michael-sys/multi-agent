@@ -569,14 +569,14 @@ Flags for 'diagnose-routing':
 Flags for 'serve':
   --port=<n>                      port to bind (default 7421)
   --local                         default the web UI into hybrid local-model mode
-                                  (DeepSeek-R1 14B for reasoning, Qwen 2.5 Coder 14B for
+                                  (Qwen 3.5 9B for reasoning, Qwen 2.5 Coder 14B for
                                   action-code via Ollama at localhost:11434). The web
                                   UI can still toggle modes per request; this flag
                                   only sets the initial default.
 
 Flag (any command — ask/agents/task/chat/serve):
   --local                         prepend the local Ollama providers to the role
-                                  registry for this run (reasoning→ollama:deepseek-r1,
+                                  registry for this run (reasoning→ollama:qwen3.5-9b,
                                   action-code→ollama:qwen2.5-coder). Requires a running
                                   Ollama daemon with those models pulled. Cloud
                                   candidates remain in the chain as fallback.

@@ -177,8 +177,9 @@ describe("default role registry", () => {
   }
 
   it("hybrid mode only prepends Ollama to reasoning and action-code", () => {
-    expect(candidateIds("reasoning", true)[0]).toBe("ollama:deepseek-r1");
+    expect(candidateIds("reasoning", true)[0]).toBe("ollama:qwen3.5-9b");
     expect(candidateIds("action-code", true)[0]).toBe("ollama:qwen2.5-coder");
+    expect(candidateIds("reasoning", false)[0]).toBe("openrouter:qwen3.6-plus-preview");
 
     expect(candidateIds("orchestration", true)[0]).toBe("gemini:1");
     expect(candidateIds("mindmap-categorize", true)[0]).toBe("gemini:1");
