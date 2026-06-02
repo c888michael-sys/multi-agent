@@ -122,6 +122,78 @@ The candidate order each role uses today, after live calibration against the act
 
 ---
 
+## Planned: reasoning model swap → Qwen 3.6 Plus (online) + local Qwen 3.5 9B (hybrid)
+
+> **Status: PLANNED — not yet implemented.** The "live config" table above is still accurate (DeepSeek). This section is the worker spec for the change; the table, roadmap, and UI strings get updated *as part of* the implementing commit, not before. For agentic workers: implement task-by-task, run the full verification block at the end before committing, and keep README ↔ code in sync in the same commit.
+
+**Goal.** Make **Qwen 3.6 Plus** (OpenRouter, slug `qwen/qwen3.6-plus`) the **primary** online reasoner for the single `reasoning` role (which covers *both* coding and non-coding deliberation), with the existing Gemini→Gemma chain preserved *behind* it. In **hybrid mode**, swap the local reasoner from DeepSeek-R1 to **Qwen 3.5 9B** (`qwen3.5:9b`). DeepSeek is removed from the reasoning path entirely.
+
+**Target chains after this change:**
+
+| Role | New chain |
+|---|---|
+| **reasoning** | `openrouter:qwen3.6-plus → gemini:1 (thinking=high) → gemini:2 (thinking=high) → gemma:1 → gemma:2` |
+| **reasoning** (hybrid `--local`) | `ollama:qwen3.5-9b` prepended → `openrouter:qwen3.6-plus → gemini:1 (high) → gemini:2 (high) → gemma:1 → gemma:2` |
+| **orchestration** | `gemini:1 → gemini:2 → openrouter:qwen3.6-plus → gemma:1 → gemma:2` (backup slot follows the renamed provider id) |
+
+**Critical constraint — Qwen 3.6 Plus is a PRICED route, not a `:free` model.** The model slug is exactly `qwen/qwen3.6-plus` with **no `:free` suffix**. The current OpenRouter provider defaults to `deepseek/deepseek-v4-flash:free` and its docstring says free models *must* end in `:free` — that guidance no longer applies to this route and must be corrected. Do not assign the `:free` ~50/day shared-budget RPD estimate to this route; it has no static RPD cap and should rely on live `X-RateLimit-*` headers (the sidebar/usage gauge should show successful calls until headers report a cap).
+
+### Task 1 — role registry (`src/roles/default-registry.ts`)
+
+- `LOCAL_REASONING`: change `{ providerId: "ollama:deepseek-r1" }` → `{ providerId: "ollama:qwen3.5-9b" }` (and update the doc comment at ~line 48).
+- `reasoning` role `candidates` (~lines 105–118): make `{ providerId: "openrouter:qwen3.6-plus" }` the **first** entry (primary), followed by the two `GEMINI_FLASH_SHARED` entries with `mode: { thinking: "high" }`, then `GEMMA_FALLBACK`. Remove the old `{ providerId: "openrouter:deepseek-v4-flash" }` entry. Update the comments to describe Qwen 3.6 Plus as the primary online reasoner for both coding and non-coding work.
+- `orchestration` role (~lines 123–135): replace the backup `{ providerId: "openrouter:deepseek-v4-flash" }` with `{ providerId: "openrouter:qwen3.6-plus" }` (same position — after the two Flash slots, before Gemma). This is required because the OpenRouter provider id is being renamed; leaving the old id makes the orchestration backup a dead reference.
+- Update the provider-id example in the file header comment (~line 15) from `openrouter:deepseek-v4-flash` to `openrouter:qwen3.6-plus`.
+
+### Task 2 — provider registration + defaults (`src/config.ts`)
+
+- `LOCAL_OLLAMA_MODELS.reasoning` (~lines 132–139): `providerId` `ollama:deepseek-r1` → `ollama:qwen3.5-9b`; `model` `deepseek-r1:14b` → `qwen3.5:9b`. Keep `numCtx: 32_768`, the 15-min `requestTimeoutMs`, and the `OLLAMA_REASONING_MODEL` / `OLLAMA_REASONING_NUM_CTX` env overrides. Update the nearby doc comment (~line 124, "14B + 14B"/DeepSeek wording, and ~line 172 example).
+- `loadOpenRouterProvidersFromEnv` (~lines 383–401): `id` `openrouter:deepseek-v4-flash` → `openrouter:qwen3.6-plus`; update the docstring (~line 385) to describe Qwen 3.6 Plus as a priced reasoning route.
+- Verify the per-prefix RPD/budget handling for the `openrouter` prefix does not stamp the qwen route with a free-tier daily cap; prefer live headers.
+
+### Task 3 — OpenRouter provider default (`src/providers/openrouter.ts`)
+
+- Default `model` (~line 58): `deepseek/deepseek-v4-flash:free` → `qwen/qwen3.6-plus`.
+- Rewrite the `model?` option docstring (~lines 23–29) and the class docstring (~lines 37–44): the new default is a **priced** route (no `:free`), so the "free models MUST end with `:free`" note becomes "append `:free` only for free variants; the default `qwen/qwen3.6-plus` is a paid route."
+
+### Task 4 — env + CLI/UI strings
+
+- `.env.example`: line ~20 ("DeepSeek V4 Flash for the reasoning role's backup slot") → describe `OPENROUTER_KEY` powering Qwen 3.6 Plus as the primary reasoner; lines ~44–47 example `OLLAMA_REASONING_MODEL=deepseek-r1:14b` → `qwen3.5:9b`.
+- `src/cli.ts` (~lines 572, 579): help text "DeepSeek-R1 14B for reasoning" / "reasoning→ollama:deepseek-r1" → Qwen 3.5 9B / `ollama:qwen3.5-9b`.
+- `src/web/static/app.jsx` (~line 610): settings hint "route reasoning → DeepSeek-R1 14B" → "Qwen 3.5 9B". (The `<think>`-stripping comments at ~260/275/4003 mention DeepSeek-R1 as a generic example of a reasoning model and may stay.)
+- `src/web/server.ts` (~line 264): comment example `ollama:deepseek-r1` → `ollama:qwen3.5-9b`.
+
+### Task 5 — tests (must be updated to match)
+
+- `tests/roles.test.ts:180`: `candidateIds("reasoning", true)[0]` expect `ollama:qwen3.5-9b`. Add/adjust an assertion that the cloud reasoning primary is `openrouter:qwen3.6-plus`.
+- `tests/openrouter.test.ts` (~73–89): rename the test and expect model `qwen/qwen3.6-plus` and id `openrouter:qwen3.6-plus`.
+- `tests/ollama.test.ts`: default-model assertion (~line 129) → `qwen3.5:9b`; provider-id lookups `ollama:deepseek-r1` → `ollama:qwen3.5-9b` (~lines 129, 146, 165). The standalone installed-tag-fallback fixtures (~lines 12–85, model `deepseek-r1:32b`) are model-agnostic and may stay or be renamed for clarity.
+- `tests/web-server.test.ts`: `required` model list assertion (~line 223) → `["qwen3.5:9b", "qwen2.5-coder:14b"]`; the mock `/api/tags` models (~line 211) and the cooldown-state fixture id (~line 184, `openrouter:deepseek-v4-flash` → `openrouter:qwen3.6-plus`) updated to match the new registry.
+
+### Task 6 — docs (same commit)
+
+- Role-chains table above: update the **reasoning** row (line ~110) and **orchestration** row (line ~109) to the new chains; note Qwen 3.6 Plus is the primary online reasoner for both coding and non-coding and is a priced route (live-header RPD).
+- Roadmap line ~170 ("OpenRouter provider + DeepSeek V4 Flash as `reasoning`") → reflect Qwen 3.6 Plus as primary reasoning.
+- Hybrid setup table (~line 898) and pull instruction (~line 906, `ollama pull deepseek-r1:14b` → `ollama pull qwen3.5:9b`, ~9 GB), and the fallback example at ~line 979.
+- Top-of-file status blurb if it names the reasoning model.
+- Delete this **Planned** section (or mark it ✓ done) once the change ships.
+
+### Verification (run before committing)
+
+```powershell
+npm run typecheck
+npm test                 # all tests green, including the updated reasoning/ollama/openrouter/web-server specs
+npx esbuild ./src/web/static/app.jsx --bundle --outfile=NUL   # app.jsx still parses
+```
+
+Live smoke (optional, costs a request): with `OPENROUTER_KEY` set, `npm run cli -- ask "..." --role=reasoning` should route to `openrouter:qwen3.6-plus`; `npm run cli -- doctor` should list `openrouter:qwen3.6-plus` among registered providers.
+
+### Reference implementation (consult, don't blindly apply)
+
+A prior agent implemented this exact swap on this same base but bundled in extra, out-of-scope changes (diagnose read-only, web-runtime model config, status/quota alignment). Those commits were reverted off `main` and parked on the **local-only** branch `backup/wrong-qwen-routing-d1f895a`. `git diff d63e43b backup/wrong-qwen-routing-d1f895a -- src/roles/default-registry.ts src/config.ts src/providers/openrouter.ts` shows a clean reference for the model-swap portion. Use it to cross-check, but implement only the model swap described above unless the user asks for the bundled extras.
+
+---
+
 ## Key design decisions (and why)
 
 **Why start with the router, not the agents.** Agent-calling-an-LLM is a well-understood shape; nothing to prove there. The real risk in this project is multi-key/multi-account failover working reliably under real rate limits. Build the risky part first as an isolated, testable module, then layer everything else on top of its stable interface.
