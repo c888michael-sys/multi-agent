@@ -483,14 +483,26 @@ Output ONLY the summary, no preamble.`;
    * When no tools are registered, falls back to the existing streaming/plain
    * chat path (preserving web-search fallback behaviour for perception).
    */
+  /**
+   * Roles that are allowed to call tools. Planner (reasoning), formatter
+   * (action-structural), checker (action-repetitive), orchestration, and
+   * perception all run plain chat — giving them tool declarations causes
+   * providers like Groq to attempt (and fail) tool calls in contexts where
+   * they're inappropriate. Only the code-execution specialist uses the loop.
+   */
+  private static readonly TOOL_ELIGIBLE_ROLES: ReadonlySet<RoleName> = new Set([
+    "action-code",
+  ]);
+
   private async runWithToolLoop(
     role: RoleName,
     history: ConversationPart[],
     opts: CompleteOptions,
     onToken?: (text: string) => void,
   ): Promise<string> {
-    if (this.toolDecls.length === 0) {
-      // No tools — use existing paths (web-search fallback for perception, etc.)
+    if (this.toolDecls.length === 0 || !ChatSession.TOOL_ELIGIBLE_ROLES.has(role)) {
+      // No tools registered, or this role shouldn't call tools — use existing
+      // paths (preserves web-search fallback for perception, etc.)
       if (onToken) {
         return this.runRoleChatStreamMaybeFallbackSearch(role, history, onToken, opts);
       }
