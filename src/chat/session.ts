@@ -681,14 +681,9 @@ Output ONLY the summary, no preamble.`;
     const workflow = await runMultiAgentWorkflow(userInput, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
-        this.runRoleChatMaybeFallbackSearch(role, this.historyWithFraming(role, prompt), opts),
+        this.runWithToolLoop(role, this.historyWithFraming(role, prompt), opts),
       streamRole: (role, prompt, onToken) =>
-        this.runRoleChatStreamMaybeFallbackSearch(
-          role,
-          this.historyWithFraming(role, prompt),
-          onToken,
-          opts,
-        ),
+        this.runWithToolLoop(role, this.historyWithFraming(role, prompt), opts, onToken),
     });
     return {
       reply: workflow.finalOutput,
