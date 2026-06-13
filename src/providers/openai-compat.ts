@@ -211,7 +211,11 @@ export function parseOpenAIToolResponse(response: unknown): CompleteWithToolsRes
   const rawCalls = msg.tool_calls ?? [];
   const calls: ToolCallRequest[] = [];
   for (const c of rawCalls) {
-    if (c.type !== "function" || !c.function?.name) continue;
+    // Accept the call as long as it names a function. Don't require
+    // type === "function": OpenAI sends it, but Mistral (and some others)
+    // omit the `type` field entirely — requiring it silently dropped every
+    // Mistral tool call and surfaced as an empty-text reply.
+    if (!c.function?.name) continue;
     let args: Record<string, unknown> = {};
     if (c.function.arguments) {
       try {

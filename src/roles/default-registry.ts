@@ -14,7 +14,7 @@ import { OPENROUTER_REASONING_PROVIDER_ID } from "../models/reasoning-model-over
  *   - Gemini accounts: `gemini:1`, `gemini:2`, `gemini:3`, ...
  *   - Other providers: `<provider>:<short-model-name>`
  *     e.g., `groq:llama-70b`, `openrouter:reasoning`,
- *     `mistral:codestral`, `cerebras:gpt-oss-120b`.
+ *     `mistral:large`, `cerebras:gpt-oss-120b`.
  *
  * This file is the single source of truth for role configuration. Adding a new
  * provider = update the candidate list here, plus register the provider with
@@ -62,13 +62,12 @@ const LOCAL_ACTION_CODE = { providerId: "ollama:qwen2.5-coder" };
 // Ollama daemon that may not exist on the current web device.
 const CLOUD_CATEGORIZE = { providerId: "gemini:1" };
 
-// Providers verified to support OpenAI-style function calling (tool_choice).
-// action-code's normal primary, Mistral Codestral, does NOT — it returns
-// empty text when asked to call a tool — so tool-driven agentic sessions
-// (CLI `chat --allow-bash`) must lead action-code with these instead. Local
-// ollama:qwen2.5-coder also calls tools (inline-parsed), so it stays first
-// when hybrid mode is on. Probed live 2026-06: groq llama-3.3-70b,
-// cerebras gpt-oss-120b ✅; codestral, open-mistral-nemo ❌.
+// Extra function-calling models inserted as action-code FALLBACKS for agentic
+// tool sessions, so a turn that needs tools degrades to another tool-capable
+// model rather than Gemma if the primary (mistral:large) is cooling. Probed
+// live 2026-06: groq llama-3.3-70b, cerebras gpt-oss-120b, and all Mistral
+// chat models (large/small/codestral) ✅ once the response parser stopped
+// requiring the OpenAI-only `type:"function"` field that Mistral omits.
 const TOOL_CAPABLE_ACTION_CODE = [
   { providerId: "groq:llama-70b" },
   { providerId: "cerebras:gpt-oss-120b" },
@@ -80,10 +79,10 @@ const TOOL_CAPABLE_ACTION_CODE = [
  * Gemini Flash at the front of mindmap-categorize so the mindmap burst
  * never depends on local Ollama availability.
  *
- * With `toolCapable: true`, reorder the action-code chain so function-calling
- * models lead — Codestral can't do tool calls, so agentic tool loops would
- * otherwise get an empty reply. Local ollama candidates (which DO call tools)
- * stay first; the tool-capable cloud models slot in ahead of Codestral/Gemma.
+ * With `toolCapable: true` (agentic tool sessions), insert extra
+ * function-calling models into the action-code chain as fallbacks ahead of
+ * the Gemma safety net — keeping the user's primary (mistral:large, or local
+ * ollama in hybrid mode) first.
  */
 export function buildDefaultRoles(opts?: { local?: boolean; toolCapable?: boolean }): RoleConfig[] {
   const roles = DEFAULT_ROLES.map((r) => ({ ...r, candidates: [...r.candidates] }));
@@ -98,15 +97,13 @@ export function buildDefaultRoles(opts?: { local?: boolean; toolCapable?: boolea
   if (opts?.toolCapable) {
     const actionCode = roles.find((r) => r.name === "action-code");
     if (actionCode) {
-      const existing = actionCode.candidates;
-      const ollamaFirst = existing.filter((c) => c.providerId.startsWith("ollama:"));
-      const rest = existing.filter((c) => !c.providerId.startsWith("ollama:"));
-      const seen = new Set<string>();
-      actionCode.candidates = [...ollamaFirst, ...TOOL_CAPABLE_ACTION_CODE, ...rest].filter((c) => {
-        if (seen.has(c.providerId)) return false;
-        seen.add(c.providerId);
-        return true;
-      });
+      // Insert tool-capable fallbacks just before the first Gemma slot, so the
+      // primary stays first and Gemma stays last.
+      const have = new Set(actionCode.candidates.map((c) => c.providerId));
+      const toAdd = TOOL_CAPABLE_ACTION_CODE.filter((c) => !have.has(c.providerId));
+      const gemmaIdx = actionCode.candidates.findIndex((c) => c.providerId.startsWith("gemma:"));
+      const insertAt = gemmaIdx === -1 ? actionCode.candidates.length : gemmaIdx;
+      actionCode.candidates.splice(insertAt, 0, ...toAdd);
     }
   }
   return roles;
@@ -169,11 +166,15 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     name: "action-code",
     description: "Code-specialized execution: write, modify, debug code.",
     candidates: [
-      // Primary: Mistral Codestral — code-specialized, ~1B tokens/month
-      // free on Experiment plan. Different model family.
-      { providerId: "mistral:codestral" },
+      // Primary: Mistral Large — strongest Mistral model, free on the
+      // Experiment plan, reliable function calling (verified live 2026-06).
+      // Override the model with MISTRAL_MODEL (e.g. mistral-small-latest).
+      { providerId: "mistral:large" },
       // Safety net: Gemma 4. Flash deliberately not included — preserves
       // Flash quota for orchestration/reasoning/perception where it matters.
+      // Agentic tool sessions also insert groq/cerebras here (see
+      // buildDefaultRoles toolCapable) so tool turns degrade to another
+      // function-caller before reaching Gemma.
       ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:

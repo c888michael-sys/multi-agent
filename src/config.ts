@@ -423,16 +423,20 @@ export function loadCerebrasProvidersFromEnv(opts?: { model?: string }): Provide
 
 /**
  * Load Mistral provider from env. Returns [] if MISTRAL_KEY is unset.
- * Defaults to codestral-latest — code-specialized for the action-code role.
+ * Defaults to mistral-large-latest — Mistral's strongest model, free on the
+ * Experiment plan and reliable at function calling (verified live 2026-06).
+ * Override the model via MISTRAL_MODEL (e.g. mistral-small-latest if Large's
+ * rate limits become a problem, or codestral-latest for code-completion).
  */
 export function loadMistralProvidersFromEnv(opts?: { model?: string }): Provider[] {
   const key = (process.env.MISTRAL_KEY ?? "").trim();
   if (!key) return [];
+  const model = opts?.model ?? ((process.env.MISTRAL_MODEL ?? "").trim() || "mistral-large-latest");
   return [
     new MistralProvider({
-      id: "mistral:codestral",
+      id: "mistral:large",
       apiKey: key,
-      ...(opts?.model && { model: opts.model }),
+      model,
     }),
   ];
 }
