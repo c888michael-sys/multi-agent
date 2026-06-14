@@ -72,6 +72,46 @@ function resetChrome() {
   setFavicon(IDLE_FAVICON);
 }
 
+function CopyButton({ getText, tiny }) {
+  const [copied, setCopied] = React.useState(false);
+  const copy = async (e) => {
+    e?.stopPropagation?.();
+    const text = typeof getText === 'function' ? getText() : '';
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        document.body.removeChild(area);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {}
+  };
+  return (
+    <button
+      type="button"
+      className={'mm-copy' + (tiny ? ' tiny' : '')}
+      onClick={copy}
+      title="Copy"
+      aria-label="Copy"
+    >
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+        <rect x="5" y="4" width="8" height="9" rx="1.5" />
+        <path d="M3 10.5V3.5A1.5 1.5 0 0 1 4.5 2h6" />
+      </svg>
+      <span>{copied ? 'copied' : 'copy'}</span>
+    </button>
+  );
+}
+
 function makeInitialAgentMap() {
   return Object.fromEntries(
     MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }]),
@@ -141,6 +181,7 @@ function ConstellationOverlay() {
     const ctx = canvas.getContext('2d');
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const reduceMotion = prefersReducedMotion();
+    const constellationRgb = getComputedStyle(canvas).getPropertyValue('--mm-constellation').trim() || '125,180,255';
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
@@ -224,8 +265,7 @@ function ConstellationOverlay() {
               const md = Math.hypot(mxm, mym);
               if (md < 240) boost = (1 - md / 240) * 0.45;
             }
-            // Cool ice-blue lines, refined opacity.
-            ctx.strokeStyle = `rgba(125,180,255,${op + boost * 0.28})`;
+            ctx.strokeStyle = `rgba(${constellationRgb},${op + boost * 0.28})`;
             ctx.lineWidth = 0.5 + boost * 0.5;
             ctx.beginPath();
             ctx.moveTo(a.x, a.y);
@@ -238,9 +278,9 @@ function ConstellationOverlay() {
       if (ma) {
         const r1 = 90 + Math.sin(t * 0.04) * 6;
         const grad = ctx.createRadialGradient(mx, my, 0, mx, my, r1);
-        grad.addColorStop(0, 'rgba(125,180,255,0.14)');
-        grad.addColorStop(0.5, 'rgba(125,180,255,0.04)');
-        grad.addColorStop(1, 'rgba(125,180,255,0)');
+        grad.addColorStop(0, `rgba(${constellationRgb},0.14)`);
+        grad.addColorStop(0.5, `rgba(${constellationRgb},0.04)`);
+        grad.addColorStop(1, `rgba(${constellationRgb},0)`);
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(mx, my, r1, 0, Math.PI * 2);
@@ -732,6 +772,27 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
         </div>
         <div className="mm-settings-body">
           <div className="mm-settings-row">
+            <span className="mm-settings-name">Appearance</span>
+            <div className="mm-theme-segment" role="group" aria-label="Theme">
+              {[
+                ['clay', 'clay'],
+                ['paper', 'paper'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={settings.theme === value ? 'active' : ''}
+                  onClick={() => onChange({ ...settings, theme: value })}
+                  aria-pressed={settings.theme === value}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="mm-settings-hint">paper switches the workspace to warm ink-on-paper colours while keeping the same layout.</span>
+          </div>
+
+          <div className="mm-settings-row">
             <label className="mm-settings-label">
               <input
                 type="checkbox"
@@ -893,6 +954,7 @@ function settingsActiveCount(s) {
   if (s.serious) n++;
   if (s.search) n++;
   if (s.useLocal) n++;
+  if (s.theme && s.theme !== 'clay') n++;
   // Routing is now a single merged knob (routingMode + forceRole). The
   // default is the round-robin meta-entry, so any other dropdown value
   // counts as a non-default knob.
@@ -1507,6 +1569,8 @@ function InlineMarkdown({ text }) {
 
 function CodeBlock({ lang, text }) {
   const ref = React.useRef(null);
+  const [wrap, setWrap] = React.useState(false);
+  const label = lang && String(lang).trim() ? String(lang).trim() : 'text';
   React.useEffect(() => {
     const hl = window.hljs;
     if (!hl || !ref.current) return;
@@ -1523,7 +1587,26 @@ function CodeBlock({ lang, text }) {
       }
     } catch {}
   }, [text, lang]);
-  return <pre><code ref={ref}>{text}</code></pre>;
+  return (
+    <div className="mm-code-block">
+      <div className="mm-code-header">
+        <span className="mm-code-lang">{label}</span>
+        <div className="mm-code-actions">
+          <button
+            type="button"
+            className={'mm-code-wrap-toggle' + (wrap ? ' active' : '')}
+            onClick={() => setWrap((v) => !v)}
+            aria-pressed={wrap}
+            title={wrap ? 'Disable line wrap' : 'Wrap long lines'}
+          >
+            wrap
+          </button>
+          <CopyButton tiny getText={() => text} />
+        </div>
+      </div>
+      <pre className={wrap ? 'wrap' : ''}><code ref={ref}>{text}</code></pre>
+    </div>
+  );
 }
 
 function MarkdownProse({ text }) {
@@ -2712,11 +2795,30 @@ function ResponseStackView({
   const listRef = React.useRef(null);
   const bottomRef = React.useRef(null);
   const lastIdRef = React.useRef(null);
+  const partialLen = liveTurn?.partial?.length || 0;
+  const [isNearBottom, setIsNearBottom] = React.useState(true);
+  const updateNearBottom = React.useCallback(() => {
+    const list = listRef.current;
+    if (!list) return;
+    setIsNearBottom(list.scrollHeight - list.scrollTop - list.clientHeight < 80);
+  }, []);
+  const scrollToLatest = React.useCallback(() => {
+    const list = listRef.current;
+    const bottom = bottomRef.current;
+    if (!list || !bottom) return;
+    try {
+      bottom.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    } catch {
+      list.scrollTop = list.scrollHeight;
+    }
+  }, []);
+  React.useEffect(() => {
+    updateNearBottom();
+  }, [responses.length, partialLen, updateNearBottom]);
   // Trigger when newest id changes (new completed turn) OR when a live
   // turn is streaming so the partial bubble keeps sticking to the bottom
   // as tokens arrive. The auto-scroll only happens if the user is
   // already near the bottom — otherwise they may be reading older turns.
-  const partialLen = liveTurn?.partial?.length || 0;
   React.useEffect(() => {
     const list = listRef.current;
     const bottom = bottomRef.current;
@@ -2726,15 +2828,8 @@ function ResponseStackView({
     lastIdRef.current = newest?.id;
     const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 200;
     if (!idChanged && !imploding && !nearBottom) return;
-    const doScroll = () => {
-      try {
-        bottom.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      } catch {
-        list.scrollTop = list.scrollHeight;
-      }
-    };
-    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(doScroll, 80)));
-  }, [newest?.id, imploding, responses.length, partialLen, liveTurn?.status?.kind]);
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(scrollToLatest, 80)));
+  }, [newest?.id, imploding, responses.length, partialLen, liveTurn?.status?.kind, scrollToLatest]);
 
   return (
     <div
@@ -2760,7 +2855,7 @@ function ResponseStackView({
             errorMessage={burstError}
           />
         )}
-        <div className="mm-chat-list" ref={listRef}>
+        <div className="mm-chat-list" ref={listRef} onScroll={updateNearBottom}>
           {responses.length > 0 && (
             <div className="mm-chat-toolbar">
               <span className="mm-chat-count">
@@ -2807,6 +2902,12 @@ function ResponseStackView({
               survives heavy-render newest turns. */}
           <div ref={bottomRef} className="mm-chat-anchor" aria-hidden="true" />
         </div>
+        {liveTurn && !isNearBottom && (
+          <button type="button" className="mm-jump-latest" onClick={scrollToLatest}>
+            <span aria-hidden="true">↓</span>
+            streaming...
+          </button>
+        )}
         <div className="mm-chat-composer">
           <Composer value={draft} onChange={setDraft} onSubmit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} />
         </div>
@@ -3131,7 +3232,7 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 // chosen mode. The settings drawer surfaces routingMode and forceRole as
 // a single merged dropdown (see ROUTING_OPTIONS) — internally they remain
 // independent so the wire format with the server is unchanged.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'multi-agent' };
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'multi-agent', theme: 'clay' };
 
 // Merged dropdown that replaces the prior separate Force-role select + a
 // Smart-vs-RoundRobin radio group. Two "meta" entries on top combine the
@@ -3165,6 +3266,7 @@ function routingValueFromSettings(s) {
 
 const VALID_FORCE_ROLES = new Set(['auto', 'orchestration', 'perception', 'reasoning', 'action-code', 'action-structural', 'action-repetitive']);
 const VALID_ROUTING_MODES = new Set(['smart', 'round-robin', 'multi-agent', 'brainstorming']);
+const VALID_THEMES = new Set(['clay', 'paper']);
 
 function runtimeDefaultUseLocal() {
   return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.defaultUseLocal === true;
@@ -3181,6 +3283,7 @@ function loadSettings() {
       forceRole: VALID_FORCE_ROLES.has(parsed.forceRole) ? parsed.forceRole : 'auto',
       useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
       routingMode: VALID_ROUTING_MODES.has(parsed.routingMode) ? parsed.routingMode : DEFAULT_SETTINGS.routingMode,
+      theme: VALID_THEMES.has(parsed.theme) ? parsed.theme : DEFAULT_SETTINGS.theme,
     };
   } catch {
     return { ...DEFAULT_SETTINGS, useLocal: runtimeDefaultUseLocal() };
@@ -4032,6 +4135,175 @@ function GoalEmptyView({ onClose }) {
   );
 }
 
+function CommandBar({
+  settings,
+  setSettings,
+  blocked,
+  onNewThread,
+  onOpenThreads,
+  onOpenFiles,
+  onOpenGoals,
+  onOpenSettings,
+  onStartGoal,
+  onOpenSession,
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const [active, setActive] = React.useState(0);
+  const [recent, setRecent] = React.useState([]);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const onKey = (e) => {
+      const key = String(e.key || '').toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && key === 'k') {
+        if (blocked && !open) return;
+        e.preventDefault();
+        setOpen((v) => !v);
+      } else if (e.key === 'Escape' && open) {
+        e.preventDefault();
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [blocked, open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setQuery('');
+    setActive(0);
+    requestAnimationFrame(() => inputRef.current?.focus());
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/sessions');
+        if (!res.ok) throw new Error('/api/sessions ' + res.status);
+        const json = await res.json();
+        if (!cancelled) setRecent((Array.isArray(json.sessions) ? json.sessions : []).slice(0, 8));
+      } catch {
+        if (!cancelled) setRecent([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const closeAndRun = React.useCallback((run) => {
+    setOpen(false);
+    setQuery('');
+    setActive(0);
+    run?.();
+  }, []);
+
+  const baseActions = React.useMemo(() => [
+    { id: 'new-thread', label: 'New thread', hint: 'Start with an empty conversation', run: onNewThread },
+    { id: 'open-threads', label: 'Open threads', hint: 'Show saved conversations', run: onOpenThreads },
+    { id: 'open-files', label: 'Open files', hint: 'Browse project files', run: onOpenFiles },
+    { id: 'open-goals', label: 'Open goals', hint: 'Show active goal panel', run: onOpenGoals },
+    { id: 'open-settings', label: 'Open settings', hint: 'Routing, models, appearance', run: onOpenSettings },
+    {
+      id: 'toggle-serious',
+      label: settings.serious ? 'Disable serious mode' : 'Enable serious mode',
+      hint: 'Toggle high thinking for Gemini calls',
+      run: () => setSettings({ ...settings, serious: !settings.serious }),
+    },
+    {
+      id: 'toggle-search',
+      label: settings.search ? 'Disable search grounding' : 'Enable search grounding',
+      hint: 'Toggle web search grounding',
+      run: () => setSettings({ ...settings, search: !settings.search }),
+    },
+    {
+      id: 'toggle-hybrid',
+      label: settings.useLocal ? 'Disable hybrid local' : 'Enable hybrid local',
+      hint: 'Toggle local Qwen reasoning/code routing',
+      run: () => setSettings({ ...settings, useLocal: !settings.useLocal }),
+    },
+    ...ROUTING_OPTIONS.slice(0, 3).map((opt) => ({
+      id: 'route-' + opt.value,
+      label: 'Routing: ' + opt.label,
+      hint: 'Switch composer routing mode',
+      run: () => setSettings({ ...settings, forceRole: opt.forceRole, routingMode: opt.routingMode }),
+    })),
+    { id: 'start-goal', label: 'Start a goal...', hint: 'Prefill composer with /goal', run: onStartGoal },
+  ], [onNewThread, onOpenThreads, onOpenFiles, onOpenGoals, onOpenSettings, onStartGoal, setSettings, settings]);
+
+  const sessionActions = React.useMemo(() => recent.map((session) => ({
+    id: 'session-' + session.id,
+    label: session.title || session.id,
+    hint: 'Open recent thread',
+    run: () => onOpenSession(session.id),
+  })), [recent, onOpenSession]);
+
+  const actions = React.useMemo(() => {
+    const all = [...baseActions, ...sessionActions];
+    const q = query.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((a) =>
+      `${a.label} ${a.hint}`.toLowerCase().includes(q),
+    );
+  }, [baseActions, sessionActions, query]);
+
+  React.useEffect(() => {
+    if (active >= actions.length) setActive(Math.max(0, actions.length - 1));
+  }, [active, actions.length]);
+
+  const onInputKey = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive((i) => actions.length ? (i + 1) % actions.length : 0);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive((i) => actions.length ? (i - 1 + actions.length) % actions.length : 0);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (actions[active]) closeAndRun(actions[active].run);
+    }
+  };
+
+  if (!open) return null;
+  return (
+    <div className="mm-command-backdrop" role="presentation" onMouseDown={() => setOpen(false)}>
+      <div
+        className="mm-command-bar"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command bar"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="mm-command-input-wrap">
+          <span>⌘K</span>
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setActive(0); }}
+            onKeyDown={onInputKey}
+            placeholder="Search commands or threads"
+          />
+        </div>
+        <div className="mm-command-list" role="listbox">
+          {actions.length === 0 ? (
+            <div className="mm-command-empty">No command found.</div>
+          ) : actions.map((action, i) => (
+            <button
+              key={action.id}
+              type="button"
+              className={i === active ? 'active' : ''}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => closeAndRun(action.run)}
+              role="option"
+              aria-selected={i === active}
+            >
+              <span className="mm-command-label">{action.label}</span>
+              <span className="mm-command-hint">{action.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HeroMindmap() {
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
@@ -4163,6 +4435,13 @@ function HeroMindmap() {
       document.querySelector('.mm-composer textarea')?.focus();
     });
   }, []);
+  const onStartGoalCommand = React.useCallback(() => {
+    setDraft('/goal ');
+    setPhase((p) => (p === 'loading' ? p : (responses.length > 0 ? 'response' : 'idle')));
+    requestAnimationFrame(() => {
+      document.querySelector('.mm-composer textarea')?.focus();
+    });
+  }, [responses.length]);
 
   // AbortController for the in-flight /api/chat-stream fetch. Held in a
   // ref so the stop button can reach it without re-rendering on creation.
@@ -4683,9 +4962,9 @@ function HeroMindmap() {
   }, [responses.length]);
 
   return (
-    <div className="mm-root" data-phase={phase}>
+    <div className="mm-root" data-phase={phase} data-theme={settings.theme || 'clay'}>
       <div className="mm-aurora" />
-      <ConstellationOverlay />
+      <ConstellationOverlay key={settings.theme || 'clay'} />
       <div className="mm-vignette" />
       <div className="mm-scan" />
 
@@ -4793,6 +5072,18 @@ function HeroMindmap() {
       {goalOpen && !activeGoalId && (
         <GoalEmptyView onClose={() => setGoalOpen(false)} />
       )}
+      <CommandBar
+        settings={settings}
+        setSettings={setSettings}
+        blocked={settingsOpen || sessionsOpen || filesOpen || goalOpen}
+        onNewThread={startEmptyThread}
+        onOpenThreads={() => setSessionsOpen(true)}
+        onOpenFiles={() => setFilesOpen(true)}
+        onOpenGoals={() => setGoalOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onStartGoal={onStartGoalCommand}
+        onOpenSession={openSession}
+      />
 
       <div
         ref={stageRef}

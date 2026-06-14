@@ -156,6 +156,33 @@ describe("web server", () => {
     expect(templates).toContain("starter:");
   });
 
+  it("serves Phase B frontend assets", async () => {
+    const { url } = spawn();
+    const [indexRes, appRes, styleRes] = await Promise.all([
+      fetch(`${url}/`),
+      fetch(`${url}/app.jsx`),
+      fetch(`${url}/style.css`),
+    ]);
+    expect(indexRes.status).toBe(200);
+    expect(appRes.status).toBe(200);
+    expect(styleRes.status).toBe(200);
+    const index = await indexRes.text();
+    const app = await appRes.text();
+    const style = await styleRes.text();
+
+    expect(index).not.toContain("atom-one-dark");
+    expect(app).toContain("CommandBar");
+    expect(app).toContain("mm-jump-latest");
+    expect(app).toContain("data-theme");
+    expect(app).toContain("mm-code-wrap-toggle");
+    expect(app).toContain("theme: 'clay'");
+    expect(style).toContain(".mm-root[data-theme=\"paper\"]");
+    expect(style).toContain(".mm-command-bar");
+    expect(style).toContain(".mm-jump-latest");
+    expect(style).toContain(".mm-code-header");
+    expect(style).toContain(".hljs-keyword");
+  });
+
   it("keeps project-file attachments compatible with the composer attachment shape", () => {
     const app = readFileSync(join(process.cwd(), "src", "web", "static", "app.jsx"), "utf8");
     expect(app).toContain("function attachmentText(att)");
