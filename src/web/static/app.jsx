@@ -45,6 +45,33 @@ const MM_AGENTS = [
 // on `liveTurn.agentState` with every setLiveTurn. LoadingView then
 // just renders that prop. These two pure helpers hold the logic so
 // the SSE loop and any future consumer share one source of truth.
+const BASE_TITLE = 'Lattice — multi-agent';
+const IDLE_FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0b0d'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23c9a15f'/%3E%3Cpath d='M16 5v5M16 22v5M5 16h5M22 16h5' stroke='%23f4f0e8' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E";
+const BUSY_FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0b0d'/%3E%3Ccircle cx='16' cy='16' r='8' fill='%237db4ff'/%3E%3Cpath d='M16 7v18M7 16h18' stroke='%23f4f0e8' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E";
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function setFavicon(href) {
+  const el = document.getElementById('favicon');
+  if (el) el.setAttribute('href', href);
+}
+
+function setBusyChrome(label) {
+  if (typeof document === 'undefined') return;
+  document.title = `● ${label || 'working'} — Lattice`;
+  setFavicon(BUSY_FAVICON);
+}
+
+function resetChrome() {
+  if (typeof document === 'undefined') return;
+  document.title = BASE_TITLE;
+  setFavicon(IDLE_FAVICON);
+}
+
 function makeInitialAgentMap() {
   return Object.fromEntries(
     MM_AGENTS.map((a) => [a.id, { state: 'queued', label: 'queued' }]),
@@ -113,6 +140,7 @@ function ConstellationOverlay() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const reduceMotion = prefersReducedMotion();
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
@@ -145,7 +173,7 @@ function ConstellationOverlay() {
 
     let t = 0;
     const render = () => {
-      rafRef.current = requestAnimationFrame(render);
+      if (!reduceMotion) rafRef.current = requestAnimationFrame(render);
       t += 1;
       const w = W(), h = H();
       ctx.clearRect(0, 0, w, h);
@@ -220,15 +248,21 @@ function ConstellationOverlay() {
       }
     };
     render();
+    const onResize = () => {
+      resize();
+      if (reduceMotion) render();
+    };
 
-    canvas.addEventListener('mousemove', onMove);
-    canvas.addEventListener('mouseleave', onLeave);
-    window.addEventListener('resize', resize);
+    if (!reduceMotion) {
+      canvas.addEventListener('mousemove', onMove);
+      canvas.addEventListener('mouseleave', onLeave);
+    }
+    window.addEventListener('resize', onResize);
     return () => {
       cancelAnimationFrame(rafRef.current);
       canvas.removeEventListener('mousemove', onMove);
       canvas.removeEventListener('mouseleave', onLeave);
-      window.removeEventListener('resize', resize);
+      window.removeEventListener('resize', onResize);
     };
   }, []);
 
@@ -872,6 +906,11 @@ function stripSlot(id) {
   return id ? id.replace(/:(\d+)$/, '') : id;
 }
 
+function roleChromeLabel(role) {
+  if (!role) return 'working';
+  return String(role).replace(/^action-/, '').replace(/-/g, ' ');
+}
+
 /** Short human-readable label for the current Composer routing mode. */
 function composerModeLabel(settings) {
   if (!settings) return 'smart routing';
@@ -1038,7 +1077,7 @@ function Sidebar({ phase, latestResponse, open, useLocal }) {
                   <span className="mm-rate-gauge-bar">
                     <span className="mm-rate-gauge-fill" style={{ width: rpmPct + '%' }} />
                   </span>
-                  <span className="mm-rate-gauge-num">
+                  <span className="mm-rate-gauge-num tnum">
                     {localRow ? <span className="mm-rate-inf">∞</span> : (hasRpm ? `${rpmCount}/${rpmCap}` : '–')}
                     {!localRow && role?.rpmSource && <em className="mm-rate-src">{role.rpmSource === 'live' ? 'live' : 'est'}</em>}
                     {localRow && <em className="mm-rate-src">local</em>}
@@ -1058,7 +1097,7 @@ function Sidebar({ phase, latestResponse, open, useLocal }) {
                   <span className="mm-rate-gauge-bar">
                     <span className="mm-rate-gauge-fill" style={{ width: rpdUsedPct + '%' }} />
                   </span>
-                  <span className="mm-rate-gauge-num">
+                  <span className="mm-rate-gauge-num tnum">
                     {localRow
                       ? <span className="mm-rate-inf">∞</span>
                       : (hasRpd
@@ -1179,7 +1218,7 @@ function composeMessageWithAttachments(prompt, attachments) {
 }
 
 // ─── Composer (used in idle + response phases) ─────────────
-function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments, setAttachments, settings }) {
+function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments, setAttachments, settings, placeholder }) {
   const ref = React.useRef(null);
   const fileRef = React.useRef(null);
   const [attachError, setAttachError] = React.useState(null);
@@ -1262,7 +1301,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmit(); }
           }}
-          placeholder="› describe what you need — research, code, comparison, plan…"
+          placeholder={placeholder || "› describe what you need — research, code, comparison, plan…"}
           autoFocus={autoFocus}
           disabled={disabled}
         />
@@ -1320,6 +1359,19 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
  * path comment ( // src/foo.ts  |  # src/foo.py  |  -- src/foo.sql ).
  * Returns unique { path, content } pairs so the UI can offer "apply to file".
  */
+function EmptyState({ children }) {
+  return (
+    <div className="mm-empty">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" />
+        <circle className="mm-empty-accent" cx="17" cy="7" r="2" />
+        <path d="M8 12h8M12 8v8" />
+      </svg>
+      <span>{children}</span>
+    </div>
+  );
+}
+
 function detectFileEdits(text) {
   if (!text) return [];
   const results = [];
@@ -2522,7 +2574,17 @@ function previewTextForNode(node) {
 
 // ─── Phase views ───────────────────────────────────────────
 
-function IdleView({ draft, setDraft, submit, attachments, setAttachments, settings }) {
+function IdleView({ draft, setDraft, submit, attachments, setAttachments, settings, onTemplatePick }) {
+  const [hintIndex, setHintIndex] = React.useState(0);
+  React.useEffect(() => {
+    if (draft.trim()) return;
+    const id = setInterval(() => {
+      setHintIndex((idx) => (idx + 1) % TEMPLATE_KEYS.length);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [draft]);
+  const hintKey = TEMPLATE_KEYS[hintIndex % TEMPLATE_KEYS.length];
+  const hint = TEMPLATE_DEFS[hintKey];
   return (
     <div className="mm-phase mm-phase-idle">
       <div className="mm-hero">
@@ -2543,13 +2605,29 @@ function IdleView({ draft, setDraft, submit, attachments, setAttachments, settin
         </p>
       </div>
       <div className="mm-composer-wrap">
-        <Composer value={draft} onChange={setDraft} onSubmit={submit} autoFocus attachments={attachments} setAttachments={setAttachments} settings={settings} />
+        <Composer
+          value={draft}
+          onChange={setDraft}
+          onSubmit={submit}
+          autoFocus
+          attachments={attachments}
+          setAttachments={setAttachments}
+          settings={settings}
+          placeholder={`› ${hint?.starter || 'Describe what you need'}`}
+        />
       </div>
       <div className="mm-template-row">
         {TEMPLATE_KEYS.map((k) => (
-          <span key={k} className="mm-template-hint" style={{ '--c': TEMPLATE_DEFS[k].accent }}>
+          <button
+            key={k}
+            type="button"
+            className="mm-template-hint"
+            style={{ '--c': TEMPLATE_DEFS[k].accent }}
+            onClick={() => onTemplatePick(k)}
+            title={TEMPLATE_DEFS[k].starter}
+          >
             <i /> {TEMPLATE_DEFS[k].label}
-          </span>
+          </button>
         ))}
       </div>
     </div>
@@ -3599,6 +3677,9 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
           <div className="mm-file-list-pane">
             {listLoading && <div className="mm-file-status">loading…</div>}
             {listError && <div className="mm-file-error">{listError}</div>}
+            {!listLoading && !listError && entries.length === 0 && (
+              <EmptyState>Empty folder.</EmptyState>
+            )}
             {!listLoading && !listError && entries.map(entry => (
               <button
                 key={entry.path}
@@ -3689,7 +3770,9 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
               </>
             )}
             {!previewLoading && !previewError && !selectedFile && (
-              <div className="mm-file-preview-empty">Select a file to preview.</div>
+              <div className="mm-file-preview-empty">
+                <EmptyState>Select a file to preview.</EmptyState>
+              </div>
             )}
           </div>
         </div>
@@ -3750,7 +3833,7 @@ function ConversationDrawer({
         </div>
         <div className="mm-session-list">
           {filtered.length === 0 ? (
-            <div className="mm-session-empty">No saved threads yet.</div>
+            <EmptyState>{sessions.length === 0 ? 'No threads yet — every conversation lands here.' : 'No matching threads.'}</EmptyState>
           ) : filtered.map((s) => {
             const active = s.id === currentId;
             const updated = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : 'not dated';
@@ -3871,7 +3954,7 @@ function GoalView({ goalId, onClose }) {
       {waitState && (
         <div className="mm-quota-wait-panel">
           <div className="mm-quota-wait-label">⏸ waiting for quota…</div>
-          <div className="mm-quota-wait-timer">{countdown}</div>
+          <div className="mm-quota-wait-timer tnum">{countdown}</div>
           {waitState.providers.length > 0 && (
             <div className="mm-quota-wait-providers">
               {waitState.providers.map(p => (
@@ -3935,6 +4018,20 @@ function GoalView({ goalId, onClose }) {
   );
 }
 
+function GoalEmptyView({ onClose }) {
+  return (
+    <div className="mm-goal-view">
+      <div className="mm-goal-header">
+        <button className="mm-goal-back" onClick={onClose}>back</button>
+        <div className="mm-goal-title">Goals</div>
+      </div>
+      <div className="mm-goal-steps mm-goal-empty-wrap">
+        <EmptyState>{'No goals running. Start one with /goal <what you want done>.'}</EmptyState>
+      </div>
+    </div>
+  );
+}
+
 function HeroMindmap() {
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
@@ -3973,6 +4070,11 @@ function HeroMindmap() {
   const [sessionList, setSessionList] = React.useState([]);
   const [sessionQuery, setSessionQuery] = React.useState('');
   const [sessionBusy, setSessionBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    resetChrome();
+    return resetChrome;
+  }, []);
 
   const refreshSessions = React.useCallback(async () => {
     setSessionBusy(true);
@@ -4053,6 +4155,14 @@ function HeroMindmap() {
 
   const newest = responses[responses.length - 1] || null;
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
+  const onTemplatePick = React.useCallback((key) => {
+    const starter = TEMPLATE_DEFS[key]?.starter;
+    if (!starter) return;
+    setDraft(starter);
+    requestAnimationFrame(() => {
+      document.querySelector('.mm-composer textarea')?.focus();
+    });
+  }, []);
 
   // AbortController for the in-flight /api/chat-stream fetch. Held in a
   // ref so the stop button can reach it without re-rendering on creation.
@@ -4065,6 +4175,7 @@ function HeroMindmap() {
     if (ac) {
       try { ac.abort(); } catch {}
     }
+    resetChrome();
   }, []);
 
   // Streaming chat submit. POSTs to /api/chat-stream and consumes the
@@ -4117,6 +4228,7 @@ function HeroMindmap() {
     setPhase('loading');
     setLiveTurn({ prompt: displayPrompt, partial: '', status: { phase: 'plan-start' } });
     setStreaming(true);
+    setBusyChrome('planning');
 
     let partial = '';
     let lastStatus = { phase: 'plan-start' };
@@ -4184,6 +4296,9 @@ function HeroMindmap() {
                   || evt.kind === 'role-start' || evt.kind === 'role-end'
                   || evt.kind === 'summarize-start' || evt.kind === 'summarize-end') {
             lastStatus = { phase: evt.kind, ...evt };
+            if (evt.kind === 'plan-start' || evt.kind === 'plan') setBusyChrome('planning');
+            if (evt.kind === 'role-start') setBusyChrome(roleChromeLabel(evt.role));
+            if (evt.kind === 'summarize-start') setBusyChrome('summarizing');
             if (evt.kind === 'summarize-end') summarizedTurns = evt.folded || 0;
             // Accumulate agent status HERE, synchronously, before React
             // batches the rapid setLiveTurn calls. agentAcc is a plain
@@ -4213,6 +4328,7 @@ function HeroMindmap() {
     } finally {
       streamAbortRef.current = null;
       setStreaming(false);
+      resetChrome();
     }
 
     // If the user aborted before ANY token landed, drop the turn entirely:
@@ -4399,12 +4515,20 @@ function HeroMindmap() {
       return;
     }
 
+    if (prefersReducedMotion()) {
+      setPhase('mindmap');
+      return;
+    }
     setPhase('collapsing');
     setTimeout(() => setPhase('mindmap'), COLLAPSE_TIMELINE.total);
   };
   // Reverse: implode the burst, then re-materialize the stack.
   const collapse = () => {
     if (phase !== 'mindmap') return;
+    if (prefersReducedMotion()) {
+      setPhase('response');
+      return;
+    }
     setPhase('imploding');
     setTimeout(() => setPhase('response'), IMPLODE_DURATION_MS);
   };
@@ -4666,6 +4790,9 @@ function HeroMindmap() {
       {goalOpen && activeGoalId && (
         <GoalView goalId={activeGoalId} onClose={() => setGoalOpen(false)} />
       )}
+      {goalOpen && !activeGoalId && (
+        <GoalEmptyView onClose={() => setGoalOpen(false)} />
+      )}
 
       <div
         ref={stageRef}
@@ -4689,7 +4816,7 @@ function HeroMindmap() {
         ) : null}
         {phase === 'idle' && (
           <PhaseErrorBoundary label="idle view" recoverLabel="reset" onRecover={reset}>
-            <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} />
+            <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} onTemplatePick={onTemplatePick} />
           </PhaseErrorBoundary>
         )}
         {phase === 'loading' && (

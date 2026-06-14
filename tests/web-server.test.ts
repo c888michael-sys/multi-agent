@@ -119,6 +119,8 @@ describe("web server", () => {
     expect(r.headers.get("content-type")).toMatch(/text\/html/);
     const body = await r.text();
     expect(body).toContain("HeroMindmap");
+    expect(body).toContain("Lattice — multi-agent");
+    expect(body).toContain("id=\"favicon\"");
   });
 
   it("serves /app.jsx with the conversation manager entry point", async () => {
@@ -131,6 +133,27 @@ describe("web server", () => {
     expect(body).toContain("mm-nav-sessions");
     expect(body).toContain("Open saved threads");
     expect(body).toContain("delete all threads");
+    expect(body).toContain("setBusyChrome");
+    expect(body).toContain("prefers-reduced-motion: reduce");
+    expect(body).toContain("onTemplatePick");
+    expect(body).toContain("mm-empty");
+  });
+
+  it("serves Phase A polish CSS and template starters", async () => {
+    const { url } = spawn();
+    const [styleRes, templateRes] = await Promise.all([
+      fetch(`${url}/style.css`),
+      fetch(`${url}/templates.jsx`),
+    ]);
+    expect(styleRes.status).toBe(200);
+    expect(templateRes.status).toBe(200);
+    const style = await styleRes.text();
+    const templates = await templateRes.text();
+    expect(style).toContain("prefers-reduced-motion: reduce");
+    expect(style).toContain(".mm-root :focus-visible");
+    expect(style).toContain(".tnum");
+    expect(style).toContain(".mm-empty");
+    expect(templates).toContain("starter:");
   });
 
   it("keeps project-file attachments compatible with the composer attachment shape", () => {

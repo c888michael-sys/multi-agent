@@ -11,6 +11,7 @@ const TEMPLATE_DEFS = {
   research: {
     label: 'Research',
     accent: 'oklch(0.82 0.14 230)',
+    starter: 'Research the current state of ',
     detect: (p) =>
       /\b(research|find|sources?|study|history|what is|why|how does|explain|origin|background|definition)\b/i.test(p),
     prompt: (q) =>
@@ -25,6 +26,7 @@ User: ${q}`,
   code: {
     label: 'Code',
     accent: 'oklch(0.85 0.10 195)',
+    starter: 'Implement a clean, tested version of ',
     detect: (p) =>
       /\b(code|implement|build a|function|class|refactor|cli|api|module|component|script)\b/i.test(p),
     prompt: (q) =>
@@ -39,6 +41,7 @@ User: ${q}`,
   compare: {
     label: 'Compare',
     accent: 'oklch(0.78 0.10 280)',
+    starter: 'Compare the tradeoffs between ',
     detect: (p) =>
       /\b(compare|vs\.?|versus|best|differences? between|rank|which is better|tradeoffs?)\b/i.test(p),
     prompt: (q) =>
@@ -55,6 +58,7 @@ User: ${q}`,
   plan: {
     label: 'Plan',
     accent: 'oklch(0.86 0.08 215)',
+    starter: 'Plan the phases, risks, and next actions for ',
     detect: () => true, // fallback
     prompt: (q) =>
       `Answer this user request as a PLAN. Return ONLY valid JSON, no prose. Schema:
