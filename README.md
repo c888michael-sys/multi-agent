@@ -107,12 +107,32 @@ The candidate order each role uses today, after live calibration against the act
 | Role | Chain (priority order) | Notes |
 |---|---|---|
 | **orchestration** | `gemini:1 → gemini:2 → openrouter:reasoning → gemma:1 → gemma:2` | Light-touch routing decisions; Gemini Flash is the right shape. Falls to the selected OpenRouter reasoning model when both Flash keys are cool, then to Gemma 4 31B as the safety net. |
-| **reasoning** | `openrouter:reasoning → gemini:1 (thinking=high) → gemini:2 (thinking=high) → gemma:1 → gemma:2` | The primary is a **customisable OpenRouter free text model**, defaulting to Qwen3-Next 80B (`qwen/qwen3-next-80b-a3b-instruct:free`, 262K context). Change it from the web settings drawer or `npm run cli -- models reasoning ...`. Gemini Flash with `thinking=high` remains the secondary fallback. In **hybrid mode** (`--local` / web settings toggle), `ollama:qwen3.5-9b` is prepended and defaults to `qwen3.5:9b` with 32K context. |
+| **reasoning** | `openrouter:reasoning → gemini:1 (thinking=high) → gemini:2 (thinking=high) → gemma:1 → gemma:2` | The default primary is a customisable OpenRouter free text model — Qwen3-Next 80B (`qwen/qwen3-next-80b-a3b-instruct:free`, 262K context). Like every customisable role below, it can be re-pointed at **any provider + model** via an override slot (see *Per-role model routing*). Gemini Flash with `thinking=high` remains the secondary fallback. In **hybrid mode** (`--local` / web settings toggle), `ollama:qwen3.5-9b` is prepended and defaults to `qwen3.5:9b` with 32K context. |
 | **perception** | `gemini:3 (useSearch=true) → gemma:1 → gemma:2` | **`gemini:3` is reserved exclusively for perception** — it is NOT listed in orchestration or reasoning candidates, so heavy chat traffic can't drain the one Flash slot that has Google Search grounding. Gemma fallback exists for liveness even though it loses live web data when it takes over. |
-| **action-code** | `mistral:large → gemma:1 → gemma:2` | Mistral Large (`mistral-large-latest`) — Mistral's strongest model, free on the Experiment plan, reliable function calling (live-verified 2026-06). Override the model with `MISTRAL_MODEL` in `.env` (e.g. `mistral-small-latest`, `codestral-latest`). Gemma falls in below. Gemini Flash is intentionally NOT in this chain — it's reserved for perception/orchestration/reasoning where it actually matters. In **hybrid mode**, `ollama:qwen2.5-coder` (native 32 K context) is prepended. In **agentic tool sessions** (`chat --allow-bash`), `groq:llama-70b → cerebras:gpt-oss-120b` are inserted before Gemma as tool-capable fallbacks. |
+| **action-code** | `mistral:large → gemma:1 → gemma:2` | Mistral Large (`mistral-large-latest`) — Mistral's strongest model, free on the Experiment plan, reliable function calling (live-verified 2026-06). Override the model with `MISTRAL_MODEL` in `.env` (e.g. `mistral-small-latest`, `codestral-latest`). Gemma falls in below. Gemini Flash is intentionally NOT in this chain — it's reserved for perception/orchestration/reasoning where it actually matters. In **hybrid mode**, `ollama:qwen2.5-coder` (native 32 K context) is prepended. In **agentic tool sessions** (`chat --allow-bash`), `groq:llama-70b → cerebras:gpt-oss-120b → nvidia:llama-70b` are inserted before Gemma as tool-capable fallbacks. |
 | **action-structural** | `groq:llama-70b → gemma:1 → gemma:2` | Groq Llama 3.3 70B, 1000 RPD on its own quota. |
 | **action-repetitive** | `cerebras:gpt-oss-120b → gemma:1 → gemma:2` | Cerebras GPT-OSS 120B, 1 M tok / day, wafer-scale inference. |
 | **mindmap-categorize** | `gemini:1 → gemma:3 → cerebras:gpt-oss-120b → gemma:2 → gemma:1` in both cloud and hybrid modes | **A strong JSON-follower leads the chain** (Gemini Flash) because Gemma is better as a high-quota fallback than as the primary structured-JSON model. `gemma:3` stays reserved for this role as a mid-chain fallback, now using the active Gemma 4 slug from `loadGemmaProvidersFromEnv()`. Powers the web UI's mindmap burst — takes a finished chat reply and emits the structured JSON the orbital renderer needs. Reservation mirrors `gemini:3`'s perception isolation: no other role's chain references `gemma:3`, so even round-robin storms (which hit all four specialists every turn) can never drain the categorize slot. Cerebras sits second as a fast fallback (~2000 tok/sec, JSON-friendly); `gemma:2 / gemma:1` are last-resort. This role is **mode-agnostic** — it does NOT switch to a local model in hybrid mode, because qwen-coder is already serving `action-code` and being hit twice per round-robin turn was the original "mindmap stuck on structuring…" failure mode. |
+
+### Per-role model routing (override slots)
+
+Every **execution role** — `reasoning`, `orchestration`, `action-code`, `action-structural`, `action-repetitive` — can be re-pointed at any configured provider and a specific model. `perception` (needs Gemini's native Google-Search grounding) and the internal `mindmap-categorize` role are intentionally not customisable.
+
+How it works: each customisable role has an **override slot** registered as `override:<role>` and prepended as the first candidate in its chain. The slot reads `~/.multi-agent/model-overrides.json` on every call, lazily builds the chosen provider+model, and delegates to it — so changing the provider *or* model applies on the **next call with no restart**. When no override is set (or the chosen provider's key is missing) the slot reports itself **inactive** and the resolver skips it, so the role's normal default chain serves unchanged. Live X-RateLimit headers from the delegate drive the sidebar gauge.
+
+Selectable providers: `openrouter`, `nvidia`, `groq`, `cerebras`, `mistral`, `gemini`, `ollama` (whichever have a key set; Ollama needs a running daemon). Model lists are fetched live per provider (OpenRouter keeps its free-tier filtering; the others hit their `/v1/models`, Gemini's ListModels, or Ollama's `/api/tags`) and cached for 12h under `~/.multi-agent/models-cache/<provider>.json`.
+
+Set it from the web **Settings → Model routing** section (provider dropdown, then model dropdown, per role) or the CLI:
+
+```bash
+npm run cli -- models list                                   # every role's override + default primary
+npm run cli -- models providers                              # which providers are configured
+npm run cli -- models models nvidia [--refresh]             # a provider's live model list
+npm run cli -- models set action-code nvidia meta/llama-3.3-70b-instruct
+npm run cli -- models clear action-code                      # revert to the default chain
+```
+
+Storage is `~/.multi-agent/model-overrides.json` (`{ version: 2, roles: { <role>: { provider, model, … } } }`). A pre-existing **v1** file (reasoning-only, OpenRouter) is migrated to `roles.reasoning` automatically on first read, so older reasoning selections are preserved.
 
 **Why Gemma 4 as the universal safety net?** On Google AI Studio's free tier, every model has a **separate per-project RPD quota pool** — Gemini 3.5 Flash is capped at 20 RPD / project on the legacy free tier, but Gemma has a much larger (~14,400 RPD / project) pool. The same `GEMINI_KEY_N` therefore serves two independent rate-limit pools: a small premium one (Flash) and a huge bulk one (Gemma). Listing both keys' Gemma slots at the end of every chain means the system *never* hits "all providers exhausted" under normal load. **Model slug:** `gemma-4-31b-it` as of May 2026 — Gemma 3 (`gemma-3-27b-it`) was retired (hard 404 on generateContent, no longer in ListModels). The current options are `gemma-4-31b-it` (dense, the 27B's successor — our default) and `gemma-4-26b-a4b-it` (MoE, ~4B active — faster/lighter). Override via the `model` arg to `loadGemmaProvidersFromEnv()` in `src/config.ts` when Google publishes the next slug.
 
@@ -177,6 +197,7 @@ The candidate order each role uses today, after live calibration against the act
 - [x] Stage 6: Groq provider + Llama 3.3 70B as `action-structural` (live-verified end-to-end via `--role=action-structural`)
 - [x] Stage 6: OpenRouter provider + Qwen3-Next 80B as the default `reasoning` primary (free `:free` route, 262K context)
 - [x] Stage 6: Reasoning model picker — the `openrouter:reasoning` slot now reads `~/.multi-agent/model-overrides.json`, scans/caches OpenRouter's free text models, filters out audio/image/embedding/rerank/expired speciality models, and exposes the selection in both CLI (`models reasoning`) and the web settings drawer. Fallbacks are unchanged.
+- [x] Stage 6b: Per-role provider + model selection — generalised the reasoning picker to **every execution role** (reasoning, orchestration, action-code, action-structural, action-repetitive) and **any provider** (added **NVIDIA**; alongside OpenRouter/Groq/Cerebras/Mistral/Gemini/Ollama). Each role gets a live `override:<role>` slot (delegating provider that switches provider+model with no restart and is skipped via `isActive()` when unset). Live model lists per provider (`/v1/models`, Gemini ListModels, Ollama tags) cached under `~/.multi-agent/models-cache/`. New endpoints `/api/providers`, `/api/role-models`, `/api/role-model`; web **Settings → Model routing**; CLI `models list|providers|models|set|clear`. Override file bumped to v2 with automatic v1 migration. See [Per-role model routing](#per-role-model-routing-override-slots).
 - [x] Stage 6: Cerebras provider + GPT-OSS 120B as `action-repetitive` (live-verified; Llama 4 Scout moved off the standard model list, GPT-OSS 120B is the right shape for bulk/speed)
 - [x] Stage 6: Mistral provider as `action-code` (live-verified via `--role=action-code`; originally Codestral, switched to Mistral Large 2026-06 — see the parser-fix entry above)
 - [x] Stage 6: roster-aware orchestrator (`task` command — orchestrator picks roles per task, dispatches in parallel, synthesizes)
@@ -1030,6 +1051,9 @@ For the full role-based architecture, add keys for any of these providers (each 
 | `GROQ_KEY` | Groq | https://console.groq.com → API Keys | 30 RPM / 1000 RPD account-wide |
 | `MISTRAL_KEY` | Mistral | https://console.mistral.ai → API Keys (phone verification required) | 1B tokens/month on Experiment plan |
 | `CEREBRAS_KEY` | Cerebras | https://cloud.cerebras.ai → API Keys | 1M tokens/day, 30 RPM |
+| `NVIDIA_KEY` | NVIDIA | https://build.nvidia.com → your profile → API Keys (`nvapi-…`) | Generous personal free credits; OpenAI-compatible at `integrate.api.nvidia.com/v1` |
+
+Optional model overrides via env: `MISTRAL_MODEL` (default `mistral-large-latest`), `NVIDIA_MODEL` (default `meta/llama-3.3-70b-instruct`). Per-role provider+model selection (any provider, not just env defaults) is configured at runtime — see [Per-role model routing](#per-role-model-routing-override-slots).
 
 **Gemma slots come free with each Gemini key.** No separate signup — every `GEMINI_KEY_N` is automatically registered twice: once as `gemini:N` (Flash) and once as `gemma:N` (Gemma 4 31B-it). The two share a Google Cloud project but draw from **independent per-model RPD quota pools** on the free tier (Flash ≈ 20–1,500/day depending on project age; Gemma 4 ≈ 14,400/day). Doubles your effective Google-side headroom at zero cost.
 
@@ -1080,10 +1104,12 @@ npm run cli -- task "your prompt"                           # roster-aware orche
 npm run cli -- chat <session-id>                            # interactive smart-routed REPL with persistent history
 npm run cli -- sessions                                     # list saved chat sessions
 npm run cli -- usage                                        # per-provider RPM/RPD live or estimated, cooldowns
-npm run cli -- models reasoning list                        # list cached/live OpenRouter free text models
-npm run cli -- models reasoning refresh                     # rescan OpenRouter's free text model list
-npm run cli -- models reasoning set <model-id>              # change reasoning primary model
-npm run cli -- models reasoning reset                       # restore Qwen3-Next default
+npm run cli -- models list                                  # every role's provider+model override and default
+npm run cli -- models providers                             # which providers are configured (have a key)
+npm run cli -- models models <provider> [--refresh]         # a provider's live model list
+npm run cli -- models set <role> <provider> <model>         # point a role at a provider + model
+npm run cli -- models clear <role>                          # revert a role to its default chain
+npm run cli -- models reasoning <get|list|set|reset>        # back-compat OpenRouter-only reasoning picker
 npm run cli -- verify-keys                                  # one ping per configured key, reports ✓/✗
 npm run cli -- serve [--port=N]                             # boots the web UI on localhost (default 7421) — LOCAL USE ONLY, see Setup warning
 npm run cli -- --help

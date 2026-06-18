@@ -106,12 +106,17 @@ import { GroqProvider } from "./providers/groq.js";
 import { OpenRouterProvider } from "./providers/openrouter.js";
 import { CerebrasProvider } from "./providers/cerebras.js";
 import { MistralProvider } from "./providers/mistral.js";
+import { NvidiaProvider } from "./providers/nvidia.js";
 import { OllamaProvider } from "./providers/ollama.js";
+import { RoleOverrideProvider } from "./providers/role-override.js";
 import type { Provider } from "./provider.js";
 import type { ProviderConfig } from "./pool.js";
 import {
   OPENROUTER_REASONING_PROVIDER_ID,
   readReasoningModelOverride,
+  readRoleModelOverride,
+  CUSTOMISABLE_ROLES,
+  type OverrideProviderName,
 } from "./models/reasoning-model-overrides.js";
 
 /**
@@ -230,9 +235,16 @@ const DEFAULT_BUDGETS: Record<string, number> = {
   openrouter: 50,
   cerebras: 2400,  // live-verified May 2026: x-ratelimit-limit-requests-day=2400 on gpt-oss-120b
   mistral: 500,
+  // NVIDIA "build"/NIM free tier — generous personal credits, no documented
+  // hard RPD; placeholder keeps the gauge useful (live headers override it).
+  nvidia: 1000,
   // Local Ollama models — no daily cap. Display gauge as 9999 so the
   // sidebar shows them as effectively unlimited without special-casing.
   ollama: 9999,
+  // Per-role override slots delegate to a provider chosen at runtime, so a
+  // static budget can't be right — show effectively-unlimited and rely on the
+  // delegate's live X-RateLimit-* headers (forwarded via getLastQuota).
+  override: 9999,
 };
 
 /**
@@ -258,9 +270,13 @@ const DEFAULT_RPM: Record<string, number> = {
   openrouter: 20,
   cerebras: 5,
   mistral: 60,
+  // NVIDIA free tier — conservative per-minute estimate; live headers win.
+  nvidia: 40,
   // Local Ollama — bounded only by the machine; pick a generous cap so
   // the RPM gauge effectively shows headroom rather than throttling.
   ollama: 999,
+  // Override slots — generous; the delegate's live RPM header is authoritative.
+  override: 999,
 };
 
 function budgetFor(providerId: string): number {
@@ -286,9 +302,12 @@ const DEFAULT_COOLDOWN_MS: Record<string, number> = {
   openrouter: 10_000,
   cerebras: 60_000,
   mistral: 60_000,
+  nvidia: 60_000,
   // Local Ollama — never rate-limits, never cools. The short value
   // here is harmless because isRateLimitError always returns false.
   ollama: 1_000,
+  // Override slot cooldown only applies if its delegate omits Retry-After.
+  override: 60_000,
 };
 
 function defaultCooldownFor(providerId: string): number {
@@ -441,6 +460,153 @@ export function loadMistralProvidersFromEnv(opts?: { model?: string }): Provider
   ];
 }
 
+/**
+ * Load NVIDIA provider from env. Returns [] if NVIDIA_KEY is unset.
+ * OpenAI-compatible endpoint at integrate.api.nvidia.com/v1 with a generous
+ * free tier. Defaults to meta/llama-3.3-70b-instruct; override via NVIDIA_MODEL
+ * (e.g. nvidia/llama-3.1-nemotron-70b-instruct, qwen/qwen2.5-coder-32b-instruct).
+ */
+export function loadNvidiaProvidersFromEnv(opts?: { model?: string }): Provider[] {
+  const key = (process.env.NVIDIA_KEY ?? "").trim();
+  if (!key) return [];
+  const model = opts?.model ?? ((process.env.NVIDIA_MODEL ?? "").trim() || "meta/llama-3.3-70b-instruct");
+  return [
+    new NvidiaProvider({
+      id: "nvidia:llama-70b",
+      apiKey: key,
+      model,
+    }),
+  ];
+}
+
+/** First non-empty GEMINI_KEY_N, used to build a Gemini override delegate. */
+function firstGeminiKeyFromEnv(): string | null {
+  const keys: Array<{ n: number; value: string }> = [];
+  for (const [name, raw] of Object.entries(process.env)) {
+    const m = name.match(/^GEMINI_KEY_(\d+)$/);
+    if (!m) continue;
+    const value = (raw ?? "").trim();
+    if (value) keys.push({ n: Number(m[1]), value });
+  }
+  keys.sort((a, b) => a.n - b.n);
+  return keys[0]?.value ?? null;
+}
+
+/**
+ * Build the concrete delegate provider a role override points at, or null when
+ * the chosen provider's key/daemon isn't configured. Used by the per-role
+ * override slot ([[RoleOverrideProvider]]) — the returned instance is wrapped
+ * by the slot, not registered directly, so its id is for logging only.
+ */
+export function buildDelegateProvider(
+  provider: OverrideProviderName,
+  model: string,
+): Provider | null {
+  const m = model.trim();
+  if (!m) return null;
+  switch (provider) {
+    case "openrouter": {
+      const key = (process.env.OPENROUTER_KEY ?? "").trim();
+      if (!key) return null;
+      return new OpenRouterProvider({
+        id: "override-delegate:openrouter",
+        apiKey: key,
+        model: m,
+        appName: "multi-agent",
+        appUrl: "https://github.com/c888michael-sys/multi-agent",
+      });
+    }
+    case "nvidia": {
+      const key = (process.env.NVIDIA_KEY ?? "").trim();
+      if (!key) return null;
+      return new NvidiaProvider({ id: "override-delegate:nvidia", apiKey: key, model: m });
+    }
+    case "groq": {
+      const key = (process.env.GROQ_KEY ?? "").trim();
+      if (!key) return null;
+      return new GroqProvider({ id: "override-delegate:groq", apiKey: key, model: m });
+    }
+    case "cerebras": {
+      const key = (process.env.CEREBRAS_KEY ?? "").trim();
+      if (!key) return null;
+      return new CerebrasProvider({ id: "override-delegate:cerebras", apiKey: key, model: m });
+    }
+    case "mistral": {
+      const key = (process.env.MISTRAL_KEY ?? "").trim();
+      if (!key) return null;
+      return new MistralProvider({ id: "override-delegate:mistral", apiKey: key, model: m });
+    }
+    case "gemini": {
+      const key = firstGeminiKeyFromEnv();
+      if (!key) return null;
+      return new GeminiProvider({ id: "override-delegate:gemini", apiKey: key, model: m });
+    }
+    case "ollama": {
+      const baseUrl = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+      return new OllamaProvider({
+        id: "override-delegate:ollama",
+        model: m,
+        baseUrl,
+        numCtx: 32_768,
+        requestTimeoutMs: 10 * 60_000,
+      });
+    }
+    default:
+      return null;
+  }
+}
+
+/** The API key for an override provider, or null when unset. Ollama needs none. */
+export function apiKeyForOverrideProvider(provider: OverrideProviderName): string | null {
+  switch (provider) {
+    case "openrouter":
+      return (process.env.OPENROUTER_KEY ?? "").trim() || null;
+    case "nvidia":
+      return (process.env.NVIDIA_KEY ?? "").trim() || null;
+    case "groq":
+      return (process.env.GROQ_KEY ?? "").trim() || null;
+    case "cerebras":
+      return (process.env.CEREBRAS_KEY ?? "").trim() || null;
+    case "mistral":
+      return (process.env.MISTRAL_KEY ?? "").trim() || null;
+    case "gemini":
+      return firstGeminiKeyFromEnv();
+    case "ollama":
+      return null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether a provider can currently be selected for a role. Key-based providers
+ * need their key set; Ollama is always offered (its model list / a chat turn
+ * surfaces daemon availability).
+ */
+export function isOverrideProviderConfigured(provider: OverrideProviderName): boolean {
+  if (provider === "ollama") return true;
+  return apiKeyForOverrideProvider(provider) !== null;
+}
+
+/**
+ * One override-slot ProviderConfig per customisable role. Each is always
+ * registered (so role chains can reference `override:<role>`) but reports
+ * inactive until the user sets an override for that role, so it's transparent
+ * by default. See [[RoleOverrideProvider]].
+ */
+export function buildRoleOverrideConfigs(): ProviderConfig[] {
+  return CUSTOMISABLE_ROLES.map((role) => ({
+    provider: new RoleOverrideProvider({
+      role,
+      readSelection: () => readRoleModelOverride(role),
+      buildDelegate: (sel) => buildDelegateProvider(sel.provider, sel.model),
+    }),
+    estimatedDailyBudget: budgetFor(`override:${role}`),
+    estimatedRpmCap: rpmCapFor(`override:${role}`),
+    defaultCooldownMs: defaultCooldownFor(`override:${role}`),
+  }));
+}
+
 /** Load every provider whose key is present in env. Used by the CLI's router setup. */
 export function loadAllProvidersFromEnv(): Provider[] {
   return [
@@ -450,6 +616,7 @@ export function loadAllProvidersFromEnv(): Provider[] {
     ...loadOpenRouterProvidersFromEnv(),
     ...loadCerebrasProvidersFromEnv(),
     ...loadMistralProvidersFromEnv(),
+    ...loadNvidiaProvidersFromEnv(),
   ];
 }
 
@@ -460,10 +627,14 @@ export function loadAllProvidersFromEnv(): Provider[] {
  * resets at UTC midnight) and the RPM gauge (rolling 60s window).
  */
 export function loadAllProviderConfigsFromEnv(): ProviderConfig[] {
-  return loadAllProvidersFromEnv().map((provider) => ({
+  const base = loadAllProvidersFromEnv().map((provider) => ({
     provider,
     estimatedDailyBudget: budgetFor(provider.id),
     estimatedRpmCap: rpmCapFor(provider.id),
     defaultCooldownMs: defaultCooldownFor(provider.id),
   }));
+  // Per-role override slots are always registered so role chains can target
+  // `override:<role>`; they stay inactive (transparent) until the user sets an
+  // override. See buildRoleOverrideConfigs / RoleOverrideProvider.
+  return [...base, ...buildRoleOverrideConfigs()];
 }

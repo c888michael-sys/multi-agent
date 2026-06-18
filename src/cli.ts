@@ -60,12 +60,22 @@ import {
   type RoutingMode,
 } from "./index.js";
 import { listOpenRouterFreeTextModels } from "./models/openrouter-models.js";
+import { listModelsForProvider } from "./models/provider-models.js";
 import {
   DEFAULT_OPENROUTER_REASONING_MODEL,
   readReasoningModelOverride,
   resetReasoningModelOverride,
   writeReasoningModelOverride,
+  readAllRoleModelOverrides,
+  readRoleModelOverride,
+  writeRoleModelOverride,
+  clearRoleModelOverride,
+  CUSTOMISABLE_ROLES,
+  OVERRIDE_PROVIDER_NAMES,
+  type CustomisableRole,
+  type OverrideProviderName,
 } from "./models/reasoning-model-overrides.js";
+import { apiKeyForOverrideProvider, isOverrideProviderConfigured } from "./config.js";
 
 /** Stderr warning printer for role-resolution events. */
 function printRoleEvent(e: RoleEvent): void {
@@ -335,15 +345,153 @@ function routeMap(label: string, local: boolean): void {
   }
 }
 
+const MODELS_USAGE = [
+  "usage:",
+  "  models list                          show every role's provider + model override",
+  "  models providers                     list selectable providers (and which are configured)",
+  "  models models <provider> [--refresh] list a provider's available models",
+  "  models set <role> <provider> <model> point a role at a provider + model",
+  "  models clear <role>                  revert a role to its default chain",
+  "  models reasoning <get|list|refresh|set|reset>   (back-compat, OpenRouter-only)",
+  `roles: ${CUSTOMISABLE_ROLES.join(", ")}`,
+  `providers: ${OVERRIDE_PROVIDER_NAMES.join(", ")}`,
+].join("\n");
+
+function isCustomisableRoleArg(value: string): value is CustomisableRole {
+  return (CUSTOMISABLE_ROLES as readonly string[]).includes(value);
+}
+
+function isOverrideProviderArg(value: string): value is OverrideProviderName {
+  return (OVERRIDE_PROVIDER_NAMES as readonly string[]).includes(value);
+}
+
 async function cmdModels(subArgs: string[]): Promise<void> {
-  const role = subArgs[0] ?? "reasoning";
-  if (role !== "reasoning") {
-    console.error("usage: models reasoning <get|list|refresh|set|reset>");
-    console.error("Only the reasoning role is customisable right now.");
-    process.exit(2);
+  const sub = subArgs[0] ?? "list";
+
+  if (sub === "list") {
+    const overrides = readAllRoleModelOverrides();
+    console.log("Per-role model routing:");
+    for (const role of CUSTOMISABLE_ROLES) {
+      const sel = overrides[role];
+      const primary = DEFAULT_ROLES.find((r) => r.name === role)?.candidates[0]?.providerId ?? "?";
+      if (sel) {
+        console.log(`  ${role.padEnd(18)} → ${sel.provider}:${sel.model}`);
+      } else {
+        console.log(`  ${role.padEnd(18)} → (default: ${primary})`);
+      }
+    }
+    return;
   }
 
-  const action = subArgs[1] ?? "get";
+  if (sub === "providers") {
+    console.log("Selectable providers:");
+    for (const provider of OVERRIDE_PROVIDER_NAMES) {
+      const configured = isOverrideProviderConfigured(provider);
+      console.log(`  ${provider.padEnd(11)} ${configured ? "configured" : "(no key)"}`);
+    }
+    return;
+  }
+
+  if (sub === "models") {
+    const provider = subArgs[1] ?? "";
+    if (!isOverrideProviderArg(provider)) {
+      console.error(`unknown provider: ${provider || "(none)"}`);
+      console.error(MODELS_USAGE);
+      process.exit(2);
+    }
+    const refresh = subArgs.includes("--refresh");
+    try {
+      const result = await listModelsForProvider(provider, {
+        apiKey: apiKeyForOverrideProvider(provider) ?? undefined,
+        refresh,
+      });
+      console.log(
+        `${provider} models (${result.source}${result.stale ? ", stale cache" : ""}): ${result.models.length}`,
+      );
+      for (const m of result.models) {
+        const ctx = m.contextLength ? ` ctx=${m.contextLength}` : "";
+        const reasoning = m.reasoningCapable ? " reasoning" : "";
+        console.log(`  ${m.id}${reasoning}${ctx}`);
+      }
+    } catch (err) {
+      console.error(`Error listing ${provider} models: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === "set") {
+    const [, role, provider, model] = subArgs;
+    if (!role || !isCustomisableRoleArg(role)) {
+      console.error(`unknown or non-customisable role: ${role || "(none)"}`);
+      console.error(MODELS_USAGE);
+      process.exit(2);
+    }
+    if (!provider || !isOverrideProviderArg(provider)) {
+      console.error(`unknown provider: ${provider || "(none)"}`);
+      console.error(MODELS_USAGE);
+      process.exit(2);
+    }
+    if (!model) {
+      console.error("usage: models set <role> <provider> <model>");
+      process.exit(2);
+    }
+    if (!isOverrideProviderConfigured(provider)) {
+      console.error(`Error: provider '${provider}' is not configured (missing API key).`);
+      process.exit(1);
+    }
+    try {
+      const result = await listModelsForProvider(provider, {
+        apiKey: apiKeyForOverrideProvider(provider) ?? undefined,
+      });
+      const option = result.models.find((m) => m.id === model);
+      if (!option) {
+        console.error(`Error: '${model}' is not in ${provider}'s current model list.`);
+        console.error(`Run \`models models ${provider} --refresh\` to update the list.`);
+        process.exit(1);
+      }
+      const saved = writeRoleModelOverride(role, {
+        provider,
+        model: option.id,
+        ...(option.name ? { name: option.name } : {}),
+        ...(option.contextLength !== undefined ? { contextLength: option.contextLength } : {}),
+        ...(option.reasoningCapable !== undefined ? { reasoningCapable: option.reasoningCapable } : {}),
+      });
+      console.log(`${role} set to ${saved.provider}:${saved.model}`);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === "clear") {
+    const role = subArgs[1] ?? "";
+    if (!isCustomisableRoleArg(role)) {
+      console.error(`unknown or non-customisable role: ${role || "(none)"}`);
+      console.error(MODELS_USAGE);
+      process.exit(2);
+    }
+    clearRoleModelOverride(role);
+    const primary = DEFAULT_ROLES.find((r) => r.name === role)?.candidates[0]?.providerId ?? "?";
+    console.log(`${role} reverted to its default chain (primary: ${primary})`);
+    return;
+  }
+
+  // ── back-compat: `models reasoning <get|list|refresh|set|reset>` ────────────
+  if (sub === "reasoning") {
+    await cmdModelsReasoningLegacy(subArgs.slice(1));
+    return;
+  }
+
+  console.error(`unknown models command: ${sub}`);
+  console.error(MODELS_USAGE);
+  process.exit(2);
+}
+
+/** Legacy OpenRouter-only reasoning subcommand, kept for back-compat. */
+async function cmdModelsReasoningLegacy(args: string[]): Promise<void> {
+  const action = args[0] ?? "get";
   if (action === "get") {
     const current = readReasoningModelOverride();
     console.log(`reasoning OpenRouter model: ${current.model}${current.isDefault ? " (default)" : ""}`);
@@ -375,7 +523,7 @@ async function cmdModels(subArgs: string[]): Promise<void> {
   }
 
   if (action === "set") {
-    const modelId = subArgs[2];
+    const modelId = args[1];
     if (!modelId) {
       console.error("usage: models reasoning set <openrouter-free-model-id>");
       process.exit(2);
@@ -400,7 +548,7 @@ async function cmdModels(subArgs: string[]): Promise<void> {
     return;
   }
 
-  console.error(`unknown models action: ${action}`);
+  console.error(`unknown models reasoning action: ${action}`);
   console.error("usage: models reasoning <get|list|refresh|set|reset>");
   process.exit(2);
 }

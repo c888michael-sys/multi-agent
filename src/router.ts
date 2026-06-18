@@ -397,6 +397,11 @@ export class Router {
     return this.pool.snapshot().map((p) => p.id);
   }
 
+  /** Look up a registered provider by id. Used by RoleResolver to skip inactive override slots. */
+  getProvider(id: string): Provider | undefined {
+    return this.pool.getProvider(id);
+  }
+
   private withSignal(opts: CompleteOptions | undefined, signal: AbortSignal): CompleteOptions {
     return { ...opts, signal };
   }

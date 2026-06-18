@@ -3322,6 +3322,35 @@
   color: var(--mm-fg);
 }
 
+.mm-role-routing {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+}
+.mm-role-routing-row {
+  display: grid;
+  gap: 6px;
+}
+.mm-role-routing-label {
+  color: var(--mm-fg);
+  font-family: var(--mm-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+.mm-role-routing-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mm-role-routing-controls .mm-settings-select {
+  width: auto;
+  flex: 1 1 8rem;
+  min-width: 8rem;
+}
+
 .mm-settings-foot {
   margin-top: auto;
   padding-top: 18px;

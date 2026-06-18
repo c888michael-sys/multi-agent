@@ -78,6 +78,22 @@ export class RoleResolver {
   }
 
   /**
+   * A registered candidate is eligible only when its provider also reports
+   * itself active. Normal providers have no isActive() (treated active); the
+   * per-role override slot (`override:<role>`) reports inactive when no override
+   * is set, so it's skipped and the role's default chain serves instead.
+   */
+  private isCandidateActive(providerId: string): boolean {
+    const provider = this.router.getProvider(providerId);
+    if (!provider || typeof provider.isActive !== "function") return true;
+    return provider.isActive();
+  }
+
+  private isCandidateUsable(providerId: string): boolean {
+    return this.registeredIds.has(providerId) && this.isCandidateActive(providerId);
+  }
+
+  /**
    * Snapshot of every role's current candidate chain. Used by the web
    * server's `/api/usage.json` endpoint so the sidebar shows the chain
    * for the currently-active mode (cloud vs local-prepend) rather than
@@ -90,7 +106,7 @@ export class RoleResolver {
   unsatisfiedRoles(): RoleName[] {
     const out: RoleName[] = [];
     for (const [name, cfg] of this.roles) {
-      if (!cfg.candidates.some((c) => this.registeredIds.has(c.providerId))) {
+      if (!cfg.candidates.some((c) => this.isCandidateUsable(c.providerId))) {
         out.push(name);
       }
     }
@@ -101,7 +117,7 @@ export class RoleResolver {
     const cfg = this.roles.get(name);
     if (!cfg) return null;
     for (const cand of cfg.candidates) {
-      if (this.registeredIds.has(cand.providerId)) return cand;
+      if (this.isCandidateUsable(cand.providerId)) return cand;
     }
     return null;
   }
@@ -193,7 +209,7 @@ export class RoleResolver {
   rosterDescription(): string {
     const lines: string[] = [];
     for (const [name, cfg] of this.roles) {
-      const eligible = cfg.candidates.filter((c) => this.registeredIds.has(c.providerId));
+      const eligible = cfg.candidates.filter((c) => this.isCandidateUsable(c.providerId));
       const status = eligible.length === 0 ? "[UNAVAILABLE]" : `(${eligible[0]!.providerId})`;
       lines.push(`- ${name} ${status}: ${cfg.description}`);
     }
@@ -253,7 +269,9 @@ export class RoleResolver {
     // Role's own candidates exhausted. Try cross-role substitution if enabled.
     if (this.crossRoleFailover) {
       const roleIds = new Set(eligible.map((c) => c.providerId));
-      const foreignIds = [...this.registeredIds].filter((id) => !roleIds.has(id));
+      const foreignIds = [...this.registeredIds].filter(
+        (id) => !roleIds.has(id) && this.isCandidateActive(id),
+      );
       if (foreignIds.length > 0) {
         const subOpts: CompleteOptions = { ...eligible[0]!.mode, ...callerOpts };
         const attribution: CallAttribution = {};
@@ -296,7 +314,7 @@ export class RoleResolver {
   }
 
   private eligibleCandidates(name: RoleName, cfg: RoleConfig): ProviderRef[] {
-    const eligible = cfg.candidates.filter((c) => this.registeredIds.has(c.providerId));
+    const eligible = cfg.candidates.filter((c) => this.isCandidateUsable(c.providerId));
     if (eligible.length === 0) {
       throw new NoCandidatesAvailableError(
         name,

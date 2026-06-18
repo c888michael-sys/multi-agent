@@ -45,6 +45,14 @@ export interface Provider {
   isRateLimitError(err: unknown): boolean;
   retryAfterMs(err: unknown): number | null;
   /**
+   * Optional dynamic-availability check. Providers that are always usable
+   * leave this undefined (treated as active). The per-role override slot
+   * (`override:<role>`) uses it to report inactive when no override is set or
+   * the chosen provider's key is missing, so the RoleResolver skips it and the
+   * role's default chain serves instead. No effect on quota/cooldown.
+   */
+  isActive?(): boolean;
+  /**
    * Optional multi-turn tool-call entry point. Providers that don't support
    * function calling can leave this undefined; the ToolRunner will reject.
    */

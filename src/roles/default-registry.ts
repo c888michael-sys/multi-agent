@@ -1,5 +1,8 @@
 import type { RoleConfig } from "./types.js";
-import { OPENROUTER_REASONING_PROVIDER_ID } from "../models/reasoning-model-overrides.js";
+import {
+  OPENROUTER_REASONING_PROVIDER_ID,
+  CUSTOMISABLE_ROLES,
+} from "../models/reasoning-model-overrides.js";
 
 /**
  * Default role-to-provider mapping. Each role lists candidate providers in
@@ -71,6 +74,9 @@ const CLOUD_CATEGORIZE = { providerId: "gemini:1" };
 const TOOL_CAPABLE_ACTION_CODE = [
   { providerId: "groq:llama-70b" },
   { providerId: "cerebras:gpt-oss-120b" },
+  // NVIDIA hosts strong function-calling chat/coder models on a generous free
+  // tier; included as a fallback when registered (NVIDIA_KEY set).
+  { providerId: "nvidia:llama-70b" },
 ];
 
 /**
@@ -105,6 +111,14 @@ export function buildDefaultRoles(opts?: { local?: boolean; toolCapable?: boolea
       const insertAt = gemmaIdx === -1 ? actionCode.candidates.length : gemmaIdx;
       actionCode.candidates.splice(insertAt, 0, ...toAdd);
     }
+  }
+  // Per-role override slots go FIRST in each customisable role's chain (ahead of
+  // even the local-prepend), so a user's explicit provider+model choice wins.
+  // The slot reports inactive until an override is set, so the resolver skips it
+  // and the rest of the chain serves unchanged by default.
+  for (const role of CUSTOMISABLE_ROLES) {
+    const cfg = roles.find((r) => r.name === role);
+    if (cfg) cfg.candidates.unshift({ providerId: `override:${role}` });
   }
   return roles;
 }

@@ -80,12 +80,14 @@ describe("web server", () => {
   let roleInstructionsPath: string;
   let originalOverridePath: string | undefined;
   let originalModelCachePath: string | undefined;
+  let originalProviderModelsCachePath: string | undefined;
 
   beforeEach(() => {
     sessionDir = mkdtempSync(join(tmpdir(), "multi-agent-web-sessions-"));
     roleInstructionsPath = join(sessionDir, "role-instructions.json");
     originalOverridePath = process.env.MULTI_AGENT_MODEL_OVERRIDES;
     originalModelCachePath = process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE;
+    originalProviderModelsCachePath = process.env.MULTI_AGENT_PROVIDER_MODELS_CACHE;
   });
 
   afterEach(() => {
@@ -98,6 +100,8 @@ describe("web server", () => {
     else process.env.MULTI_AGENT_MODEL_OVERRIDES = originalOverridePath;
     if (originalModelCachePath === undefined) delete process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE;
     else process.env.MULTI_AGENT_OPENROUTER_MODELS_CACHE = originalModelCachePath;
+    if (originalProviderModelsCachePath === undefined) delete process.env.MULTI_AGENT_PROVIDER_MODELS_CACHE;
+    else process.env.MULTI_AGENT_PROVIDER_MODELS_CACHE = originalProviderModelsCachePath;
   });
 
   function spawn(opts: { snap?: Snap[]; handler?: (name: string, prompt: string) => Promise<string> } = {}) {
@@ -758,6 +762,109 @@ describe("web server", () => {
     });
 
     expect(saved.status).toBe(403);
+  });
+
+  /** Pre-write a provider-models cache so the server reads it without network. */
+  function writeProviderModelsCache(
+    provider: string,
+    models: Array<{ id: string; name?: string; contextLength?: number; reasoningCapable?: boolean }>,
+  ): void {
+    const dir = join(sessionDir, "models-cache");
+    mkdirSync(dir, { recursive: true });
+    process.env.MULTI_AGENT_PROVIDER_MODELS_CACHE = dir;
+    writeFileSync(
+      join(dir, `${provider}.json`),
+      `${JSON.stringify({ version: 1, fetchedAt: Date.now(), models }, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
+  it("/api/providers lists selectable providers and customisable roles", async () => {
+    process.env.MULTI_AGENT_MODEL_OVERRIDES = join(sessionDir, "model-overrides.json");
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/providers`);
+    expect(r.status).toBe(200);
+    const j = await r.json() as {
+      providers: Array<{ id: string; label: string; configured: boolean }>;
+      roles: string[];
+      overrides: Record<string, unknown>;
+    };
+    const ids = j.providers.map((p) => p.id);
+    expect(ids).toContain("nvidia");
+    expect(ids).toContain("openrouter");
+    expect(ids).toContain("ollama");
+    expect(j.providers.find((p) => p.id === "ollama")!.configured).toBe(true);
+    expect(j.providers.find((p) => p.id === "nvidia")!).toHaveProperty("configured");
+    expect(j.roles).toContain("action-code");
+    expect(j.roles).not.toContain("perception");
+    expect(typeof j.overrides).toBe("object");
+  });
+
+  it("/api/role-models lists a provider's models from cache with the default primary", async () => {
+    process.env.MULTI_AGENT_MODEL_OVERRIDES = join(sessionDir, "model-overrides.json");
+    writeProviderModelsCache("groq", [{ id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B" }]);
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/role-models?role=action-structural&provider=groq`);
+    expect(r.status).toBe(200);
+    const j = await r.json() as {
+      models: Array<{ id: string }>;
+      defaultPrimary: string;
+      selected: unknown;
+    };
+    expect(j.models.map((m) => m.id)).toContain("llama-3.3-70b-versatile");
+    expect(j.defaultPrimary).toBe("groq:llama-70b");
+    expect(j.selected).toBeNull();
+  });
+
+  it("/api/role-models rejects a non-customisable role", async () => {
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/role-models?role=perception&provider=groq`);
+    expect(r.status).toBe(400);
+  });
+
+  it("/api/role-model sets then clears a per-role override", async () => {
+    const overridesPath = join(sessionDir, "model-overrides.json");
+    process.env.MULTI_AGENT_MODEL_OVERRIDES = overridesPath;
+    // ollama is always "configured"; cache a model so validation passes offline.
+    writeProviderModelsCache("ollama", [{ id: "qwen2.5-coder:14b", name: "qwen2.5-coder:14b" }]);
+    const { url } = spawn();
+
+    const set = await fetch(`${url}/api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "action-code", provider: "ollama", model: "qwen2.5-coder:14b" }),
+    });
+    expect(set.status).toBe(200);
+    const setJson = await set.json() as { selected: { provider: string; model: string } };
+    expect(setJson.selected.provider).toBe("ollama");
+    expect(setJson.selected.model).toBe("qwen2.5-coder:14b");
+    expect(readFileSync(overridesPath, "utf8")).toContain("qwen2.5-coder:14b");
+
+    const clear = await fetch(`${url}/api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "action-code", provider: null, model: null }),
+    });
+    expect(clear.status).toBe(200);
+    const clearJson = await clear.json() as { selected: unknown };
+    expect(clearJson.selected).toBeNull();
+  });
+
+  it("/api/role-model rejects unknown roles and cross-origin writes", async () => {
+    const { url } = spawn();
+    const badRole = await fetch(`${url}/api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "perception", provider: "groq", model: "x" }),
+    });
+    expect(badRole.status).toBe(400);
+
+    const crossOrigin = await fetch(`${url}/api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ role: "action-code", provider: "ollama", model: "x" }),
+    });
+    expect(crossOrigin.status).toBe(403);
   });
 
   it("/api/chat loads role instructions from disk for web sessions", async () => {

@@ -588,11 +588,189 @@ function normalizeRoleInstructionPayload(value) {
   };
 }
 
-function reasoningModelLabel(model) {
+function modelLabel(model) {
   if (!model) return 'unknown';
   const ctx = model.contextLength ? ` · ${CompactNumber(model.contextLength)} ctx` : '';
   const tag = model.reasoningCapable ? ' · reasoning' : '';
   return `${model.name || model.id}${tag}${ctx}`;
+}
+
+const ROLE_ROUTING_LABELS = {
+  reasoning: 'Reasoning',
+  orchestration: 'Orchestration',
+  'action-code': 'Action · code',
+  'action-structural': 'Action · structural',
+  'action-repetitive': 'Action · repetitive',
+};
+
+// Per-role provider + model routing. Each customisable role can be pointed at
+// any configured provider, then a model within it; clearing reverts to the
+// default chain. Mirrors the CLI `models set/clear` and /api/role-model.
+function ModelRoutingSection({ open }) {
+  const [providers, setProviders] = React.useState([]);
+  const [roles, setRoles] = React.useState([]);
+  const [overrides, setOverrides] = React.useState({});
+  const [roleProvider, setRoleProvider] = React.useState({});
+  const [roleModels, setRoleModels] = React.useState({});
+  const [roleLoading, setRoleLoading] = React.useState({});
+  const [status, setStatus] = React.useState('');
+
+  const setLoading = (role, value) => setRoleLoading((s) => ({ ...s, [role]: value }));
+
+  const loadModels = React.useCallback(async (role, provider, refresh = false) => {
+    if (!provider) {
+      setRoleModels((m) => ({ ...m, [role]: [] }));
+      return;
+    }
+    setLoading(role, true);
+    try {
+      const res = await fetch(
+        `/api/role-models?role=${encodeURIComponent(role)}&provider=${encodeURIComponent(provider)}${refresh ? '&refresh=1' : ''}`,
+      );
+      const payload = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      setRoleModels((m) => ({ ...m, [role]: Array.isArray(payload.models) ? payload.models : [] }));
+    } catch (err) {
+      setStatus(`${role}: ${err && err.message ? err.message : String(err)}`);
+      setRoleModels((m) => ({ ...m, [role]: [] }));
+    } finally {
+      setLoading(role, false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    setStatus('');
+    fetch('/api/providers')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        const ovr = payload.overrides || {};
+        setProviders(payload.providers || []);
+        setRoles(payload.roles || []);
+        setOverrides(ovr);
+        const rp = {};
+        for (const role of payload.roles || []) rp[role] = ovr[role] ? ovr[role].provider : '';
+        setRoleProvider(rp);
+        // Populate model lists for roles that already have an override.
+        for (const role of payload.roles || []) {
+          if (ovr[role]) loadModels(role, ovr[role].provider);
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setStatus(`Could not load providers: ${err && err.message ? err.message : String(err)}`);
+      });
+    return () => { cancelled = true; };
+  }, [open, loadModels]);
+
+  const saveOverride = async (role, provider, model) => {
+    setLoading(role, true);
+    setStatus(provider && model ? 'saving...' : 'reverting...');
+    try {
+      const res = await fetch('/api/role-model', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, provider, model }),
+      });
+      const payload = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      setOverrides((o) => ({ ...o, [role]: payload.selected || undefined }));
+      setStatus(
+        provider && model
+          ? `${role} → ${provider}:${model} — applies to the next ${role} call`
+          : `${role} reverted to its default chain`,
+      );
+    } catch (err) {
+      setStatus(`${role}: save failed — ${err && err.message ? err.message : String(err)}`);
+    } finally {
+      setLoading(role, false);
+    }
+  };
+
+  const onProviderChange = (role, provider) => {
+    setRoleProvider((p) => ({ ...p, [role]: provider }));
+    if (!provider) {
+      saveOverride(role, null, null); // clear → default chain
+      setRoleModels((m) => ({ ...m, [role]: [] }));
+    } else {
+      loadModels(role, provider);
+    }
+  };
+
+  return (
+    <div className="mm-settings-row">
+      <span className="mm-settings-name">Model routing</span>
+      <span className="mm-settings-hint">
+        Point any role at a provider, then a model. Leave a role on <em>Default</em> to use its
+        built-in fallback chain. Live model lists per provider (CLI: <code>models set</code>).
+      </span>
+      <div className="mm-role-routing">
+        {roles.map((role) => {
+          const provider = roleProvider[role] || '';
+          const models = roleModels[role] || [];
+          const selected = overrides[role];
+          const busy = !!roleLoading[role];
+          const selectedModelInList = selected && models.some((m) => m.id === selected.model);
+          return (
+            <div className="mm-role-routing-row" key={role}>
+              <span className="mm-role-routing-label">{ROLE_ROUTING_LABELS[role] || role}</span>
+              <div className="mm-role-routing-controls">
+                <select
+                  className="mm-settings-select"
+                  value={provider}
+                  disabled={busy}
+                  onChange={(e) => onProviderChange(role, e.target.value)}
+                  aria-label={`${role} provider`}
+                >
+                  <option value="">Default</option>
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id} disabled={!p.configured}>
+                      {p.label}{p.configured ? '' : ' (no key)'}
+                    </option>
+                  ))}
+                </select>
+                {provider ? (
+                  <select
+                    className="mm-settings-select"
+                    value={selected ? selected.model : ''}
+                    disabled={busy || models.length === 0}
+                    onChange={(e) => saveOverride(role, provider, e.target.value)}
+                    aria-label={`${role} model`}
+                  >
+                    <option value="" disabled>
+                      {busy ? 'loading…' : models.length === 0 ? 'no models' : 'choose model…'}
+                    </option>
+                    {selected && !selectedModelInList ? (
+                      <option value={selected.model}>{selected.model} (selected)</option>
+                    ) : null}
+                    {models.map((m) => (
+                      <option key={m.id} value={m.id}>{modelLabel(m)}</option>
+                    ))}
+                  </select>
+                ) : null}
+                {provider ? (
+                  <button
+                    type="button"
+                    className="mm-settings-reset"
+                    onClick={() => loadModels(role, provider, true)}
+                    disabled={busy}
+                  >
+                    refresh
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {status ? <span className="mm-settings-hint">{status}</span> : null}
+    </div>
+  );
 }
 
 function SettingsDrawer({ open, onClose, settings, onChange }) {
@@ -609,10 +787,6 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
   const [roleInstructionsPath, setRoleInstructionsPath] = React.useState('');
   const [roleInstructionsStatus, setRoleInstructionsStatus] = React.useState('');
   const [roleInstructionsSaving, setRoleInstructionsSaving] = React.useState(false);
-  const [reasoningModels, setReasoningModels] = React.useState([]);
-  const [reasoningSelected, setReasoningSelected] = React.useState(null);
-  const [reasoningModelStatus, setReasoningModelStatus] = React.useState('');
-  const [reasoningModelsLoading, setReasoningModelsLoading] = React.useState(false);
   // Close on Escape so the drawer doesn't trap focus.
   React.useEffect(() => {
     if (!open) return;
@@ -642,30 +816,6 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
       });
     return () => { cancelled = true; };
   }, [open]);
-
-  const loadReasoningModels = React.useCallback(async (refresh = false) => {
-    setReasoningModelsLoading(true);
-    setReasoningModelStatus(refresh ? 'refreshing...' : 'loading...');
-    try {
-      const res = await fetch(`/api/reasoning-models${refresh ? '?refresh=1' : ''}`);
-      const payload = res.ok ? await res.json() : null;
-      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
-      setReasoningModels(Array.isArray(payload.models) ? payload.models : []);
-      setReasoningSelected(payload.selected || null);
-      const source = payload.source || 'unknown';
-      setReasoningModelStatus(`${source}${payload.stale ? ' stale' : ''} · ${(payload.models || []).length} free text models`);
-    } catch (err) {
-      setReasoningModelStatus(`Could not load OpenRouter models: ${err && err.message ? err.message : String(err)}`);
-      setReasoningModels([]);
-    } finally {
-      setReasoningModelsLoading(false);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    if (!open) return;
-    loadReasoningModels(false);
-  }, [open, loadReasoningModels]);
 
   const onToggleLocal = async (e) => {
     const wantsOn = e.target.checked;
@@ -730,27 +880,6 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     }
   };
 
-  const onReasoningModelChange = async (e) => {
-    const model = e.target.value;
-    setReasoningModelsLoading(true);
-    setReasoningModelStatus('saving...');
-    try {
-      const res = await fetch('/api/reasoning-model', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model }),
-      });
-      const payload = res.ok ? await res.json() : null;
-      if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
-      setReasoningSelected(payload.selected || null);
-      setReasoningModelStatus('saved - next reasoning call will use this model');
-    } catch (err) {
-      setReasoningModelStatus(`Save failed: ${err && err.message ? err.message : String(err)}`);
-    } finally {
-      setReasoningModelsLoading(false);
-    }
-  };
-
   return (
     <>
       <div
@@ -812,36 +941,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
               </span>
             </label>
           </div>
-          <div className="mm-settings-row mm-settings-row-select">
-            <span className="mm-settings-name">Reasoning model</span>
-            <div className="mm-settings-inline">
-              <select
-                className="mm-settings-select"
-                value={reasoningSelected?.model || ''}
-                disabled={reasoningModelsLoading || reasoningModels.length === 0}
-                onChange={onReasoningModelChange}
-              >
-                {reasoningSelected && !reasoningModels.some((m) => m.id === reasoningSelected.model) ? (
-                  <option value={reasoningSelected.model}>{reasoningSelected.model} (selected)</option>
-                ) : null}
-                {reasoningModels.map((m) => (
-                  <option key={m.id} value={m.id}>{reasoningModelLabel(m)}</option>
-                ))}
-              </select>
-              <button
-                className="mm-settings-reset"
-                type="button"
-                onClick={() => loadReasoningModels(true)}
-                disabled={reasoningModelsLoading}
-              >
-                refresh
-              </button>
-            </div>
-            <span className="mm-settings-hint">
-              OpenRouter free text models only. General chat models are included; audio, image, embedding, rerank, and expired speciality models are filtered out. Gemini and Gemma remain the fallback chain.
-            </span>
-            {reasoningModelStatus ? <span className="mm-settings-hint">{reasoningModelStatus}</span> : null}
-          </div>
+          <ModelRoutingSection open={open} />
           <div className="mm-settings-row">
             <label className="mm-settings-label">
               <input

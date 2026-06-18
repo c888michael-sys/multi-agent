@@ -40,15 +40,28 @@ import {
   readRoleInstructions,
   writeRoleInstructions,
 } from "../roles/instructions.js";
-import { LOCAL_OLLAMA_MODELS } from "../config.js";
+import {
+  LOCAL_OLLAMA_MODELS,
+  apiKeyForOverrideProvider,
+  isOverrideProviderConfigured,
+} from "../config.js";
 import {
   listOpenRouterFreeTextModels,
 } from "../models/openrouter-models.js";
+import { listModelsForProvider } from "../models/provider-models.js";
 import {
   DEFAULT_OPENROUTER_REASONING_MODEL,
   readReasoningModelOverride,
   resetReasoningModelOverride,
   writeReasoningModelOverride,
+  readAllRoleModelOverrides,
+  readRoleModelOverride,
+  writeRoleModelOverride,
+  clearRoleModelOverride,
+  CUSTOMISABLE_ROLES,
+  OVERRIDE_PROVIDER_NAMES,
+  type CustomisableRole,
+  type OverrideProviderName,
 } from "../models/reasoning-model-overrides.js";
 import type { CompleteOptions } from "../provider.js";
 import type { RoutingMode } from "../agents/multi-agent-workflow.js";
@@ -79,6 +92,31 @@ const VALID_ROLES: ReadonlySet<RoleName> = new Set<RoleName>([
   "action-repetitive",
   "mindmap-categorize",
 ]);
+
+/** Display labels for the override providers in the model-routing picker. */
+const PROVIDER_LABELS: Record<OverrideProviderName, string> = {
+  openrouter: "OpenRouter",
+  nvidia: "NVIDIA",
+  groq: "Groq",
+  cerebras: "Cerebras",
+  mistral: "Mistral",
+  gemini: "Gemini",
+  ollama: "Ollama (local)",
+};
+
+function isCustomisableRoleName(value: string): value is CustomisableRole {
+  return (CUSTOMISABLE_ROLES as readonly string[]).includes(value);
+}
+
+function isOverrideProviderName(value: string): value is OverrideProviderName {
+  return (OVERRIDE_PROVIDER_NAMES as readonly string[]).includes(value);
+}
+
+/** The role's default (non-override) primary provider id, for the picker UI. */
+function defaultPrimaryFor(role: CustomisableRole): string {
+  const cfg = DEFAULT_ROLES.find((r) => r.name === role);
+  return cfg?.candidates[0]?.providerId ?? "";
+}
 
 /**
  * Translate the optional CLI-parity flags (`thinking`, `useSearch`,
@@ -350,7 +388,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           mode: opts.router.getMode(),
           useLocal,
           runtime: runtimeConfig(opts),
-          providers: snap.map((p) => ({
+          // Hide inactive override slots (no override set) from the flat list so
+          // the providers panel only shows real, in-use providers.
+          providers: snap.filter((p) => p.active !== false).map((p) => ({
             id: p.id,
             model: p.model,
             successCount: p.successCount,
@@ -709,6 +749,115 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             reasoningCapable: option.reasoningCapable,
           });
           sendJson(res, 200, { selected });
+        } catch (err) {
+          sendJson(res, 502, { error: (err as Error).message });
+        }
+        return;
+      }
+
+      // ── Per-role provider + model selection (generalises reasoning-model) ──
+
+      if (pathname === "/api/providers" && req.method === "GET") {
+        sendJson(res, 200, {
+          providers: OVERRIDE_PROVIDER_NAMES.map((id) => ({
+            id,
+            label: PROVIDER_LABELS[id] ?? id,
+            configured: isOverrideProviderConfigured(id),
+          })),
+          roles: CUSTOMISABLE_ROLES,
+          overrides: readAllRoleModelOverrides(),
+        });
+        return;
+      }
+
+      if (pathname === "/api/role-models" && req.method === "GET") {
+        const role = url.searchParams.get("role") ?? "";
+        const provider = url.searchParams.get("provider") ?? "";
+        if (!isCustomisableRoleName(role)) {
+          sendJson(res, 400, { error: `unknown or non-customisable role: ${role}` });
+          return;
+        }
+        if (!isOverrideProviderName(provider)) {
+          sendJson(res, 400, { error: `unknown provider: ${provider}` });
+          return;
+        }
+        try {
+          const refresh = url.searchParams.get("refresh") === "1";
+          const result = await listModelsForProvider(provider, {
+            apiKey: apiKeyForOverrideProvider(provider) ?? undefined,
+            refresh,
+          });
+          sendJson(res, 200, {
+            role,
+            provider,
+            selected: readRoleModelOverride(role),
+            defaultPrimary: defaultPrimaryFor(role),
+            models: result.models,
+            source: result.source,
+            fetchedAt: result.fetchedAt,
+            stale: result.stale,
+          });
+        } catch (err) {
+          sendJson(res, 502, { error: (err as Error).message });
+        }
+        return;
+      }
+
+      if (pathname === "/api/role-model" && req.method === "PUT") {
+        const ct = req.headers["content-type"] ?? "";
+        if (!ct.includes("application/json")) {
+          sendJson(res, 415, { error: "Content-Type must be application/json" });
+          return;
+        }
+        if (!isAllowedOrigin(req.headers["origin"], port)) {
+          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+          return;
+        }
+        const body = await readBody(req);
+        const parsed = safeJsonParse(body) as
+          | { role?: string; provider?: string | null; model?: string | null }
+          | null;
+        if (!parsed || !isCustomisableRoleName(parsed.role ?? "")) {
+          sendJson(res, 400, { error: "role (customisable role name) required" });
+          return;
+        }
+        const role = parsed.role as CustomisableRole;
+        // Clearing: provider or model null/empty reverts to the default chain.
+        if (!parsed.provider || !parsed.model) {
+          clearRoleModelOverride(role);
+          sendJson(res, 200, { selected: null, role });
+          return;
+        }
+        if (!isOverrideProviderName(parsed.provider)) {
+          sendJson(res, 400, { error: `unknown provider: ${parsed.provider}` });
+          return;
+        }
+        const provider = parsed.provider;
+        if (!isOverrideProviderConfigured(provider)) {
+          sendJson(res, 400, { error: `provider '${provider}' is not configured (missing API key)` });
+          return;
+        }
+        try {
+          const result = await listModelsForProvider(provider, {
+            apiKey: apiKeyForOverrideProvider(provider) ?? undefined,
+          });
+          const option = result.models.find((m) => m.id === parsed.model);
+          if (!option) {
+            sendJson(res, 400, {
+              error: `model '${parsed.model}' is not in ${provider}'s current model list`,
+            });
+            return;
+          }
+          const selected = writeRoleModelOverride(role, {
+            provider,
+            model: option.id,
+            ...(option.name ? { name: option.name } : {}),
+            ...(option.contextLength !== undefined ? { contextLength: option.contextLength } : {}),
+            ...(option.reasoningCapable !== undefined
+              ? { reasoningCapable: option.reasoningCapable }
+              : {}),
+          });
+          sendJson(res, 200, { selected, role });
         } catch (err) {
           sendJson(res, 502, { error: (err as Error).message });
         }
@@ -1146,10 +1295,23 @@ function roleUsageSnapshot(
     : DEFAULT_ROLES;
 
   for (const role of roleConfigs) {
-    const primaryId = role.candidates[0]?.providerId ?? "";
+    // An override slot is "transparent" when it's inactive (no override set) or
+    // absent from the snapshot — it should be skipped both as the configured
+    // primary and as a routing candidate, so the role's real default chain
+    // shows. An ACTIVE override slot is the configured primary and wins.
+    const isTransparentOverride = (providerId: string): boolean =>
+      providerId.startsWith("override:") && byId.get(providerId)?.active !== true;
+
+    // Configured primary = first candidate that isn't a transparent override
+    // slot (kept even if not registered, so serving a backup reads as fallback).
+    const primaryId =
+      role.candidates.find((c) => !isTransparentOverride(c.providerId))?.providerId ??
+      role.candidates[0]?.providerId ??
+      "";
     const registered = role.candidates
+      .filter((c) => !isTransparentOverride(c.providerId))
       .map((c) => byId.get(c.providerId))
-      .filter((p): p is ProviderSnapshot => Boolean(p));
+      .filter((p): p is ProviderSnapshot => p !== undefined && p.active !== false);
     const ready = registered.find((p) => p.cooldownUntil <= now);
     const picked = ready ?? registered[0];
 

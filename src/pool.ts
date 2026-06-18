@@ -66,6 +66,12 @@ export interface ProviderSnapshot {
   rpdSource: QuotaSource;
   /** ms-since-epoch when the live header was scraped; only set for source='live'. */
   liveQuotaFetchedAt?: number;
+  /**
+   * Whether the provider currently considers itself usable. Always true for
+   * normal providers; the per-role override slot reports false when no override
+   * is set so the resolver skips it. Lets the web sidebar hide inactive slots.
+   */
+  active: boolean;
 }
 
 export interface ProviderConfig {
@@ -134,6 +140,11 @@ export class ProviderPool {
 
   size(): number {
     return this.entries.length;
+  }
+
+  /** Look up a registered provider by id, or undefined if not in the pool. */
+  getProvider(id: string): Provider | undefined {
+    return this.entries.find((e) => e.provider.id === id)?.provider;
   }
 
   getMode(): PoolMode {
@@ -255,6 +266,7 @@ export class ProviderPool {
         rpmCount: e.recentRequestTimes.length,
         rpmSource: "estimated",
         rpdSource: "estimated",
+        active: typeof e.provider.isActive === "function" ? e.provider.isActive() : true,
       };
 
       // RPM — prefer live header.

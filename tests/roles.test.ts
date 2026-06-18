@@ -7,7 +7,32 @@ import {
 } from "../src/roles/resolver.js";
 import { buildDefaultRoles } from "../src/roles/default-registry.js";
 import type { RoleConfig, RoleEvent } from "../src/roles/types.js";
+import type { Provider } from "../src/provider.js";
 import { FakeProvider, ToolFakeProvider } from "./fixtures.js";
+
+/** Provider with a toggleable isActive(), mimicking an override slot. */
+class ToggleProvider implements Provider {
+  readonly model = "toggle-model";
+  active = true;
+  calls = 0;
+  constructor(
+    readonly id: string,
+    private readonly text: string,
+  ) {}
+  async complete(): Promise<string> {
+    this.calls++;
+    return this.text;
+  }
+  isRateLimitError(): boolean {
+    return false;
+  }
+  retryAfterMs(): number | null {
+    return null;
+  }
+  isActive(): boolean {
+    return this.active;
+  }
+}
 
 describe("Router — providerIds constraint", () => {
   it("complete() with providerIds filter only considers matching providers", async () => {
@@ -57,6 +82,43 @@ describe("RoleResolver", () => {
 
     expect(await resolver.runRole("reasoning", "think")).toBe("answer-from-b");
     expect(a.calls).toHaveLength(0);
+  });
+
+  it("skips an inactive override slot and serves the next candidate; uses it once active", async () => {
+    const ovr = new ToggleProvider("override:reasoning", "from-override");
+    ovr.active = false;
+    const real = new FakeProvider("openrouter:reasoning", [
+      { kind: "ok", text: "from-default" },
+      { kind: "ok", text: "from-default-2" },
+    ]);
+    const router = new Router([ovr, real], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      role("reasoning", ["override:reasoning", "openrouter:reasoning"]),
+    ]);
+
+    // Inactive override is skipped entirely — default serves, no fallback noise.
+    expect(await resolver.runRole("reasoning", "x")).toBe("from-default");
+    expect(ovr.calls).toBe(0);
+
+    // Once active, the override slot wins as primary.
+    ovr.active = true;
+    expect(await resolver.runRole("reasoning", "x")).toBe("from-override");
+    expect(ovr.calls).toBe(1);
+  });
+
+  it("does not borrow an inactive override slot via cross-role substitution", async () => {
+    const otherOverride = new ToggleProvider("override:action-code", "should-not-be-used");
+    otherOverride.active = false;
+    const exhausted = new FakeProvider("primary", [{ kind: "rate" }]);
+    const router = new Router([otherOverride, exhausted], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [role("reasoning", ["primary"])], {
+      crossRoleFailover: true,
+    });
+
+    // reasoning's only candidate is rate-limited; the only foreign provider is an
+    // inactive override slot, which must NOT be borrowed.
+    await expect(resolver.runRole("reasoning", "x")).rejects.toThrow();
+    expect(otherOverride.calls).toBe(0);
   });
 
   it("falls back to secondary candidate when primary is exhausted", async () => {
@@ -176,8 +238,9 @@ describe("default role registry", () => {
     return buildDefaultRoles({ local }).find((r) => r.name === roleName)!.candidates.map((c) => c.providerId);
   }
 
-  it("uses OpenRouter Qwen 3.6 Plus as the cloud reasoning primary", () => {
-    expect(candidateIds("reasoning", false).slice(0, 5)).toEqual([
+  it("prepends the override slot, then OpenRouter as the cloud reasoning primary", () => {
+    expect(candidateIds("reasoning", false).slice(0, 6)).toEqual([
+      "override:reasoning",
       "openrouter:reasoning",
       "gemini:1",
       "gemini:2",
@@ -186,14 +249,31 @@ describe("default role registry", () => {
     ]);
   });
 
-  it("hybrid mode only prepends Ollama to reasoning and action-code", () => {
-    expect(candidateIds("reasoning", true)[0]).toBe("ollama:qwen3.5-9b");
-    expect(candidateIds("action-code", true)[0]).toBe("ollama:qwen2.5-coder");
-    expect(candidateIds("reasoning", false)[0]).toBe("openrouter:reasoning");
+  it("override slot is first; hybrid mode then prepends Ollama to reasoning and action-code", () => {
+    // Customisable roles get the override slot at index 0 (inactive by default,
+    // skipped by the resolver), then the local-prepend, then the cloud chain.
+    expect(candidateIds("reasoning", true).slice(0, 2)).toEqual([
+      "override:reasoning",
+      "ollama:qwen3.5-9b",
+    ]);
+    expect(candidateIds("action-code", true).slice(0, 2)).toEqual([
+      "override:action-code",
+      "ollama:qwen2.5-coder",
+    ]);
+    expect(candidateIds("reasoning", false).slice(0, 2)).toEqual([
+      "override:reasoning",
+      "openrouter:reasoning",
+    ]);
 
-    expect(candidateIds("orchestration", true)[0]).toBe("gemini:1");
+    // orchestration is customisable but not local — override slot then gemini:1.
+    expect(candidateIds("orchestration", true).slice(0, 2)).toEqual([
+      "override:orchestration",
+      "gemini:1",
+    ]);
+    // mindmap-categorize is NOT customisable: no override slot, cloud chain only.
     expect(candidateIds("mindmap-categorize", true)[0]).toBe("gemini:1");
     expect(candidateIds("mindmap-categorize", true)).not.toContain("ollama:qwen2.5-coder");
+    expect(candidateIds("mindmap-categorize", true)).not.toContain("override:mindmap-categorize");
   });
 
   it("mindmap categorization uses the same cloud/reserved chain in both modes", () => {
