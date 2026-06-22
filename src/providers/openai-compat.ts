@@ -166,18 +166,16 @@ export function historyToOpenAIMessages(history: ConversationPart[]): unknown[] 
     switch (part.kind) {
       case "user_text":
         if (part.images && part.images.length > 0) {
-          // OpenAI vision shape: content becomes an array of text + image_url
-          // parts (data URLs) so a vision-capable model sees pasted images.
-          messages.push({
-            role: "user",
-            content: [
-              { type: "text", text: part.text },
-              ...part.images.map((img) => ({
-                type: "image_url",
-                image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
-              })),
-            ],
-          });
+          // Image turns route to the multimodal `vision` role (Gemini) — never
+          // to an OpenAI-compat provider, which in this app are all text models.
+          // But the image turn stays in history and gets REPLAYED to text
+          // specialists (Groq/Cerebras/Mistral) on later turns. Sending an
+          // `image_url` content part to a non-vision model 400s, so flatten the
+          // image to a text marker here: the model keeps the prompt + the fact
+          // that an image was shared, without the unsupported payload.
+          const n = part.images.length;
+          const note = `\n\n[user attached ${n} image${n > 1 ? "s" : ""} — not visible to this model]`;
+          messages.push({ role: "user", content: `${part.text}${note}` });
         } else {
           messages.push({ role: "user", content: part.text });
         }

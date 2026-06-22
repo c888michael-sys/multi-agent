@@ -92,23 +92,22 @@ describe("historyToOpenAIMessages", () => {
     ]);
   });
 
-  it("emits the vision content array (text + image_url data URL) for an image turn", () => {
+  it("flattens an image turn to a text marker (OpenAI-compat providers are text-only here)", () => {
     const messages = historyToOpenAIMessages([
       {
         kind: "user_text",
         text: "describe this",
-        images: [{ mimeType: "image/jpeg", dataBase64: "ZZZZ" }],
-      },
-    ]);
-    expect(messages).toEqual([
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "describe this" },
-          { type: "image_url", image_url: { url: "data:image/jpeg;base64,ZZZZ" } },
+        images: [
+          { mimeType: "image/jpeg", dataBase64: "ZZZZ" },
+          { mimeType: "image/png", dataBase64: "YYYY" },
         ],
       },
     ]);
+    expect(messages).toEqual([
+      { role: "user", content: "describe this\n\n[user attached 2 images — not visible to this model]" },
+    ]);
+    // Crucially, no base64 image_url payload is sent to a non-vision model.
+    expect(JSON.stringify(messages)).not.toContain("ZZZZ");
   });
 
   it("keeps plain-string content when a user turn has no images", () => {

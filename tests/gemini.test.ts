@@ -132,6 +132,23 @@ describe("historyToGeminiContents", () => {
     ]);
   });
 
+  it("flattens images to a text marker when includeImages is false (Gemma)", () => {
+    const contents = historyToGeminiContents(
+      [
+        {
+          kind: "user_text",
+          text: "what is this?",
+          images: [{ mimeType: "image/png", dataBase64: "AAAA" }],
+        },
+      ],
+      { includeImages: false },
+    );
+    expect(contents).toEqual([
+      { role: "user", parts: [{ text: "what is this?\n\n[user attached 1 image — not visible to this model]" }] },
+    ]);
+    expect(JSON.stringify(contents)).not.toContain("AAAA");
+  });
+
   it("re-attaches thoughtSignature on model_calls when present", () => {
     const contents = historyToGeminiContents([
       {

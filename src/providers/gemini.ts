@@ -24,6 +24,15 @@ export class GeminiProvider implements Provider {
     this.client = new GoogleGenerativeAI(opts.apiKey);
   }
 
+  /**
+   * Whether this model can accept image parts. Gemini Flash/Pro are
+   * multimodal; the Gemma family (served through the same SDK) is text-only and
+   * rejects inlineData, so image turns are flattened to text for it.
+   */
+  private get supportsVision(): boolean {
+    return !/gemma/i.test(this.model);
+  }
+
   async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
     // Both thinkingConfig and tools are Gemini 3.x features the older SDK's
     // typed surface doesn't fully cover. The API itself forwards them — cast
@@ -115,7 +124,7 @@ export class GeminiProvider implements Provider {
     };
     if (opts?.useSearch) modelArgs.tools = [{ googleSearch: {} }];
     const model = this.client.getGenerativeModel(modelArgs as never);
-    const contents = historyToGeminiContents(history);
+    const contents = historyToGeminiContents(history, { includeImages: this.supportsVision });
     const result = await model.generateContent({ contents } as never);
     const text = result.response.text();
     if (!opts?.useSearch) return text;
@@ -146,7 +155,7 @@ export class GeminiProvider implements Provider {
     };
     if (opts?.useSearch) modelArgs.tools = [{ googleSearch: {} }];
     const model = this.client.getGenerativeModel(modelArgs as never);
-    const contents = historyToGeminiContents(history);
+    const contents = historyToGeminiContents(history, { includeImages: this.supportsVision });
     // generateContentStream returns { stream, response } where stream is an
     // async iterable of chunks. Each chunk.text() is the incremental delta.
     const streamed = (await (model as never as {
@@ -186,22 +195,39 @@ export class GeminiProvider implements Provider {
       tools: [{ functionDeclarations: tools }],
     };
     const model = this.client.getGenerativeModel(modelArgs as never);
-    const contents = historyToGeminiContents(history);
+    const contents = historyToGeminiContents(history, { includeImages: this.supportsVision });
     const result = await model.generateContent({ contents } as never);
     return parseToolResponse(result.response);
   }
 }
 
-/** Convert our provider-agnostic history into Gemini's Content[] shape. */
-export function historyToGeminiContents(history: ConversationPart[]): unknown[] {
+/**
+ * Convert our provider-agnostic history into Gemini's Content[] shape.
+ *
+ * `includeImages` (default true) controls whether attached images become
+ * `inlineData` parts. Multimodal models (Flash/Pro) want them; text-only
+ * Gemini-family models (Gemma) reject `inlineData`, so when an image turn is
+ * replayed to Gemma on a later turn we flatten it to a text marker instead.
+ */
+export function historyToGeminiContents(
+  history: ConversationPart[],
+  opts?: { includeImages?: boolean },
+): unknown[] {
+  const includeImages = opts?.includeImages !== false;
   const contents: unknown[] = [];
   for (const part of history) {
     switch (part.kind) {
       case "user_text": {
+        const imgs = part.images ?? [];
+        if (!includeImages && imgs.length > 0) {
+          const note = `\n\n[user attached ${imgs.length} image${imgs.length > 1 ? "s" : ""} — not visible to this model]`;
+          contents.push({ role: "user", parts: [{ text: `${part.text}${note}` }] });
+          break;
+        }
         const parts: unknown[] = [{ text: part.text }];
         // Multimodal: append each attached image as an inlineData part so
         // Gemini Flash sees pasted screenshots alongside the prompt text.
-        for (const img of part.images ?? []) {
+        for (const img of imgs) {
           parts.push({ inlineData: { mimeType: img.mimeType, data: img.dataBase64 } });
         }
         contents.push({ role: "user", parts });
