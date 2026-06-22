@@ -71,6 +71,31 @@ describe("ChatSession", () => {
     expect(existsSync(storage)).toBe(true);
   });
 
+  it("routes an image turn to the vision role and persists the images", async () => {
+    const orch = chatProvider(["text-reply"], "orch");
+    const vision = chatProvider(["i see a cat"], "vision-gemini");
+    const router = new Router([orch, vision], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "orch" }] },
+      { name: "vision", description: "v", candidates: [{ providerId: "vision-gemini" }] },
+    ]);
+    const s = new ChatSession({ resolver, id: "img", storagePath: storage });
+    const img = { mimeType: "image/png", dataBase64: "AAAA" };
+
+    const result = await s.send("what is this?", undefined, undefined, undefined, [img]);
+
+    expect(result.reply).toBe("i see a cat");
+    expect(result.servedBy).toEqual(["vision"]);
+    expect(orch.calls).toHaveLength(0); // text pipeline bypassed
+    expect(vision.calls).toHaveLength(1);
+    expect(vision.calls[0]!.prompt).toContain('"dataBase64":"AAAA"'); // image reached the model
+    expect(s.snapshot().history[0]).toEqual({
+      kind: "user_text",
+      text: "what is this?",
+      images: [img],
+    });
+  });
+
   it("survives a process restart by reloading from disk", async () => {
     const p1 = chatProvider(["first reply"]);
     const router1 = new Router([p1], { maxRetryWaitMs: 0 });

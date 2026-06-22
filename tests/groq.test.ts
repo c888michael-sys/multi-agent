@@ -92,6 +92,30 @@ describe("historyToOpenAIMessages", () => {
     ]);
   });
 
+  it("emits the vision content array (text + image_url data URL) for an image turn", () => {
+    const messages = historyToOpenAIMessages([
+      {
+        kind: "user_text",
+        text: "describe this",
+        images: [{ mimeType: "image/jpeg", dataBase64: "ZZZZ" }],
+      },
+    ]);
+    expect(messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "describe this" },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,ZZZZ" } },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps plain-string content when a user turn has no images", () => {
+    const messages = historyToOpenAIMessages([{ kind: "user_text", text: "hi" }]);
+    expect(messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
   it("generates synthetic tool_call_ids when none provided", () => {
     const messages = historyToOpenAIMessages([
       { kind: "model_calls", calls: [{ name: "foo", args: {} }] },

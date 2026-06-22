@@ -197,9 +197,16 @@ export function historyToGeminiContents(history: ConversationPart[]): unknown[] 
   const contents: unknown[] = [];
   for (const part of history) {
     switch (part.kind) {
-      case "user_text":
-        contents.push({ role: "user", parts: [{ text: part.text }] });
+      case "user_text": {
+        const parts: unknown[] = [{ text: part.text }];
+        // Multimodal: append each attached image as an inlineData part so
+        // Gemini Flash sees pasted screenshots alongside the prompt text.
+        for (const img of part.images ?? []) {
+          parts.push({ inlineData: { mimeType: img.mimeType, data: img.dataBase64 } });
+        }
+        contents.push({ role: "user", parts });
         break;
+      }
       case "model_text":
         contents.push({ role: "model", parts: [{ text: part.text }] });
         break;

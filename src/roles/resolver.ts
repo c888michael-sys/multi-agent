@@ -209,6 +209,9 @@ export class RoleResolver {
   rosterDescription(): string {
     const lines: string[] = [];
     for (const [name, cfg] of this.roles) {
+      // `vision` is an internal, auto-forced multimodal role (image turns) —
+      // never offer it to the orchestrator planner for text routing.
+      if (name === "vision") continue;
       const eligible = cfg.candidates.filter((c) => this.isCandidateUsable(c.providerId));
       const status = eligible.length === 0 ? "[UNAVAILABLE]" : `(${eligible[0]!.providerId})`;
       lines.push(`- ${name} ${status}: ${cfg.description}`);

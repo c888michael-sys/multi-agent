@@ -247,4 +247,23 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     systemPromptTemplate:
       "You categorize an assistant reply into a JSON shape. Preserve every detail. Return ONLY valid JSON. No prose, no markdown fences.",
   },
+  {
+    // Internal multimodal role: chat turns that include pasted/attached images
+    // are auto-forced here (see ChatSession.send). Pinned to Gemini Flash, the
+    // one fully-wired multimodal provider. NOT user-selectable and NOT offered
+    // to the orchestrator planner (excluded from rosterDescription), so it only
+    // ever serves image turns. Gemini-only on purpose — Gemma/text fallbacks
+    // can't see images, so there is no safety-net slot here.
+    name: "vision",
+    description:
+      "Answer questions about attached images. Multimodal; used automatically when a turn includes images.",
+    candidates: [
+      { providerId: "gemini:1" },
+      { providerId: "gemini:2" },
+    ],
+    systemPromptTemplate:
+      "You are a helpful assistant. The user has shared one or more images. " +
+      "Look at the image(s) and answer their question clearly and concisely. " +
+      "If they did not ask a specific question, describe what the image shows.",
+  },
 ];

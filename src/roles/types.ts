@@ -13,7 +13,8 @@ export type RoleName =
   | "action-code" // code-specialized execution
   | "action-structural" // general execution; structured outputs; formatting
   | "action-repetitive" // bulk, high-volume tasks
-  | "mindmap-categorize"; // turn a chat reply into structured JSON for the mindmap burst
+  | "mindmap-categorize" // turn a chat reply into structured JSON for the mindmap burst
+  | "vision"; // answer about pasted/attached images — internal, multimodal (Gemini), auto-forced
 
 /** Points at a specific provider in the Router's pool, plus any per-call mode flags. */
 export interface ProviderRef {

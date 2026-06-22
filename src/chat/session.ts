@@ -7,7 +7,7 @@ import {
   formatRoleInstructionsForRole,
 } from "../roles/instructions.js";
 import type { CompleteOptions } from "../provider.js";
-import type { ConversationPart, Tool, ToolDeclaration } from "../tools/types.js";
+import type { ConversationPart, ImagePart, Tool, ToolDeclaration } from "../tools/types.js";
 import { WebSearchTool } from "../tools/web-search.js";
 import { parsePlan, type Plan } from "../agents/role-orchestrator.js";
 import { LATEX_DIRECTIVE } from "../agents/prompts.js";
@@ -299,6 +299,7 @@ export class ChatSession {
     opts?: CompleteOptions,
     onProgress?: (evt: ChatProgressEvent) => void,
     routing?: { forceRole?: RoleName; roundRobin?: boolean; mode?: RoutingMode },
+    images?: ImagePart[],
   ): Promise<SendResult> {
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
@@ -318,7 +319,13 @@ export class ChatSession {
     // same shape as `ask --allow-bash`.
     const toolForcedRole: RoleName | undefined =
       this.toolDecls.length > 0 && !routing?.forceRole ? "action-code" : undefined;
-    const forcedRole = routing?.forceRole ?? toolForcedRole;
+    // Image turns are multimodal: bypass the text-only multi-agent pipeline and
+    // route straight to the vision role (Gemini Flash). Explicit forceRole and
+    // tool sessions take precedence.
+    const hasImages = !!(images && images.length > 0);
+    const visionForcedRole: RoleName | undefined =
+      hasImages && !routing?.forceRole && !toolForcedRole ? "vision" : undefined;
+    const forcedRole = routing?.forceRole ?? toolForcedRole ?? visionForcedRole;
     const mode: RoutingMode =
       routing?.mode ?? (routing?.roundRobin === true ? "brainstorming" : "auto");
     const emit = (evt: ChatProgressEvent) => {
@@ -340,7 +347,7 @@ export class ChatSession {
       }
     }
 
-    this.history.push({ kind: "user_text", text: userInput });
+    this.history.push({ kind: "user_text", text: userInput, ...(hasImages ? { images } : {}) });
 
     let reply: string;
     let servedBy: RoleName[];

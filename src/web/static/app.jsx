@@ -1379,12 +1379,118 @@ function composeMessageWithAttachments(prompt, attachments) {
   return `${header}\n\n${blocks}\n\n---\n\n${prompt}`;
 }
 
+// ─── Image attachments (pasted / dropped / picked screenshots) ─────────────
+const IMG_MAX_COUNT = 4;
+const IMG_MAX_EDGE = 1568;          // longest edge (px) after downscale
+const IMG_JPEG_QUALITY = 0.85;
+const IMG_ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+// Read an image File, downscale so its longest edge ≤ IMG_MAX_EDGE, and
+// re-encode as JPEG to keep the base64 payload small. Returns
+// { mimeType, dataBase64, previewUrl } — previewUrl is a data URL for the
+// composer thumbnail. GIFs pass through unscaled to preserve animation
+// (still bounded by the server's per-image byte cap).
+function readImageDownscaled(file) {
+  return new Promise((resolve, reject) => {
+    if (!IMG_ALLOWED_MIME.includes(file.type)) {
+      reject(new Error(`${file.name || 'image'}: unsupported type ${file.type || '?'}`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('image read failed'));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      if (file.type === 'image/gif') {
+        resolve({ mimeType: 'image/gif', dataBase64: dataUrl.slice(dataUrl.indexOf(',') + 1), previewUrl: dataUrl });
+        return;
+      }
+      const img = new Image();
+      img.onerror = () => reject(new Error('image decode failed'));
+      img.onload = () => {
+        const scale = Math.min(1, IMG_MAX_EDGE / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const out = canvas.toDataURL('image/jpeg', IMG_JPEG_QUALITY);
+        resolve({ mimeType: 'image/jpeg', dataBase64: out.slice(out.indexOf(',') + 1), previewUrl: out });
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Thumbnails (this session) or a count chip (after reload) for a turn's
+// pasted images, shown next to the user's prompt in the transcript.
+function ImageTurnIndicator({ entry }) {
+  if (!entry) return null;
+  const imgs = entry.images || [];
+  const count = entry.imageCount || imgs.length;
+  if (!count) return null;
+  if (imgs.length) {
+    return (
+      <span className="mm-turn-thumbs">
+        {imgs.map((im, i) => (
+          <img key={i} src={im.previewUrl || `data:${im.mimeType};base64,${im.dataBase64}`} alt={`image ${i + 1}`} />
+        ))}
+      </span>
+    );
+  }
+  return <span className="mm-turn-imgcount" title={`${count} image${count > 1 ? 's' : ''} sent`}>🖼 {count}</span>;
+}
+
 // ─── Composer (used in idle + response phases) ─────────────
 function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments, setAttachments, settings, placeholder }) {
   const ref = React.useRef(null);
   const fileRef = React.useRef(null);
   const [attachError, setAttachError] = React.useState(null);
   const canAttach = typeof setAttachments === 'function';
+  // Pasted/dropped/picked images live locally in the Composer and ride the
+  // turn via onSubmit(images) — no prop-threading through the view layers.
+  const [images, setImages] = React.useState([]);
+  const [imgError, setImgError] = React.useState(null);
+  const [dragOver, setDragOver] = React.useState(false);
+
+  const addImageFiles = async (fileList) => {
+    const incoming = Array.from(fileList || []).filter((f) => IMG_ALLOWED_MIME.includes(f.type));
+    if (!incoming.length) return;
+    setImgError(null);
+    const accepted = [...images];
+    const errors = [];
+    for (const f of incoming) {
+      if (accepted.length >= IMG_MAX_COUNT) { errors.push(`max ${IMG_MAX_COUNT} images`); break; }
+      try { accepted.push(await readImageDownscaled(f)); }
+      catch (err) { errors.push(err.message || String(err)); }
+    }
+    setImages(accepted);
+    if (errors.length) setImgError(errors.join('; '));
+  };
+
+  const onPasteImages = (e) => {
+    const files = Array.from(e.clipboardData?.items || [])
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+    if (files.length) { e.preventDefault(); addImageFiles(files); }
+  };
+
+  const onDropImages = (e) => {
+    const files = Array.from(e.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/'));
+    setDragOver(false);
+    if (files.length) { e.preventDefault(); addImageFiles(files); }
+  };
+
+  const removeImage = (idx) => setImages((cur) => cur.filter((_, i) => i !== idx));
+
+  // Single submit entry-point: hand images to the parent, then clear them.
+  const doSubmit = () => {
+    const imgs = images.map((im) => ({ mimeType: im.mimeType, dataBase64: im.dataBase64 }));
+    onSubmit(imgs);
+    setImages([]);
+    setImgError(null);
+  };
   React.useEffect(() => {
     const ta = ref.current; if (!ta) return;
     ta.style.height = 'auto';
@@ -1404,9 +1510,14 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
 
   const onPickFiles = async (e) => {
     setAttachError(null);
-    const files = Array.from(e.target.files || []);
+    const picked = Array.from(e.target.files || []);
     e.target.value = ''; // allow re-picking the same filename later
-    if (!files.length || !canAttach) return;
+    if (!picked.length || !canAttach) return;
+    // Route image files to the image path; text files to the existing logic.
+    const imageFiles = picked.filter((f) => (f.type || '').startsWith('image/'));
+    if (imageFiles.length) addImageFiles(imageFiles);
+    const files = picked.filter((f) => !(f.type || '').startsWith('image/'));
+    if (!files.length) return;
     const current = attachments || [];
     const accepted = [...current];
     let total = accepted.reduce((acc, a) => acc + attachmentText(a).length, 0);
@@ -1435,14 +1546,30 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
     if (next.length === 0) setAttachError(null);
   };
 
-  const hasContent = !!value.trim() || (attachments && attachments.length > 0);
+  const hasContent = !!value.trim() || (attachments && attachments.length > 0) || images.length > 0;
   return (
-    <div className="mm-composer">
+    <div
+      className={'mm-composer' + (dragOver ? ' drag-over' : '')}
+      onDragOver={(e) => { if (Array.from(e.dataTransfer?.types || []).includes('Files')) { e.preventDefault(); setDragOver(true); } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false); }}
+      onDrop={onDropImages}
+    >
       <div className="mm-composer-in">
         <div className="mm-composer-prefix">
           <span>$ lattice ~/ orchestrate</span>
           <span className="live">{disabled ? 'routing' : 'live'}</span>
         </div>
+        {images.length > 0 && (
+          <div className="mm-img-chips">
+            {images.map((im, i) => (
+              <span key={i} className="mm-img-chip" title={`image ${i + 1}`}>
+                <img src={im.previewUrl} alt={`pasted image ${i + 1}`} />
+                <button className="mm-img-x" onClick={() => removeImage(i)} aria-label={`Remove image ${i + 1}`} type="button">×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        {imgError && <div className="mm-attach-error" role="alert">{imgError}</div>}
         {canAttach && attachments && attachments.length > 0 && (
           <div className="mm-attach-chips">
             {attachments.map((a, i) => (
@@ -1460,8 +1587,9 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
           rows={1}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onPaste={onPasteImages}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSubmit(); }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSubmit(); }
           }}
           placeholder={placeholder || "› describe what you need — research, code, comparison, plan…"}
           autoFocus={autoFocus}
@@ -1483,14 +1611,14 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
                   multiple
                   style={{ display: 'none' }}
                   onChange={onPickFiles}
-                  accept=".txt,.md,.markdown,.json,.yaml,.yml,.csv,.tsv,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.c,.cc,.cpp,.h,.hpp,.sh,.bash,.zsh,.ps1,.toml,.ini,.cfg,.conf,.log,.sql,.gql,.graphql,.proto,text/*,application/json"
+                  accept=".txt,.md,.markdown,.json,.yaml,.yml,.csv,.tsv,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.c,.cc,.cpp,.h,.hpp,.sh,.bash,.zsh,.ps1,.toml,.ini,.cfg,.conf,.log,.sql,.gql,.graphql,.proto,text/*,application/json,image/png,image/jpeg,image/webp,image/gif"
                 />
                 <button
                   className="mm-attach-btn"
                   onClick={() => fileRef.current?.click()}
                   disabled={disabled}
-                  title="Attach text files"
-                  aria-label="Attach file"
+                  title="Attach text files or images (you can also paste a screenshot)"
+                  aria-label="Attach file or image"
                   type="button"
                 >
                   <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
@@ -1499,7 +1627,7 @@ function Composer({ value, onChange, onSubmit, autoFocus, disabled, attachments,
                 </button>
               </>
             )}
-            <button className="mm-send" onClick={onSubmit} disabled={disabled || !hasContent}>
+            <button className="mm-send" onClick={doSubmit} disabled={disabled || !hasContent}>
               <svg viewBox="0 0 24 24" fill="none">
                 <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
@@ -1832,6 +1960,7 @@ function StackedResponse({ entry, accent, isNewest, isOlder, stackIndex }) {
     >
       <div className="mm-stacked-meta">
         <span className="mm-stacked-prompt">› {entry.prompt}</span>
+        <ImageTurnIndicator entry={entry} />
         <span className="mm-template-pill">
           <span className="mm-template-dot" />
           {tpl?.label || entry.template}
@@ -3237,6 +3366,7 @@ function OrbitalMindmap({
       <div className="mm-thread-strip">
         <div className="mm-thread-content">
           <span className="mm-thread-prompt">{newest.prompt}</span>
+          <ImageTurnIndicator entry={newest} />
           <span className="mm-thread-arrow">→</span>
           <span className="mm-thread-template" style={{ '--c': accent }}>
             <i />{TEMPLATE_DEFS[newest.template]?.label || newest.template}
@@ -3454,13 +3584,15 @@ function loadPersistedStack() {
     return parsed.filter((e) =>
       e && typeof e.id === 'string' && typeof e.prompt === 'string' &&
       e.response && TEMPLATE_DEFS[e.response.template]
-    ).map((e) => ({ id: e.id, prompt: e.prompt, ...e.response }));
+    ).map((e) => ({ id: e.id, prompt: e.prompt, imageCount: e.imageCount || 0, ...e.response }));
   } catch { return []; }
 }
 function savePersistedStack(responses) {
   try {
     const slim = responses.map((r) => ({
       id: r.id, prompt: r.prompt,
+      // Persist only the image COUNT, never the base64 (localStorage quota).
+      imageCount: r.imageCount || (r.images ? r.images.length : 0),
       response: {
         template: r.template,
         text: r.text,
@@ -4571,9 +4703,10 @@ function HeroMindmap() {
   // partial text already arrived as a normal turn (so the user doesn't
   // lose work mid-thought) but suppress the error-string fallback —
   // an abort is intentional, not a failure.
-  const submit = async () => {
+  const submit = async (imagesArg = []) => {
     const q = draft.trim();
-    if (!q && (!attachments || attachments.length === 0)) return;
+    const imgs = Array.isArray(imagesArg) ? imagesArg : [];
+    if (!q && (!attachments || attachments.length === 0) && imgs.length === 0) return;
 
     // /goal <description> — start an autonomous goal loop instead of a chat turn
     if (q.startsWith('/goal ') || q === '/goal') {
@@ -4598,14 +4731,19 @@ function HeroMindmap() {
     // The user-visible prompt in chat is what they typed (or a placeholder
     // when attaching files with no extra prompt). The actual model input
     // includes the file contents prepended.
-    const displayPrompt = q || `(reviewing ${attachments.length} attached file${attachments.length > 1 ? 's' : ''})`;
-    const modelPrompt = composeMessageWithAttachments(q || 'Please review the attached file(s) and respond.', attachments);
+    const displayPrompt = q
+      || (imgs.length ? `(${imgs.length} image${imgs.length > 1 ? 's' : ''})`
+        : `(reviewing ${attachments.length} attached file${attachments.length > 1 ? 's' : ''})`);
+    const fallbackPrompt = imgs.length
+      ? 'Please look at the image(s) and respond.'
+      : 'Please review the attached file(s) and respond.';
+    const modelPrompt = composeMessageWithAttachments(q || fallbackPrompt, attachments);
     const template = detectTemplate(displayPrompt);
     setCurrentPrompt(displayPrompt);
     setDraft('');
     setAttachments([]);
     setPhase('loading');
-    setLiveTurn({ prompt: displayPrompt, partial: '', status: { phase: 'plan-start' } });
+    setLiveTurn({ prompt: displayPrompt, partial: '', status: { phase: 'plan-start' }, images: imgs });
     setStreaming(true);
     setBusyChrome('planning');
 
@@ -4635,6 +4773,7 @@ function HeroMindmap() {
       if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
       body.useLocal = settings.useLocal === true;
       if (settings.routingMode && settings.routingMode !== 'smart') body.routingMode = settings.routingMode;
+      if (imgs.length) body.images = imgs;
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4725,6 +4864,10 @@ function HeroMindmap() {
     const entry = {
       id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
       prompt: displayPrompt,
+      // In-memory only (stripped from localStorage by savePersistedStack's slim
+      // projection); imageCount survives reload for the transcript indicator.
+      images: imgs,
+      imageCount: imgs.length,
       template,
       text: finalText.trim(),
       servedBy: doneEvent?.servedBy || [],

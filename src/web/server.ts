@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
 import type { RoleName } from "../roles/types.js";
+import type { ImagePart } from "../tools/types.js";
 import {
   ChatSession,
   deleteAllSessions,
@@ -116,6 +117,37 @@ function isOverrideProviderName(value: string): value is OverrideProviderName {
 function defaultPrimaryFor(role: CustomisableRole): string {
   const cfg = DEFAULT_ROLES.find((r) => r.name === role);
   return cfg?.candidates[0]?.providerId ?? "";
+}
+
+const MAX_CHAT_IMAGES = 4;
+const MAX_IMAGE_BASE64_LEN = 7_000_000; // ~5 MB of binary once decoded
+const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+/**
+ * Validate the optional `images` field of a chat body. Returns the cleaned
+ * ImagePart[] (possibly empty) or an error string for a 400. Caps count and
+ * per-image size, and restricts the mime type to a small image allowlist.
+ */
+function parseChatImages(raw: unknown): { images: ImagePart[] } | { error: string } {
+  if (raw === undefined || raw === null) return { images: [] };
+  if (!Array.isArray(raw)) return { error: "images must be an array" };
+  if (raw.length > MAX_CHAT_IMAGES) return { error: `too many images (max ${MAX_CHAT_IMAGES})` };
+  const images: ImagePart[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return { error: "each image must be an object" };
+    const { mimeType, dataBase64 } = item as { mimeType?: unknown; dataBase64?: unknown };
+    if (typeof mimeType !== "string" || !ALLOWED_IMAGE_MIME.has(mimeType)) {
+      return { error: `unsupported image type: ${String(mimeType)}` };
+    }
+    if (typeof dataBase64 !== "string" || dataBase64.length === 0) {
+      return { error: "image dataBase64 must be a non-empty string" };
+    }
+    if (dataBase64.length > MAX_IMAGE_BASE64_LEN) {
+      return { error: "image too large (max ~5 MB each)" };
+    }
+    images.push({ mimeType, dataBase64 });
+  }
+  return { images };
 }
 
 /**
@@ -921,16 +953,22 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               forceRole?: string | null;
               useLocal?: boolean;
               routingMode?: string | null;
+              images?: unknown;
             }
           | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
           return;
         }
+        const imagesResult = parseChatImages(parsed.images);
+        if ("error" in imagesResult) {
+          sendJson(res, 400, { error: imagesResult.error });
+          return;
+        }
         const chatOpts = buildChatOpts(parsed);
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
         try {
-          const result = await session.send(parsed.message, chatOpts.opts, undefined, chatOpts.routing);
+          const result = await session.send(parsed.message, chatOpts.opts, undefined, chatOpts.routing, imagesResult.images);
           sendJson(res, 200, {
             reply: result.reply,
             servedBy: result.servedBy,
@@ -964,10 +1002,16 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               forceRole?: string | null;
               useLocal?: boolean;
               routingMode?: string | null;
+              images?: unknown;
             }
           | null;
         if (!parsed?.sessionId || typeof parsed.message !== "string") {
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
+          return;
+        }
+        const imagesResult = parseChatImages(parsed.images);
+        if ("error" in imagesResult) {
+          sendJson(res, 400, { error: imagesResult.error });
           return;
         }
         const chatOpts = buildChatOpts(parsed);
@@ -999,6 +1043,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             { ...chatOpts.opts, signal: streamAbort.signal },
             (evt) => { writeEvent(evt); },
             chatOpts.routing,
+            imagesResult.images,
           );
           writeEvent({
             kind: "done",

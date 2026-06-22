@@ -867,6 +867,54 @@ describe("web server", () => {
     expect(crossOrigin.status).toBe(403);
   });
 
+  it("/api/chat accepts images and routes the turn to the vision role", async () => {
+    const seen: Array<{ name: string; payload: string }> = [];
+    const { url } = spawn({
+      handler: async (name, payload) => { seen.push({ name, payload }); return "i see it"; },
+    });
+    const res = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "img-sess",
+        message: "what is this?",
+        images: [{ mimeType: "image/png", dataBase64: "AAAA" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { reply: string; servedBy: string[] };
+    expect(j.reply).toBe("i see it");
+    expect(j.servedBy).toEqual(["vision"]);
+    const visionCall = seen.find((s) => s.name === "vision");
+    expect(visionCall).toBeTruthy();
+    expect(visionCall!.payload).toContain("AAAA"); // image rode the turn to the model
+  });
+
+  it("rejects too many images and unsupported image mime types", async () => {
+    const { url } = spawn();
+    const tooMany = await fetch(`${url}/api/chat-stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "s",
+        message: "hi",
+        images: Array.from({ length: 5 }, () => ({ mimeType: "image/png", dataBase64: "AA" })),
+      }),
+    });
+    expect(tooMany.status).toBe(400);
+
+    const badMime = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "s",
+        message: "hi",
+        images: [{ mimeType: "image/svg+xml", dataBase64: "AA" }],
+      }),
+    });
+    expect(badMime.status).toBe(400);
+  });
+
   it("/api/chat loads role instructions from disk for web sessions", async () => {
     const histories: ConversationPart[][] = [];
     let calls = 0;

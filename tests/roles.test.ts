@@ -231,6 +231,18 @@ describe("RoleResolver", () => {
     expect(desc).toContain("perception (a)");
     expect(desc).toContain("reasoning [UNAVAILABLE]");
   });
+
+  it("rosterDescription omits the internal vision role", () => {
+    const a = new FakeProvider("gemini:1", []);
+    const router = new Router([a]);
+    const resolver = new RoleResolver(router, [
+      role("orchestration", ["gemini:1"]),
+      role("vision", ["gemini:1"]),
+    ]);
+    const desc = resolver.rosterDescription();
+    expect(desc).toContain("orchestration");
+    expect(desc).not.toContain("vision");
+  });
 });
 
 describe("default role registry", () => {

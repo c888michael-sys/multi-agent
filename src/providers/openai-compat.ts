@@ -165,7 +165,22 @@ export function historyToOpenAIMessages(history: ConversationPart[]): unknown[] 
   for (const part of history) {
     switch (part.kind) {
       case "user_text":
-        messages.push({ role: "user", content: part.text });
+        if (part.images && part.images.length > 0) {
+          // OpenAI vision shape: content becomes an array of text + image_url
+          // parts (data URLs) so a vision-capable model sees pasted images.
+          messages.push({
+            role: "user",
+            content: [
+              { type: "text", text: part.text },
+              ...part.images.map((img) => ({
+                type: "image_url",
+                image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
+              })),
+            ],
+          });
+        } else {
+          messages.push({ role: "user", content: part.text });
+        }
         break;
       case "model_text":
         messages.push({ role: "assistant", content: part.text });

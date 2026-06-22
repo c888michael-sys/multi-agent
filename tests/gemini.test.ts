@@ -113,6 +113,25 @@ describe("historyToGeminiContents", () => {
     ]);
   });
 
+  it("appends inlineData parts for images on a user turn", () => {
+    const contents = historyToGeminiContents([
+      {
+        kind: "user_text",
+        text: "what is this?",
+        images: [{ mimeType: "image/png", dataBase64: "AAAA" }],
+      },
+    ]);
+    expect(contents).toEqual([
+      {
+        role: "user",
+        parts: [
+          { text: "what is this?" },
+          { inlineData: { mimeType: "image/png", data: "AAAA" } },
+        ],
+      },
+    ]);
+  });
+
   it("re-attaches thoughtSignature on model_calls when present", () => {
     const contents = historyToGeminiContents([
       {

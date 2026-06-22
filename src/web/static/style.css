@@ -3631,6 +3631,76 @@
   color: #f5b3b3;
 }
 
+/* Pasted/dropped image thumbnails in the composer. */
+.mm-img-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 4px 0;
+}
+.mm-img-chip {
+  position: relative;
+  display: inline-flex;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+}
+.mm-img-chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mm-img-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mm-img-x:hover { background: rgba(0, 0, 0, 0.85); }
+
+/* Drag-over affordance on the composer when dragging image files. */
+.mm-composer.drag-over {
+  outline: 2px dashed var(--accent-soft, rgba(255, 200, 120, 0.6));
+  outline-offset: 3px;
+  border-radius: 14px;
+}
+
+/* Transcript image thumbnails (this session) + reload-safe count chip. */
+.mm-turn-thumbs {
+  display: inline-flex;
+  gap: 4px;
+  vertical-align: middle;
+  margin: 0 6px;
+}
+.mm-turn-thumbs img {
+  width: 22px;
+  height: 22px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.mm-turn-imgcount {
+  margin: 0 6px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
 /* Local-mode rate-row tint + ∞ marker. Visually differentiates rows
    that have been routed to the hybrid-mode Ollama daemon from cloud
    rows that still have remote rate caps. */

@@ -53,11 +53,21 @@ export interface ToolCallRecord {
 }
 
 /**
+ * An image attached to a user turn. `dataBase64` is the raw base64 payload
+ * (no `data:` URI prefix). Providers render it into their own multimodal
+ * shape (Gemini `inlineData`, OpenAI-compat `image_url` data URL).
+ */
+export interface ImagePart {
+  mimeType: string;
+  dataBase64: string;
+}
+
+/**
  * One turn in a tool-use conversation. Maps roughly to Gemini's Content[]
  * but provider-agnostic.
  */
 export type ConversationPart =
-  | { kind: "user_text"; text: string }
+  | { kind: "user_text"; text: string; images?: ImagePart[] }
   | { kind: "model_text"; text: string }
   | { kind: "model_calls"; calls: ToolCallRequest[] }
   | {
