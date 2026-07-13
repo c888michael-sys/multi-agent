@@ -123,7 +123,7 @@ How it works: each customisable role has an **override slot** registered as `ove
 
 Selectable providers: `openrouter`, `nvidia`, `groq`, `cerebras`, `mistral`, `gemini`, `ollama` (whichever have a key set; Ollama needs a running daemon). Model lists are fetched live per provider (OpenRouter keeps its free-tier filtering; the others hit their `/v1/models`, Gemini's ListModels, or Ollama's `/api/tags`) and cached for 12h under `~/.multi-agent/models-cache/<provider>.json`.
 
-Set it from the web **Settings → Model routing** section (provider dropdown, then model dropdown, per role) or the CLI:
+Set it from the web **Settings → Model routing** section (provider dropdown, then model dropdown, per role) or the CLI. The web UI labels these separately as **API provider** and **Model through provider**, then shows a route receipt: `Active route: OpenRouter API → NVIDIA: Nemotron...` means the NVIDIA-authored model is reached through OpenRouter; `Inactive: API key is missing` means the saved override is not serving and the built-in fallback chain is active.
 
 ```bash
 npm run cli -- models list                                   # every role's override + default primary

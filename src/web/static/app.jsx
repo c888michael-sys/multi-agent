@@ -710,8 +710,9 @@ function ModelRoutingSection({ open }) {
     <div className="mm-settings-row">
       <span className="mm-settings-name">Model routing</span>
       <span className="mm-settings-hint">
-        Point any role at a provider, then a model. Leave a role on <em>Default</em> to use its
-        built-in fallback chain. Live model lists per provider (CLI: <code>models set</code>).
+        <strong>API provider</strong> is where the request is sent; <strong>model</strong> is the model
+        selected inside that provider's catalogue. Leave a role on <em>Default</em> to use its built-in
+        fallback chain. Live model lists per provider (CLI: <code>models set</code>).
       </span>
       <div className="mm-role-routing">
         {roles.map((role) => {
@@ -719,44 +720,73 @@ function ModelRoutingSection({ open }) {
           const models = roleModels[role] || [];
           const selected = overrides[role];
           const busy = !!roleLoading[role];
-          const selectedModelInList = selected && models.some((m) => m.id === selected.model);
+          const providerInfo = providers.find((p) => p.id === provider);
+          const providerConfigured = !!providerInfo?.configured;
+          const selectedForProvider = selected && selected.provider === provider ? selected : null;
+          const selectedModel = selectedForProvider
+            ? models.find((m) => m.id === selectedForProvider.model)
+            : null;
+          const selectedModelInList = !!selectedModel;
+          const providerLabel = providerInfo?.label || provider;
+          const routeModelLabel = selectedModel
+            ? modelLabel(selectedModel)
+            : selectedForProvider?.model || '';
+          const routeMessage = !provider
+            ? 'Active: built-in fallback chain chooses the first available model.'
+            : !providerConfigured
+              ? `Inactive: ${providerLabel} API key is missing. The built-in fallback chain is serving this role.${routeModelLabel ? ` Saved model: ${routeModelLabel}.` : ''}`
+              : !selectedForProvider
+                ? `Not active yet: choose a model to route through the ${providerLabel} API.`
+                : `Active route: ${providerLabel} API → ${routeModelLabel}.`;
           return (
             <div className="mm-role-routing-row" key={role}>
               <span className="mm-role-routing-label">{ROLE_ROUTING_LABELS[role] || role}</span>
               <div className="mm-role-routing-controls">
+                <span className="mm-role-routing-caption">API provider</span>
                 <select
                   className="mm-settings-select"
                   value={provider}
                   disabled={busy}
                   onChange={(e) => onProviderChange(role, e.target.value)}
-                  aria-label={`${role} provider`}
+                  aria-label={`${role} API provider`}
                 >
-                  <option value="">Default</option>
+                  <option value="">Default fallback chain</option>
                   {providers.map((p) => (
                     <option key={p.id} value={p.id} disabled={!p.configured}>
-                      {p.label}{p.configured ? '' : ' (no key)'}
+                      {p.label}{p.configured ? '' : ' (API key missing)'}
                     </option>
                   ))}
                 </select>
                 {provider ? (
+                  <>
+                  <span className="mm-role-routing-caption">Model through {providerLabel || 'provider'}</span>
                   <select
                     className="mm-settings-select"
-                    value={selected ? selected.model : ''}
-                    disabled={busy || models.length === 0}
+                    value={selectedForProvider ? selectedForProvider.model : ''}
+                    disabled={busy || models.length === 0 || !providerConfigured}
                     onChange={(e) => saveOverride(role, provider, e.target.value)}
-                    aria-label={`${role} model`}
+                    aria-label={`${role} model through ${providerLabel}`}
                   >
                     <option value="" disabled>
-                      {busy ? 'loading…' : models.length === 0 ? 'no models' : 'choose model…'}
+                      {!providerConfigured
+                        ? 'API key required'
+                        : busy ? 'loading…' : models.length === 0 ? 'no models' : 'choose model…'}
                     </option>
-                    {selected && !selectedModelInList ? (
-                      <option value={selected.model}>{selected.model} (selected)</option>
+                    {selectedForProvider && !selectedModelInList ? (
+                      <option value={selectedForProvider.model}>{selectedForProvider.model} (saved)</option>
                     ) : null}
                     {models.map((m) => (
                       <option key={m.id} value={m.id}>{modelLabel(m)}</option>
                     ))}
                   </select>
+                  </>
                 ) : null}
+                <span
+                  className={'mm-role-routing-route' + (provider && !providerConfigured ? ' warn' : '')}
+                  role="status"
+                >
+                  {routeMessage}
+                </span>
                 {provider ? (
                   <button
                     type="button"
