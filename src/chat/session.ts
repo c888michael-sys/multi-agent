@@ -364,6 +364,22 @@ export class ChatSession {
         );
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
+      } else if (mode === "fast") {
+        // Web Fast mode deliberately bypasses planning and formatting. The
+        // first model token is therefore the first user-visible token.
+        const fastRole: RoleName = /\b(code|typescript|javascript|python|bug|test|compile|build)\b/i.test(userInput)
+          ? "action-code"
+          : "action-structural";
+        emit({ kind: "role-start", role: fastRole, phase: "single" });
+        reply = await this.runWithToolLoop(
+          fastRole,
+          this.historyForRole(fastRole),
+          { ...effectiveOpts, maxTokens: effectiveOpts.maxTokens ?? 1024, temperature: effectiveOpts.temperature ?? 0.3 },
+          onProgress ? (text) => emit({ kind: "token", text }) : undefined,
+        );
+        emit({ kind: "role-end", role: fastRole, ok: true });
+        servedBy = [fastRole];
+        plan = { kind: "single", role: fastRole, prompt: "Fast direct response" };
       } else if (mode === "brainstorming") {
         // Brainstorming mode: bypass the orchestrator's plan-generation
         // call and gather several model perspectives in parallel. This is

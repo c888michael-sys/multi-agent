@@ -85,6 +85,72 @@ export async function chatCompletion(
 }
 
 /**
+ * Read an OpenAI-compatible server-sent-event stream.  This deliberately
+ * lives beside chatCompletion so every compatible provider gets the same
+ * framing, error handling and quota-header behaviour.
+ */
+export async function chatCompletionStream(
+  opts: ChatCompletionOptions & { onHeaders?: (headers: Record<string, string>) => void },
+  onToken: (text: string) => void,
+): Promise<string> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const body = { ...opts.body, stream: true };
+  const res = await fetchImpl(`${opts.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${opts.apiKey}`, "Content-Type": "application/json", ...opts.extraHeaders },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  });
+  const headers: Record<string, string> = {};
+  res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  opts.onHeaders?.(headers);
+  if (!res.ok) throw new OpenAICompatError(opts.providerName, res.status, await res.text(), headers);
+  if (!res.body) throw new Error(`${opts.providerName} returned an empty streaming response`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let done = false;
+  const MAX_EVENT_BYTES = 1024 * 1024;
+  const consumeEvent = (event: string) => {
+    const data = event.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!data) return;
+    if (data === "[DONE]") { done = true; return; }
+    let parsed: { choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null; message?: { content?: string | null } }>; error?: { message?: string } };
+    try { parsed = JSON.parse(data); } catch { throw new Error(`${opts.providerName} returned malformed stream data`); }
+    if (parsed.error?.message) throw new Error(`${opts.providerName} stream error: ${parsed.error.message}`);
+    const chunk = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content ?? "";
+    if (chunk) { text += chunk; onToken(chunk); }
+  };
+  try {
+    while (!done) {
+      const { done: eof, value } = await reader.read();
+      if (eof) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_EVENT_BYTES) throw new Error(`${opts.providerName} stream event exceeded 1 MiB`);
+      let boundary: RegExpExecArray | null;
+      const separator = /\r?\n\r?\n/g;
+      while ((boundary = separator.exec(buffer))) {
+        const event = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        separator.lastIndex = 0;
+        consumeEvent(event);
+        if (done) break;
+      }
+    }
+    if (buffer.trim()) consumeEvent(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  if (!text) throw new Error(`${opts.providerName} stream ended without text`);
+  return text;
+}
+
+/**
  * Live rate-limit info parsed from a provider's response headers. Whatever
  * the provider didn't tell us stays undefined.
  */

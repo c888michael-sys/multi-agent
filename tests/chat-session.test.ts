@@ -337,6 +337,26 @@ describe("ChatSession smart routing (plan-based)", () => {
     expect(result.plan).toBeUndefined();
   });
 
+  it("fast routing streams one direct specialist call without a planning turn", async () => {
+    const p = chatProvider(["fast reply"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "action-structural", description: "x", candidates: [{ providerId: "chat" }] },
+      { name: "action-code", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const tokens: string[] = [];
+    const s = new ChatSession({ resolver, id: "fast", storagePath: storage });
+
+    const result = await s.send("summarise this", undefined, (evt) => {
+      if (evt.kind === "token") tokens.push(evt.text);
+    }, { mode: "fast" });
+
+    expect(result.reply).toBe("fast reply");
+    expect(result.servedBy).toEqual(["action-structural"]);
+    expect(tokens).toEqual(["fast reply"]);
+    expect(p.calls).toHaveLength(1);
+  });
+
   it("routing mode multi-agent uses reasoning plan, optional checker, and structural formatting", async () => {
     const p = chatProvider([
       JSON.stringify({

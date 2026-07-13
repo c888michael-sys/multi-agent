@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Router } from "../src/router.js";
-import { AllProvidersExhaustedError, NoProvidersConfiguredError } from "../src/errors.js";
+import { AllProvidersExhaustedError, NoProvidersConfiguredError, StreamInterruptedError } from "../src/errors.js";
 import { FakeProvider } from "./fixtures.js";
 
 describe("Router", () => {
@@ -168,6 +168,39 @@ describe("Router", () => {
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(signalAborted).toBe(true);
+  });
+});
+
+describe("Router streaming commitment", () => {
+  it("fails over before the first visible token", async () => {
+    const first = {
+      id: "first", model: "first", complete: async () => "",
+      completeChatStream: async () => { throw new Error("connection reset"); },
+      isRateLimitError: () => false, retryAfterMs: () => null,
+    };
+    const second = {
+      id: "second", model: "second", complete: async () => "",
+      completeChatStream: async (_h: unknown, _o: unknown, onToken: (t: string) => void) => { onToken("recovered"); return "recovered"; },
+      isRateLimitError: () => false, retryAfterMs: () => null,
+    };
+    const r = new Router([first, second], { maxRetryWaitMs: 0 });
+    const tokens: string[] = [];
+    await expect(r.completeChatStream([], undefined, undefined, undefined, (t) => tokens.push(t))).resolves.toBe("recovered");
+    expect(tokens).toEqual(["recovered"]);
+  });
+
+  it("never fails over after a visible token", async () => {
+    const first = {
+      id: "first", model: "first", complete: async () => "",
+      completeChatStream: async (_h: unknown, _o: unknown, onToken: (t: string) => void) => { onToken("partial"); throw new Error("connection reset"); },
+      isRateLimitError: () => false, retryAfterMs: () => null,
+    };
+    const second = new FakeProvider("second", [{ kind: "ok", text: "should not run" }]);
+    const r = new Router([first, second]);
+    const tokens: string[] = [];
+    await expect(r.completeChatStream([], undefined, undefined, undefined, (t) => tokens.push(t))).rejects.toBeInstanceOf(StreamInterruptedError);
+    expect(tokens).toEqual(["partial"]);
+    expect(second.calls).toHaveLength(0);
   });
 });
 

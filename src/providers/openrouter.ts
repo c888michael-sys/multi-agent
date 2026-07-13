@@ -6,6 +6,7 @@ import type {
 } from "../tools/types.js";
 import {
   chatCompletion,
+  chatCompletionStream,
   historyToOpenAIMessages,
   parseOpenAIToolResponse,
   extractTextFromCompletion,
@@ -103,6 +104,10 @@ export class OpenRouterProvider implements Provider {
     const body = buildChatBody(this.model, history, opts);
     const res = await chatCompletion(this.callOpts(body, opts?.signal));
     return extractTextFromCompletion(res);
+  }
+
+  async completeChatStream(history: ConversationPart[], opts: CompleteOptions | undefined, onToken: (text: string) => void): Promise<string> {
+    return chatCompletionStream(this.callOpts(buildChatBody(this.model, history, opts), opts?.signal), onToken);
   }
 
   async completeWithTools(

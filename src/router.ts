@@ -6,7 +6,7 @@ import type {
   ToolDeclaration,
   CompleteWithToolsResult,
 } from "./tools/types.js";
-import { AllProvidersExhaustedError, NoProvidersConfiguredError } from "./errors.js";
+import { AllProvidersExhaustedError, NoProvidersConfiguredError, StreamInterruptedError } from "./errors.js";
 
 class ProviderTimeoutError extends Error {
   readonly retryAfterMs = 5_000;
@@ -327,6 +327,19 @@ export class Router {
         const stream = pick.provider.completeChatStream?.bind(pick.provider);
         const chat = pick.provider.completeChat?.bind(pick.provider);
         if (!stream && !chat) continue;
+        let committed = false;
+        let leadingWhitespace = "";
+        let emitted = "";
+        const commitToken = (text: string) => {
+          if (!committed) {
+            if (!/\S/.test(text)) { leadingWhitespace += text; return; }
+            committed = true;
+            text = leadingWhitespace + text;
+            leadingWhitespace = "";
+          }
+          emitted += text;
+          onToken(text);
+        };
         try {
           if (attribution) attribution.providerId = pick.provider.id;
           let result: string;
@@ -335,7 +348,7 @@ export class Router {
               pick.provider.id,
               pick.provider.requestTimeoutMs ?? this.requestTimeoutMs,
               opts?.signal,
-              (signal) => stream(history, this.withSignal(opts, signal), onToken),
+              (signal) => stream(history, this.withSignal(opts, signal), commitToken),
             );
           } else {
             // Fallback: provider has no streaming — wait for the full
@@ -347,12 +360,14 @@ export class Router {
               opts?.signal,
               (signal) => chat!(history, this.withSignal(opts, signal)),
             );
-            if (result) onToken(result);
+            if (result) commitToken(result);
           }
           this.pool.markSuccess(pick.index);
           this.fireAfterCall();
           return result;
         } catch (err) {
+          if (committed) throw new StreamInterruptedError(emitted, err);
+          if ((err as { name?: string })?.name === "AbortError") throw err;
           if (pick.provider.isRateLimitError(err) || err instanceof ProviderTimeoutError) {
             const retryAfterMs = err instanceof ProviderTimeoutError
               ? err.retryAfterMs
@@ -361,7 +376,9 @@ export class Router {
             attempts.push({ providerId: pick.provider.id, error: err });
             continue;
           }
-          throw err;
+          this.pool.markRateLimited(pick.index, 1_000);
+          attempts.push({ providerId: pick.provider.id, error: err });
+          continue;
         }
       }
       if (this.maxRetryWaitMs <= 0 || attempts.length === 0) {

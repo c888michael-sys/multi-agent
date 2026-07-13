@@ -21,3 +21,13 @@ export class NoProvidersConfiguredError extends RouterError {
     this.name = "NoProvidersConfiguredError";
   }
 }
+
+/** A provider failed after sending visible output; retrying would duplicate it. */
+export class StreamInterruptedError extends RouterError {
+  readonly partial: string;
+  constructor(partial: string, cause: unknown) {
+    super(`Stream interrupted after output began: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "StreamInterruptedError";
+    this.partial = partial;
+  }
+}

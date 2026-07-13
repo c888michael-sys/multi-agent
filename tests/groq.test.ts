@@ -45,6 +45,28 @@ describe("GroqProvider.complete", () => {
   });
 });
 
+describe("GroqProvider.completeChatStream", () => {
+  it("emits OpenAI SSE deltas as they arrive", async () => {
+    const encoder = new TextEncoder();
+    const fetchImpl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ stream: true });
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hello "}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"world"}}]}\n\ndata: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    };
+    const p = new GroqProvider({ id: "g", apiKey: "k", fetchImpl: fetchImpl as typeof fetch });
+    const tokens: string[] = [];
+    await expect(p.completeChatStream([{ kind: "user_text", text: "hi" }], undefined, (t) => tokens.push(t)))
+      .resolves.toBe("hello world");
+    expect(tokens).toEqual(["hello ", "world"]);
+  });
+});
+
 describe("GroqProvider.isRateLimitError", () => {
   const p = new GroqProvider({ id: "g", apiKey: "k" });
 

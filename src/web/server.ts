@@ -181,6 +181,8 @@ function buildChatOpts(parsed: {
   // execution happens inside ChatSession.send via the routing arg.
   if (parsed.routingMode === "smart" || parsed.routingMode === "auto") {
     routing.mode = "auto";
+  } else if (parsed.routingMode === "fast") {
+    routing.mode = "fast";
   } else if (parsed.routingMode === "round-robin" || parsed.routingMode === "brainstorming") {
     routing.mode = "brainstorming";
   } else if (parsed.routingMode === "multi-agent") {

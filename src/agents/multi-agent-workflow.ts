@@ -1,7 +1,7 @@
 import type { RoleName } from "../roles/types.js";
 import { LATEX_DIRECTIVE } from "./prompts.js";
 
-export type RoutingMode = "auto" | "multi-agent" | "brainstorming";
+export type RoutingMode = "auto" | "fast" | "multi-agent" | "brainstorming";
 
 export type ActionRoleName = Extract<
   RoleName,

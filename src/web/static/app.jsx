@@ -3457,23 +3457,23 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 //   serious  → thinking: "high"  (Gemini extended reasoning on every call)
 //   search   → useSearch: true   (Google Search grounding on the perception primary)
 //   role     → forceRole (one of RoleName) | 'auto' (let smart-routing decide)
-//   routingMode → 'smart' | 'round-robin' (default round-robin)
+//   routingMode → 'fast' | 'smart' | 'round-robin' (default fast)
 // All knobs persist to localStorage so refresh / new tab keeps the user's
 // chosen mode. The settings drawer surfaces routingMode and forceRole as
 // a single merged dropdown (see ROUTING_OPTIONS) — internally they remain
 // independent so the wire format with the server is unchanged.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'multi-agent', theme: 'clay' };
+const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'fast', theme: 'clay' };
 
 // Merged dropdown that replaces the prior separate Force-role select + a
 // Smart-vs-RoundRobin radio group. Two "meta" entries on top combine the
 // routingMode field with forceRole='auto'; the rest pin a specific role
-// and use smart routing under the hood. round-robin is the default —
-// users typically want the multi-agent feel and can opt into a single
-// role or pure smart routing per session.
+// and use smart routing under the hood. Fast is the default so the first
+// visible answer token does not wait for orchestration.
 const ROUTING_OPTIONS = [
-  { value: 'auto',              label: 'auto',                         routingMode: 'smart',       forceRole: 'auto' },
-  { value: 'multi-agent',       label: 'multi-agent (default)',        routingMode: 'multi-agent', forceRole: 'auto' },
+  { value: 'fast',              label: 'fast (default)',               routingMode: 'fast',        forceRole: 'auto' },
+  { value: 'multi-agent',       label: 'deep multi-agent',             routingMode: 'multi-agent', forceRole: 'auto' },
   { value: 'brainstorming',     label: 'brainstorming',                routingMode: 'brainstorming', forceRole: 'auto' },
+  { value: 'auto',              label: 'auto',                         routingMode: 'smart',       forceRole: 'auto' },
   { value: 'orchestration',     label: 'orchestration',                routingMode: 'smart',       forceRole: 'orchestration' },
   { value: 'perception',        label: 'perception (search grounding)', routingMode: 'smart',      forceRole: 'perception' },
   { value: 'reasoning',         label: 'reasoning (deliberation)',     routingMode: 'smart',       forceRole: 'reasoning' },
@@ -3486,16 +3486,17 @@ const ROUTING_OPTIONS = [
 // value. Falls back to 'round-robin' (the default) when no exact match
 // exists — protects against stale localStorage from prior schema.
 function routingValueFromSettings(s) {
+  if (s.routingMode === 'fast') return 'fast';
   if (s.routingMode === 'round-robin') return 'brainstorming';
   if (s.routingMode === 'brainstorming') return 'brainstorming';
   if (s.routingMode === 'multi-agent') return 'multi-agent';
   if (s.routingMode === 'smart' && (!s.forceRole || s.forceRole === 'auto')) return 'auto';
   if (s.forceRole && s.forceRole !== 'auto') return s.forceRole;
-  return 'multi-agent';
+  return 'fast';
 }
 
 const VALID_FORCE_ROLES = new Set(['auto', 'orchestration', 'perception', 'reasoning', 'action-code', 'action-structural', 'action-repetitive']);
-const VALID_ROUTING_MODES = new Set(['smart', 'round-robin', 'multi-agent', 'brainstorming']);
+const VALID_ROUTING_MODES = new Set(['fast', 'smart', 'round-robin', 'multi-agent', 'brainstorming']);
 const VALID_THEMES = new Set(['clay', 'paper']);
 
 function runtimeDefaultUseLocal() {
@@ -4742,7 +4743,8 @@ function HeroMindmap() {
     setCurrentPrompt(displayPrompt);
     setDraft('');
     setAttachments([]);
-    setPhase('loading');
+    // Keep an existing transcript visible while the server routes the turn.
+    setPhase(responses.length > 0 ? 'response' : 'loading');
     setLiveTurn({ prompt: displayPrompt, partial: '', status: { phase: 'plan-start' }, images: imgs });
     setStreaming(true);
     setBusyChrome('planning');
@@ -4889,18 +4891,8 @@ function HeroMindmap() {
     setLiveTurn(null);
     setPhase('response');
 
-    // Background mindmap pre-fetch — categorize the final answer into
-    // the template's structured shape with NO detail omitted. Stored
-    // on the entry's `data` field so the burst transition is instant.
-    // The categorizer is explicitly cloud/reserved even when hybrid mode
-    // is enabled. We keep the promise in
-    // prefetchPromisesRef so the burst handler can await it if the
-    // user clicks before categorization lands.
-    if (entry.text && !entry.text.startsWith('(error')) {
-      const p = prefetchMindmapData(entry);
-      prefetchPromisesRef.current.set(entry.id, p);
-      p.catch(() => {});
-    }
+    // Mindmap enrichment remains available on demand. Do not spend a second
+    // model call after every answer: it competes with the next interactive turn.
   };
 
   // Track phase in a ref so the SSE event handler can read the latest
@@ -5013,6 +5005,14 @@ function HeroMindmap() {
       if (pending) {
         try { data = await pending; } catch { data = null; }
       }
+    }
+
+    // Categorisation is now explicitly requested by opening the mindmap,
+    // rather than automatically consuming a model call after every reply.
+    if (!data && !newestEntry.dataLoading) {
+      const pending = prefetchMindmapData(newestEntry);
+      prefetchPromisesRef.current.set(newestEntry.id, pending);
+      try { data = await pending; } catch { data = null; }
     }
 
     if (!data || !isValidMindmapData(newestEntry.template, data)) {
@@ -5353,7 +5353,7 @@ function HeroMindmap() {
             <IdleView draft={draft} setDraft={setDraft} submit={submit} attachments={attachments} setAttachments={setAttachments} settings={settings} onTemplatePick={onTemplatePick} />
           </PhaseErrorBoundary>
         )}
-        {phase === 'loading' && (
+        {phase === 'loading' && responses.length === 0 && (
           <PhaseErrorBoundary label="loading view" recoverLabel="← back to chat" onRecover={recoverFromError}>
             <LoadingView prompt={currentPrompt}
               liveStatus={liveTurn?.status}
@@ -5362,7 +5362,7 @@ function HeroMindmap() {
             />
           </PhaseErrorBoundary>
         )}
-        {(phase === 'response' || phase === 'collapsing' || phase === 'imploding') && (
+        {(phase === 'response' || phase === 'loading' || phase === 'collapsing' || phase === 'imploding') && (
           <PhaseErrorBoundary label="chat" recoverLabel="reset thread" onRecover={reset}>
             <ResponseStackView
               draft={draft} setDraft={setDraft} submit={submit}
