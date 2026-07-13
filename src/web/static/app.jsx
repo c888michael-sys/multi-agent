@@ -588,6 +588,10 @@ function normalizeRoleInstructionPayload(value) {
   };
 }
 
+function roleInstructionPayloadsEqual(a, b) {
+  return JSON.stringify(normalizeRoleInstructionPayload(a)) === JSON.stringify(normalizeRoleInstructionPayload(b));
+}
+
 function modelLabel(model) {
   if (!model) return 'unknown';
   const ctx = model.contextLength ? ` · ${CompactNumber(model.contextLength)} ctx` : '';
@@ -784,6 +788,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
   const [hybridError, setHybridError] = React.useState(null);
   const [hybridChecking, setHybridChecking] = React.useState(false);
   const [roleInstructions, setRoleInstructions] = React.useState(null);
+  const [roleInstructionDefaults, setRoleInstructionDefaults] = React.useState(null);
   const [roleInstructionsPath, setRoleInstructionsPath] = React.useState('');
   const [roleInstructionsStatus, setRoleInstructionsStatus] = React.useState('');
   const [roleInstructionsSaving, setRoleInstructionsSaving] = React.useState(false);
@@ -807,12 +812,14 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
       .then((payload) => {
         if (cancelled) return;
         setRoleInstructions(normalizeRoleInstructionPayload(payload.instructions));
+        setRoleInstructionDefaults(normalizeRoleInstructionPayload(payload.defaults || payload.instructions));
         setRoleInstructionsPath(payload.path || '');
       })
       .catch((err) => {
         if (cancelled) return;
         setRoleInstructionsStatus(`Could not load role instructions: ${err && err.message ? err.message : String(err)}`);
         setRoleInstructions(normalizeRoleInstructionPayload(null));
+        setRoleInstructionDefaults(null);
       });
     return () => { cancelled = true; };
   }, [open]);
@@ -858,8 +865,8 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     setRoleInstructionsStatus('edited locally - save to apply to new turns');
   };
 
-  const saveRoleInstructions = async () => {
-    const instructions = normalizeRoleInstructionPayload(roleInstructions);
+  const persistRoleInstructions = async (input, successMessage) => {
+    const instructions = normalizeRoleInstructionPayload(input);
     setRoleInstructionsSaving(true);
     setRoleInstructionsStatus('saving...');
     try {
@@ -871,14 +878,34 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
       const payload = res.ok ? await res.json() : null;
       if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
       setRoleInstructions(normalizeRoleInstructionPayload(payload.instructions));
+      if (payload.defaults) setRoleInstructionDefaults(normalizeRoleInstructionPayload(payload.defaults));
       setRoleInstructionsPath(payload.path || roleInstructionsPath);
-      setRoleInstructionsStatus('saved - the next chat turn will use these instructions');
+      setRoleInstructionsStatus(successMessage);
     } catch (err) {
       setRoleInstructionsStatus(`Save failed: ${err && err.message ? err.message : String(err)}`);
     } finally {
       setRoleInstructionsSaving(false);
     }
   };
+
+  const saveRoleInstructions = () => persistRoleInstructions(
+    roleInstructions,
+    'saved - the next chat turn will use these instructions',
+  );
+
+  const restoreRoleInstructionDefaults = () => {
+    if (!roleInstructionDefaults) return;
+    return persistRoleInstructions(
+      roleInstructionDefaults,
+      'recommended quality defaults restored - the next chat turn will use them',
+    );
+  };
+
+  const usingRecommendedRoleDefaults = !!(
+    roleInstructions
+    && roleInstructionDefaults
+    && roleInstructionPayloadsEqual(roleInstructions, roleInstructionDefaults)
+  );
 
   return (
     <>
@@ -986,7 +1013,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
           <div className="mm-settings-row mm-settings-row-instructions">
             <span className="mm-settings-name">Long-term role instructions</span>
             <span className="mm-settings-hint">
-              Web-only local memory. Saved to <code>{roleInstructionsPath || '~/.multi-agent/role-instructions.json'}</code>; you can edit the file directly too. Global text goes to every role, and each role box only goes to that specialist.
+              Web-only local memory. Saved to <code>{roleInstructionsPath || '~/.multi-agent/role-instructions.json'}</code>; you can edit the file directly too. Global text goes to every role, and each role box only goes to that specialist. The built-in recommended preset can always be restored.
             </span>
             {roleInstructions ? (
               <div className="mm-role-instructions-editor">
@@ -1024,6 +1051,14 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                     disabled={roleInstructionsSaving}
                   >
                     {roleInstructionsSaving ? 'saving...' : 'save role instructions'}
+                  </button>
+                  <button
+                    className="mm-settings-reset"
+                    onClick={restoreRoleInstructionDefaults}
+                    disabled={roleInstructionsSaving || !roleInstructionDefaults || usingRecommendedRoleDefaults}
+                    title="Replace all global and role-specific text with the built-in recommended quality preset"
+                  >
+                    {usingRecommendedRoleDefaults ? 'recommended defaults active' : 'restore recommended defaults'}
                   </button>
                   {roleInstructionsStatus ? (
                     <span className="mm-settings-hint">{roleInstructionsStatus}</span>

@@ -10,10 +10,10 @@ import {
 } from "../src/roles/instructions.js";
 
 describe("role instructions storage", () => {
-  it("creates a complete empty instruction set by default", () => {
+  it("creates a complete recommended quality instruction set by default", () => {
     const defaults = defaultRoleInstructions();
     expect(defaults.version).toBe(1);
-    expect(defaults.global).toBe("");
+    expect(defaults.global).toContain("rigorous expert collaborator");
     expect(Object.keys(defaults.roles).sort()).toEqual([
       "action-code",
       "action-repetitive",
@@ -23,6 +23,21 @@ describe("role instructions storage", () => {
       "perception",
       "reasoning",
     ]);
+    for (const text of Object.values(defaults.roles)) {
+      expect(text.trim().length).toBeGreaterThan(40);
+    }
+    expect(defaults.roles["action-code"]).toContain("Never claim");
+    expect(defaults.roles["mindmap-categorize"]).toContain("valid JSON only");
+  });
+
+  it("returns a fresh preset copy so user edits cannot mutate the canonical defaults", () => {
+    const first = defaultRoleInstructions();
+    first.global = "custom";
+    first.roles.reasoning = "custom";
+
+    const second = defaultRoleInstructions();
+    expect(second.global).toContain("rigorous expert collaborator");
+    expect(second.roles.reasoning).not.toBe("custom");
   });
 
   it("normalizes partial JSON read from disk", () => {

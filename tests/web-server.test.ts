@@ -637,7 +637,9 @@ describe("web server", () => {
     expect(initial.status).toBe(200);
     const before: any = await initial.json();
     expect(before.path).toBe(roleInstructionsPath);
-    expect(before.instructions.roles.perception).toBe("");
+    expect(before.instructions.global).toContain("rigorous expert collaborator");
+    expect(before.instructions.roles.perception).toContain("Gather the evidence");
+    expect(before.defaults).toEqual(before.instructions);
 
     const saved = await fetch(`${url}/api/role-instructions`, {
       method: "PUT",
@@ -655,9 +657,26 @@ describe("web server", () => {
     expect(after.instructions.global).toBe("Use direct language.");
     expect(after.instructions.roles.perception).toBe("Prefer research-backed claims.");
     expect(after.instructions.roles.reasoning).toBe("");
+    expect(after.defaults.roles.reasoning).toContain("strongest defensible solution");
 
     const raw = JSON.parse(readFileSync(roleInstructionsPath, "utf8"));
     expect(raw.global).toBe("Use direct language.");
+  });
+
+  it("/api/role-instructions can persist the canonical defaults after customisation", async () => {
+    const { url } = spawn();
+    const initial: any = await (await fetch(`${url}/api/role-instructions`)).json();
+
+    const saved = await fetch(`${url}/api/role-instructions`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instructions: initial.defaults }),
+    });
+
+    expect(saved.status).toBe(200);
+    const restored: any = await saved.json();
+    expect(restored.instructions).toEqual(initial.defaults);
+    expect(JSON.parse(readFileSync(roleInstructionsPath, "utf8"))).toEqual(initial.defaults);
   });
 
   it("/api/role-instructions rejects non-JSON writes", async () => {

@@ -1465,9 +1465,13 @@ Trace mode (`--trace`) shows the exact call sequence.
 
 ### Web role instructions
 
-The web UI has local long-term role instructions for per-role preferences. Open
-the settings drawer and edit **Long-term role instructions**, or edit the JSON
-file directly:
+The web UI has local long-term role instructions for per-role preferences. A
+built-in **recommended quality preset** is active when no custom file exists.
+It gives every role shared accuracy, grounding, proportional-effort, and
+verification rules, plus specialised guidance for research, reasoning,
+orchestration, coding, synthesis, QA, and mindmap JSON. Open the settings drawer
+to edit it, use **Restore recommended defaults** to replace all custom text with
+the immutable built-in preset, or edit the JSON file directly:
 
 ```
 ~/.multi-agent/role-instructions.json
@@ -1491,7 +1495,8 @@ Shape:
 }
 ```
 
-The server loads this file on every web chat request. Global instructions plus
+Saving custom text never mutates the built-in preset. The server loads this file
+on every web chat request. Global instructions plus
 the matching role's text are injected into outbound model history as hidden
 local context, then the visible session transcript persists only the user's
 message and the assistant reply. This is web-only for now; CLI `chat` and `ask`

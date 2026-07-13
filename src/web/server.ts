@@ -38,6 +38,7 @@ import { RoleOrchestrator } from "../agents/role-orchestrator.js";
 import { DEFAULT_ROLES } from "../roles/default-registry.js";
 import {
   DEFAULT_ROLE_INSTRUCTIONS_PATH,
+  defaultRoleInstructions,
   readRoleInstructions,
   writeRoleInstructions,
 } from "../roles/instructions.js";
@@ -696,7 +697,11 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (pathname === "/api/role-instructions" && req.method === "GET") {
         const path = roleInstructionsPath(opts);
-        sendJson(res, 200, { path, instructions: readRoleInstructions(path) });
+        sendJson(res, 200, {
+          path,
+          instructions: readRoleInstructions(path),
+          defaults: defaultRoleInstructions(),
+        });
         return;
       }
 
@@ -718,7 +723,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         }
         const path = roleInstructionsPath(opts);
         const instructions = writeRoleInstructions(path, parsed.instructions ?? parsed);
-        sendJson(res, 200, { path, instructions });
+        sendJson(res, 200, { path, instructions, defaults: defaultRoleInstructions() });
         return;
       }
 
