@@ -3340,15 +3340,17 @@
   text-transform: uppercase;
 }
 .mm-role-routing-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: stretch;
   gap: 8px;
 }
 .mm-role-routing-controls .mm-settings-select {
-  width: auto;
-  flex: 1 1 8rem;
-  min-width: 8rem;
+  width: 100%;
+  min-width: 0;
+}
+.mm-role-routing-controls .mm-settings-reset {
+  justify-self: start;
 }
 
 .mm-settings-foot {
