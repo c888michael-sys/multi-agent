@@ -227,13 +227,16 @@ export async function listModelsForProvider(
   }
 
   const now = opts?.now ?? Date.now();
-  const cached = readCache(provider, opts?.cacheDir, now);
+  // Resolve once so an environment change during an in-flight request cannot
+  // make the read and write target different cache directories.
+  const resolvedCacheDir = cacheDir(opts?.cacheDir);
+  const cached = readCache(provider, resolvedCacheDir, now);
   if (cached && !opts?.refresh && !cached.stale) {
     return { ...cached, source: "cache" };
   }
 
+  let models: ProviderModelOption[];
   try {
-    let models: ProviderModelOption[];
     if (provider === "gemini") {
       models = await fetchGeminiModels(opts?.apiKey, fetchImpl);
     } else if (provider === "ollama") {
@@ -243,11 +246,16 @@ export async function listModelsForProvider(
       if (!url) return { models: [], source: "empty", fetchedAt: null, stale: false };
       models = await fetchOpenAICompatModels(url, opts?.apiKey, fetchImpl);
     }
-    const fetchedAt = Date.now();
-    writeCache(provider, models, opts?.cacheDir, fetchedAt);
-    return { models, source: "live", fetchedAt, stale: false };
   } catch (err) {
     if (cached) return { ...cached, source: "cache" };
     throw err;
   }
+
+  const fetchedAt = Date.now();
+  try {
+    writeCache(provider, models, resolvedCacheDir, fetchedAt);
+  } catch {
+    // A cache persistence failure must not downgrade a successful live result.
+  }
+  return { models, source: "live", fetchedAt, stale: false };
 }

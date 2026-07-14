@@ -104,14 +104,25 @@ describe("web server", () => {
     else process.env.MULTI_AGENT_PROVIDER_MODELS_CACHE = originalProviderModelsCachePath;
   });
 
-  function spawn(opts: { snap?: Snap[]; handler?: (name: string, prompt: string) => Promise<string> } = {}) {
+  function spawn(opts: {
+    snap?: Snap[];
+    handler?: (name: string, prompt: string) => Promise<string>;
+    modelFetchImpl?: typeof fetch;
+  } = {}) {
     const port = pickPort();
     const router = makeRouter(opts.snap ?? [
       { id: "gemini:1", cooldownUntil: 0, successCount: 3, rateLimitCount: 0, remainingPct: 75 },
       { id: "groq:llama-70b", cooldownUntil: 0, successCount: 1, rateLimitCount: 0 },
     ]);
     const resolver = makeResolver(opts.handler ?? (async (_n, p) => `reply:${p}`));
-    const handle = startWebServer({ router, resolver, port, sessionStorageDir: sessionDir, roleInstructionsPath });
+    const handle = startWebServer({
+      router,
+      resolver,
+      port,
+      sessionStorageDir: sessionDir,
+      roleInstructionsPath,
+      ...(opts.modelFetchImpl ? { modelFetchImpl: opts.modelFetchImpl } : {}),
+    });
     handles.push(handle);
     return { handle, port, url: `http://localhost:${port}` };
   }
@@ -141,6 +152,8 @@ describe("web server", () => {
     expect(body).toContain("prefers-reduced-motion: reduce");
     expect(body).toContain("onTemplatePick");
     expect(body).toContain("mm-empty");
+    expect(body).toContain("onPointerDown={() => loadModels(role, provider, true, true)}");
+    expect(body).toContain("Model catalogue through");
   });
 
   it("serves Phase A polish CSS and template starters", async () => {
@@ -844,9 +857,10 @@ describe("web server", () => {
   it("/api/role-model sets then clears a per-role override", async () => {
     const overridesPath = join(sessionDir, "model-overrides.json");
     process.env.MULTI_AGENT_MODEL_OVERRIDES = overridesPath;
-    // ollama is always "configured"; cache a model so validation passes offline.
-    writeProviderModelsCache("ollama", [{ id: "qwen2.5-coder:14b", name: "qwen2.5-coder:14b" }]);
-    const { url } = spawn();
+    const modelFetchImpl = (async () => new Response(JSON.stringify({
+      models: [{ name: "qwen2.5-coder:14b" }],
+    }), { status: 200 })) as typeof fetch;
+    const { url } = spawn({ modelFetchImpl });
 
     const set = await fetch(`${url}/api/role-model`, {
       method: "PUT",
@@ -867,6 +881,27 @@ describe("web server", () => {
     expect(clear.status).toBe(200);
     const clearJson = await clear.json() as { selected: unknown };
     expect(clearJson.selected).toBeNull();
+  });
+
+  it("/api/role-model refuses to save when only a cached catalogue is available", async () => {
+    const overridesPath = join(sessionDir, "model-overrides.json");
+    process.env.MULTI_AGENT_MODEL_OVERRIDES = overridesPath;
+    writeProviderModelsCache("ollama", [{ id: "stale-model:latest", name: "stale-model:latest" }]);
+    const modelFetchImpl = (async () => {
+      throw new Error("provider offline");
+    }) as typeof fetch;
+    const { url } = spawn({ modelFetchImpl });
+
+    const response = await fetch(`${url}/api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "action-code", provider: "ollama", model: "stale-model:latest" }),
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "could not verify 'ollama' against a live model catalogue; try again",
+    });
   });
 
   it("/api/role-model rejects unknown roles and cross-origin writes", async () => {

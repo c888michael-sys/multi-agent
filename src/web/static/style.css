@@ -3356,6 +3356,14 @@
   width: 100%;
   min-width: 0;
 }
+.mm-role-routing-catalogue {
+  color: var(--mm-fg-faint);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.mm-role-routing-catalogue.warn {
+  color: var(--mm-warn, oklch(0.74 0.13 70));
+}
 .mm-role-routing-controls .mm-settings-reset {
   justify-self: start;
 }

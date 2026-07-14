@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -117,5 +117,21 @@ describe("listModelsForProvider", () => {
     });
     expect(result.source).toBe("cache");
     expect(result.models[0]!.id).toBe("model-a");
+  });
+
+  it("keeps a successful live result when its cache cannot be written", async () => {
+    const parent = cacheDir();
+    const blockedCachePath = join(parent, "not-a-directory");
+    writeFileSync(blockedCachePath, "file", "utf8");
+
+    const result = await listModelsForProvider("groq", {
+      apiKey: "k",
+      fetchImpl: jsonFetch({ data: [{ id: "fresh-model" }] }) as typeof fetch,
+      cacheDir: blockedCachePath,
+      refresh: true,
+    });
+
+    expect(result.source).toBe("live");
+    expect(result.models[0]!.id).toBe("fresh-model");
   });
 });

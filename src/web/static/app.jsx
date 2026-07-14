@@ -616,29 +616,63 @@ function ModelRoutingSection({ open }) {
   const [overrides, setOverrides] = React.useState({});
   const [roleProvider, setRoleProvider] = React.useState({});
   const [roleModels, setRoleModels] = React.useState({});
+  const [roleModelMeta, setRoleModelMeta] = React.useState({});
   const [roleLoading, setRoleLoading] = React.useState({});
   const [status, setStatus] = React.useState('');
+  const modelRequestSeq = React.useRef({});
 
   const setLoading = (role, value) => setRoleLoading((s) => ({ ...s, [role]: value }));
 
-  const loadModels = React.useCallback(async (role, provider, refresh = false) => {
+  const loadModels = React.useCallback(async (role, provider, refresh = false, background = false) => {
     if (!provider) {
+      modelRequestSeq.current[role] = (modelRequestSeq.current[role] || 0) + 1;
       setRoleModels((m) => ({ ...m, [role]: [] }));
+      setRoleModelMeta((m) => ({ ...m, [role]: undefined }));
       return;
     }
-    setLoading(role, true);
+    const requestId = (modelRequestSeq.current[role] || 0) + 1;
+    modelRequestSeq.current[role] = requestId;
+    if (refresh) {
+      setRoleModelMeta((m) => ({
+        ...m,
+        [role]: { ...(m[role] || {}), provider, syncing: true },
+      }));
+    }
+    if (!background) setLoading(role, true);
     try {
       const res = await fetch(
         `/api/role-models?role=${encodeURIComponent(role)}&provider=${encodeURIComponent(provider)}${refresh ? '&refresh=1' : ''}`,
       );
       const payload = res.ok ? await res.json() : null;
       if (!res.ok) throw new Error(payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      if (modelRequestSeq.current[role] !== requestId) return;
       setRoleModels((m) => ({ ...m, [role]: Array.isArray(payload.models) ? payload.models : [] }));
+      const meta = {
+        provider,
+        source: payload.source || 'empty',
+        fetchedAt: typeof payload.fetchedAt === 'number' ? payload.fetchedAt : null,
+        stale: !!payload.stale,
+        refreshFailed: refresh && payload.source === 'cache',
+        syncing: false,
+      };
+      setRoleModelMeta((m) => ({ ...m, [role]: meta }));
+      if (refresh) {
+        setStatus(
+          meta.refreshFailed
+            ? `${role}: live catalogue refresh failed; showing the last cached list`
+            : `${role}: live ${provider} catalogue synced`,
+        );
+      }
     } catch (err) {
+      if (modelRequestSeq.current[role] !== requestId) return;
       setStatus(`${role}: ${err && err.message ? err.message : String(err)}`);
       setRoleModels((m) => ({ ...m, [role]: [] }));
+      setRoleModelMeta((m) => ({
+        ...m,
+        [role]: { provider, source: 'empty', fetchedAt: null, stale: false, refreshFailed: refresh, syncing: false },
+      }));
     } finally {
-      setLoading(role, false);
+      if (!background && modelRequestSeq.current[role] === requestId) setLoading(role, false);
     }
   }, []);
 
@@ -662,7 +696,7 @@ function ModelRoutingSection({ open }) {
         setRoleProvider(rp);
         // Populate model lists for roles that already have an override.
         for (const role of payload.roles || []) {
-          if (ovr[role]) loadModels(role, ovr[role].provider);
+          if (ovr[role]) loadModels(role, ovr[role].provider, true);
         }
       })
       .catch((err) => {
@@ -702,7 +736,7 @@ function ModelRoutingSection({ open }) {
       saveOverride(role, null, null); // clear → default chain
       setRoleModels((m) => ({ ...m, [role]: [] }));
     } else {
-      loadModels(role, provider);
+      loadModels(role, provider, true);
     }
   };
 
@@ -718,6 +752,9 @@ function ModelRoutingSection({ open }) {
         {roles.map((role) => {
           const provider = roleProvider[role] || '';
           const models = roleModels[role] || [];
+          const modelMeta = roleModelMeta[role] && roleModelMeta[role].provider === provider
+            ? roleModelMeta[role]
+            : null;
           const selected = overrides[role];
           const busy = !!roleLoading[role];
           const providerInfo = providers.find((p) => p.id === provider);
@@ -727,17 +764,38 @@ function ModelRoutingSection({ open }) {
             ? models.find((m) => m.id === selectedForProvider.model)
             : null;
           const selectedModelInList = !!selectedModel;
+          const selectedMissingFromLive = !!selectedForProvider
+            && modelMeta?.source === 'live'
+            && !busy
+            && !selectedModelInList;
           const providerLabel = providerInfo?.label || provider;
           const routeModelLabel = selectedModel
             ? modelLabel(selectedModel)
             : selectedForProvider?.model || '';
+          const syncedAt = modelMeta?.fetchedAt
+            ? new Date(modelMeta.fetchedAt).toLocaleString()
+            : null;
+          const catalogueMessage = modelMeta?.syncing
+            ? 'Syncing live catalogue...'
+            : !modelMeta
+              ? 'Catalogue not loaded.'
+              : modelMeta.source === 'live'
+                ? `Live catalogue · synced ${syncedAt || 'just now'}.`
+                : modelMeta.source === 'cache'
+                  ? `${modelMeta.stale ? 'Stale cached' : 'Cached'} catalogue${syncedAt ? ` · synced ${syncedAt}` : ''}.${modelMeta.refreshFailed ? ' Live refresh failed.' : ''}`
+                  : 'No catalogue models returned.';
+          const nvidiaCatalogueNote = provider === 'nvidia'
+            ? ' NVIDIA catalogue entries are verified for endpoint access only when a request runs.'
+            : '';
           const routeMessage = !provider
             ? 'Active: built-in fallback chain chooses the first available model.'
             : !providerConfigured
               ? `Inactive: ${providerLabel} API key is missing. The built-in fallback chain is serving this role.${routeModelLabel ? ` Saved model: ${routeModelLabel}.` : ''}`
               : !selectedForProvider
                 ? `Not active yet: choose a model to route through the ${providerLabel} API.`
-                : `Active route: ${providerLabel} API → ${routeModelLabel}.`;
+                : selectedMissingFromLive
+                  ? `Inactive: ${routeModelLabel} is not in the latest live ${providerLabel} catalogue. Choose another model.`
+                  : `Active route: ${providerLabel} API → ${routeModelLabel}.`;
           return (
             <div className="mm-role-routing-row" key={role}>
               <span className="mm-role-routing-label">{ROLE_ROUTING_LABELS[role] || role}</span>
@@ -759,9 +817,10 @@ function ModelRoutingSection({ open }) {
                 </select>
                 {provider ? (
                   <>
-                  <span className="mm-role-routing-caption">Model through {providerLabel || 'provider'}</span>
+                  <span className="mm-role-routing-caption">Model catalogue through {providerLabel || 'provider'}</span>
                   <select
                     className="mm-settings-select"
+                    onPointerDown={() => loadModels(role, provider, true, true)}
                     value={selectedForProvider ? selectedForProvider.model : ''}
                     disabled={busy || models.length === 0 || !providerConfigured}
                     onChange={(e) => saveOverride(role, provider, e.target.value)}
@@ -773,16 +832,23 @@ function ModelRoutingSection({ open }) {
                         : busy ? 'loading…' : models.length === 0 ? 'no models' : 'choose model…'}
                     </option>
                     {selectedForProvider && !selectedModelInList ? (
-                      <option value={selectedForProvider.model}>{selectedForProvider.model} (saved)</option>
+                      <option value={selectedForProvider.model}>
+                        {selectedForProvider.model} ({modelMeta?.source === 'live' ? 'not in live catalogue' : 'saved'})
+                      </option>
                     ) : null}
                     {models.map((m) => (
                       <option key={m.id} value={m.id}>{modelLabel(m)}</option>
                     ))}
                   </select>
+                  <span
+                    className={'mm-role-routing-catalogue' + ((modelMeta?.stale || modelMeta?.refreshFailed) ? ' warn' : '')}
+                  >
+                    {catalogueMessage}{nvidiaCatalogueNote}
+                  </span>
                   </>
                 ) : null}
                 <span
-                  className={'mm-role-routing-route' + (provider && !providerConfigured ? ' warn' : '')}
+                  className={'mm-role-routing-route' + ((provider && !providerConfigured) || selectedMissingFromLive ? ' warn' : '')}
                   role="status"
                 >
                   {routeMessage}
@@ -792,9 +858,9 @@ function ModelRoutingSection({ open }) {
                     type="button"
                     className="mm-settings-reset"
                     onClick={() => loadModels(role, provider, true)}
-                    disabled={busy}
+                    disabled={busy || !!modelMeta?.syncing}
                   >
-                    refresh
+                    sync live
                   </button>
                 ) : null}
               </div>

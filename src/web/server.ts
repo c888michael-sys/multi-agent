@@ -239,6 +239,8 @@ export interface ServerOptions {
   projectsPath?: string;
   /** Override allowed base directories for new projects. Used by tests; default from MULTI_AGENT_PROJECT_ROOTS. */
   allowList?: string[];
+  /** Override provider-catalogue HTTP requests. Used by tests. */
+  modelFetchImpl?: typeof fetch;
 }
 
 /**
@@ -825,6 +827,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           const result = await listModelsForProvider(provider, {
             apiKey: apiKeyForOverrideProvider(provider) ?? undefined,
             refresh,
+            ...(opts.modelFetchImpl ? { fetchImpl: opts.modelFetchImpl } : {}),
           });
           sendJson(res, 200, {
             role,
@@ -879,7 +882,15 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         try {
           const result = await listModelsForProvider(provider, {
             apiKey: apiKeyForOverrideProvider(provider) ?? undefined,
+            refresh: true,
+            ...(opts.modelFetchImpl ? { fetchImpl: opts.modelFetchImpl } : {}),
           });
+          if (result.source !== "live") {
+            sendJson(res, 503, {
+              error: `could not verify '${provider}' against a live model catalogue; try again`,
+            });
+            return;
+          }
           const option = result.models.find((m) => m.id === parsed.model);
           if (!option) {
             sendJson(res, 400, {
