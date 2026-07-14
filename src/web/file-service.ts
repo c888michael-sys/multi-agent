@@ -21,12 +21,25 @@ const BLOCKED_SUFFIXES = [".pem", ".key"];
 /** Private-key basenames that are always blocked. */
 const BLOCKED_BASENAMES = new Set(["id_rsa", "id_ed25519"]);
 
+const WINDOWS_RESERVED_BASENAMES = new Set([
+  "con", "prn", "aux", "nul",
+  "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+  "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+]);
+
 function isBlocked(name: string): boolean {
-  if (BLOCKED_NAMES.has(name)) return true;
-  if (BLOCKED_BASENAMES.has(name)) return true;
-  if (name.startsWith(".env")) return true;
+  // File paths are often supplied by a model and may later be used on Windows.
+  // Reject components Windows would normalise, reinterpret, or treat as devices
+  // on every platform so proposals are safe and portable.
+  if (!name || /[\0<>:"|?*]/.test(name) || /[. ]$/.test(name)) return true;
+  const folded = name.toLowerCase();
+  const basename = folded.split(".", 1)[0]!;
+  if (WINDOWS_RESERVED_BASENAMES.has(basename)) return true;
+  if (BLOCKED_NAMES.has(folded)) return true;
+  if (BLOCKED_BASENAMES.has(folded)) return true;
+  if (folded.startsWith(".env")) return true;
   for (const suffix of BLOCKED_SUFFIXES) {
-    if (name.endsWith(suffix)) return true;
+    if (folded.endsWith(suffix)) return true;
   }
   return false;
 }
@@ -190,7 +203,7 @@ export class WebFileService {
     return { path: rel, content, size: st.size, sha256, truncated: false };
   }
 
-  buildDiff(userPath: string, nextContent: string): { path: string; beforeSha256: string; diff: string } {
+  buildDiff(userPath: string, nextContent: string): { path: string; beforeSha256: string | null; diff: string } {
     const abs = this.resolveSafe(userPath);
     const nextBuf = Buffer.from(nextContent, "utf8");
     if (nextBuf.length > this.maxBytes) {
@@ -199,8 +212,13 @@ export class WebFileService {
         { code: "TOO_LARGE" },
       );
     }
+    const rel = relative(this.root, abs).replace(/\\/g, "/");
     if (!existsSync(abs)) {
-      throw Object.assign(new Error(`not found: ${userPath}`), { code: "NOT_FOUND" });
+      return {
+        path: rel,
+        beforeSha256: null,
+        diff: unifiedDiff("", nextContent, rel, { newFile: true }),
+      };
     }
     const st = statSync(abs);
     if (st.isDirectory()) {
@@ -218,7 +236,6 @@ export class WebFileService {
     }
     const beforeSha256 = createHash("sha256").update(buf).digest("hex");
     const oldContent = decodeUtf8Text(buf);
-    const rel = relative(this.root, abs).replace(/\\/g, "/");
     return { path: rel, beforeSha256, diff: unifiedDiff(oldContent, nextContent, rel) };
   }
 
@@ -299,8 +316,19 @@ export class WebFileService {
  * region with 3 lines of context either side. Sufficient for the MVP file
  * browser — files are capped at 256 KB so performance is not a concern.
  */
-function unifiedDiff(oldText: string, newText: string, label: string): string {
-  if (oldText === newText) return "";
+function unifiedDiff(oldText: string, newText: string, label: string, opts?: { newFile?: boolean }): string {
+  if (oldText === newText && !opts?.newFile) return "";
+  if (opts?.newFile) {
+    const nextLines = newText.split("\n");
+    if (nextLines[nextLines.length - 1] === "") nextLines.pop();
+    const lines = [
+      "--- /dev/null",
+      `+++ ${label}`,
+      `@@ -0,0 +1,${nextLines.length} @@`,
+      ...nextLines.map((line) => `+${line}`),
+    ];
+    return lines.join("\n");
+  }
   const a = oldText.split("\n");
   const b = newText.split("\n");
 

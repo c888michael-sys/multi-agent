@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { startWebServer } from "../src/web/server.js";
+import { MAX_REQUEST_BODY_BYTES, startWebServer } from "../src/web/server.js";
 import type { CompleteOptions } from "../src/provider.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
@@ -125,6 +125,16 @@ describe("web server", () => {
     });
     handles.push(handle);
     return { handle, port, url: `http://localhost:${port}` };
+  }
+
+  async function localMutationFetch(url: string, init: RequestInit): Promise<Response> {
+    const context = await fetch(`${new URL(url).origin}/api/security/context`);
+    expect(context.status).toBe(200);
+    const { csrfToken } = await context.json() as { csrfToken?: string };
+    expect(typeof csrfToken).toBe("string");
+    const headers = new Headers(init.headers);
+    headers.set("X-CSRF-Token", csrfToken!);
+    return fetch(url, { ...init, headers });
   }
 
   it("serves the SPA shell at /", async () => {
@@ -676,6 +686,15 @@ describe("web server", () => {
     expect(raw.global).toBe("Use direct language.");
   });
 
+  it("issues a non-cacheable CSRF token from the local security context", async () => {
+    const { url } = spawn();
+    const r = await fetch(`${url}/api/security/context`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("cache-control")).toContain("no-store");
+    const body: any = await r.json();
+    expect(body.csrfToken).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("/api/role-instructions can persist the canonical defaults after customisation", async () => {
     const { url } = spawn();
     const initial: any = await (await fetch(`${url}/api/role-instructions`)).json();
@@ -1142,6 +1161,67 @@ describe("web server", () => {
       expect(j.diff).toContain("+line TWO");
     });
 
+    it("POST /api/files/diff returns a create preview for a missing file", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/diff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "site/index.html", content: "<h1>Hello</h1>\n" }),
+      });
+      expect(r.status).toBe(200);
+      const j: any = await r.json();
+      expect(j.path).toBe("site/index.html");
+      expect(j.beforeSha256).toBeNull();
+      expect(j.diff).toContain("--- /dev/null");
+      expect(j.diff).toContain("+++ site/index.html");
+      expect(j.diff).toContain("+<h1>Hello</h1>");
+    });
+
+    it("creates a reviewed missing file when its null hash is applied", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await localMutationFetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "site/index.html", content: "<h1>Hello</h1>\n", expectedSha256: null, confirm: true }),
+      });
+      expect(r.status).toBe(200);
+      expect(readFileSync(join(fileRoot, "site", "index.html"), "utf8")).toBe("<h1>Hello</h1>\n");
+    });
+
+    it("requires a CSRF token before a file write", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "blocked-without-token.txt", content: "no", expectedSha256: null, confirm: true }),
+      });
+      expect(r.status).toBe(403);
+      expect(existsSync(join(fileRoot, "blocked-without-token.txt"))).toBe(false);
+    });
+
+    it("rejects an oversized request body before parsing it", async () => {
+      const { url } = spawnWithRoot(fileRoot);
+      const r = await fetch(`${url}/api/files/diff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "oversized.txt", content: "x".repeat(MAX_REQUEST_BODY_BYTES) }),
+      });
+      expect(r.status).toBe(413);
+    });
+
+    it("blocks sensitive names case-insensitively and Windows device names", async () => {
+      writeFileSync(join(fileRoot, ".ENV"), "SECRET=still-blocked", "utf8");
+      const { url } = spawnWithRoot(fileRoot);
+      const env = await fetch(`${url}/api/files/read?path=.ENV`);
+      expect(env.status).toBe(403);
+      const device = await fetch(`${url}/api/files/diff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "CON.txt", content: "blocked" }),
+      });
+      expect(device.status).toBe(403);
+    });
+
     it("POST /api/files/write applies content when expectedSha256 matches", async () => {
       writeFileSync(join(fileRoot, "target.txt"), "original content\n", "utf8");
       const { url } = spawnWithRoot(fileRoot);
@@ -1149,7 +1229,7 @@ describe("web server", () => {
       const readRes = await fetch(`${url}/api/files/read?path=target.txt`);
       const { sha256 } = await readRes.json() as any;
       // Apply write
-      const r = await fetch(`${url}/api/files/write`, {
+      const r = await localMutationFetch(`${url}/api/files/write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "target.txt", content: "updated content\n", expectedSha256: sha256, confirm: true }),
@@ -1164,7 +1244,7 @@ describe("web server", () => {
     it("POST /api/files/write 409s when expectedSha256 is stale", async () => {
       writeFileSync(join(fileRoot, "stale.txt"), "first version\n", "utf8");
       const { url } = spawnWithRoot(fileRoot);
-      const r = await fetch(`${url}/api/files/write`, {
+      const r = await localMutationFetch(`${url}/api/files/write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "stale.txt", content: "new version\n", expectedSha256: "a".repeat(64), confirm: true }),
@@ -1176,7 +1256,7 @@ describe("web server", () => {
 
     it("POST /api/files/write 413s when new content exceeds the cap", async () => {
       const { url } = spawnWithRoot(fileRoot);
-      const r = await fetch(`${url}/api/files/write`, {
+      const r = await localMutationFetch(`${url}/api/files/write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "too-large.txt", content: "x".repeat(300_000), expectedSha256: null, confirm: true }),
@@ -1192,7 +1272,7 @@ describe("web server", () => {
       const { url } = spawnWithRoot(fileRoot);
       const readRes = await fetch(`${url}/api/files/read?path=guard.txt`);
       const { sha256 } = await readRes.json() as any;
-      const r = await fetch(`${url}/api/files/write`, {
+      const r = await localMutationFetch(`${url}/api/files/write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "guard.txt", content: "x", expectedSha256: sha256 }), // no confirm
@@ -1202,7 +1282,7 @@ describe("web server", () => {
 
     it("POST /api/files/write 403s on path traversal", async () => {
       const { url } = spawnWithRoot(fileRoot);
-      const r = await fetch(`${url}/api/files/write`, {
+      const r = await localMutationFetch(`${url}/api/files/write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "../escape.txt", content: "x", expectedSha256: null, confirm: true }),
@@ -1212,7 +1292,7 @@ describe("web server", () => {
 
     it("POST /api/files/write 403s on .env", async () => {
       const { url } = spawnWithRoot(fileRoot);
-      const r = await fetch(`${url}/api/files/write`, {
+      const r = await localMutationFetch(`${url}/api/files/write`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: ".env", content: "SECRET=x", expectedSha256: null, confirm: true }),
@@ -1435,7 +1515,7 @@ describe("web server", () => {
     it("POST /api/projects adds a new project within allow-list", async () => {
       const { url } = spawnWithProjects();
       const tmpBase = join(tmpdir());
-      const r = await fetch(`${url}/api/projects`, {
+      const r = await localMutationFetch(`${url}/api/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "second", root: projDir2 }),
@@ -1446,16 +1526,46 @@ describe("web server", () => {
       expect(j.project.id).toMatch(/^p_/);
     });
 
+    it("requires a CSRF token before changing the project registry", async () => {
+      const { url } = spawnWithProjects();
+      const r = await fetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "blocked", root: projDir2 }),
+      });
+      expect(r.status).toBe(403);
+    });
+
+    it("creates a requested missing project root only when explicitly opted in", async () => {
+      const { url } = spawnWithProjects();
+      const root = join(projDir, "sites", "portfolio");
+      const missing = await localMutationFetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "missing", root }),
+      });
+      expect(missing.status).toBe(400);
+      expect(existsSync(root)).toBe(false);
+
+      const created = await localMutationFetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "portfolio", root, createRoot: true }),
+      });
+      expect(created.status).toBe(200);
+      expect(existsSync(root)).toBe(true);
+    });
+
     it("POST /api/projects 409s on duplicate name", async () => {
       const { url, projectsPath } = spawnWithProjects();
       // Add once successfully
-      await fetch(`${url}/api/projects`, {
+      await localMutationFetch(`${url}/api/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "dup", root: projDir2 }),
       });
       // Second attempt with same name
-      const r = await fetch(`${url}/api/projects`, {
+      const r = await localMutationFetch(`${url}/api/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "dup", root: projDir2 }),
@@ -1469,7 +1579,7 @@ describe("web server", () => {
       writeFileSync(join(projDir2, "sentinel.txt"), "found!", "utf8");
 
       // Add second project
-      const addRes = await fetch(`${url}/api/projects`, {
+      const addRes = await localMutationFetch(`${url}/api/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "second", root: projDir2 }),
@@ -1477,7 +1587,7 @@ describe("web server", () => {
       const { project } = await addRes.json() as any;
 
       // Switch to it
-      const switchRes = await fetch(`${url}/api/projects/active`, {
+      const switchRes = await localMutationFetch(`${url}/api/projects/active`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: project.id }),
@@ -1491,9 +1601,30 @@ describe("web server", () => {
       expect(list.entries.some((e: any) => e.name === "sentinel.txt")).toBe(true);
     });
 
+    it("keeps the current project active when a selected root is no longer valid", async () => {
+      const { url } = spawnWithProjects();
+      const before: any = await (await fetch(`${url}/api/projects`)).json();
+      const addRes = await localMutationFetch(`${url}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "removed-root", root: projDir2 }),
+      });
+      const { project } = await addRes.json() as any;
+      rmSync(projDir2, { recursive: true, force: true });
+
+      const switchRes = await localMutationFetch(`${url}/api/projects/active`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: project.id }),
+      });
+      expect(switchRes.status).toBe(400);
+      const after: any = await (await fetch(`${url}/api/projects`)).json();
+      expect(after.active.id).toBe(before.active.id);
+    });
+
     it("POST /api/projects/active 404s for unknown id", async () => {
       const { url } = spawnWithProjects();
-      const r = await fetch(`${url}/api/projects/active`, {
+      const r = await localMutationFetch(`${url}/api/projects/active`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: "p_nonexistent" }),
@@ -1503,13 +1634,13 @@ describe("web server", () => {
 
     it("POST /api/projects/delete removes a project", async () => {
       const { url } = spawnWithProjects();
-      const addRes = await fetch(`${url}/api/projects`, {
+      const addRes = await localMutationFetch(`${url}/api/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "todelete", root: projDir2 }),
       });
       const { project } = await addRes.json() as any;
-      const r = await fetch(`${url}/api/projects/delete`, {
+      const r = await localMutationFetch(`${url}/api/projects/delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: project.id }),
@@ -1521,7 +1652,7 @@ describe("web server", () => {
       const { url, projectsPath } = spawnWithProjects();
       const { readProjects } = await import("../src/project/store.js");
       const set = readProjects(projectsPath);
-      const r = await fetch(`${url}/api/projects/delete`, {
+      const r = await localMutationFetch(`${url}/api/projects/delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: set.activeId }),
@@ -1532,7 +1663,7 @@ describe("web server", () => {
     it("POST /api/projects/pin sets pinned file", async () => {
       const { url } = spawnWithProjects();
       writeFileSync(join(projDir, "focus.ts"), "// focus", "utf8");
-      const r = await fetch(`${url}/api/projects/pin`, {
+      const r = await localMutationFetch(`${url}/api/projects/pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "focus.ts" }),
@@ -1544,7 +1675,7 @@ describe("web server", () => {
 
     it("POST /api/projects/pin 403s on traversal", async () => {
       const { url } = spawnWithProjects();
-      const r = await fetch(`${url}/api/projects/pin`, {
+      const r = await localMutationFetch(`${url}/api/projects/pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: "../../escape.ts" }),

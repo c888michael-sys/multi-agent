@@ -4142,6 +4142,11 @@
 .mm-proj-add-form {
   display: flex; flex-direction: column; gap: 6px;
 }
+.mm-proj-create-root {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--mm-fg-dim); font-size: 12px; cursor: pointer;
+}
+.mm-proj-create-root input { accent-color: var(--mm-accent); }
 .mm-proj-input {
   background: color-mix(in oklch, var(--mm-bg) 80%, transparent);
   border: 0.5px solid var(--mm-line-strong);

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addProject,
   assertWithinAllowList,
+  createProjectRoot,
   getActiveProject,
   listProjects,
   pathContains,
@@ -150,6 +151,30 @@ describe("assertWithinAllowList", () => {
   });
 });
 
+describe("createProjectRoot", () => {
+  it("creates a missing nested root only under an allowed existing ancestor", () => {
+    const { dir, cleanup } = tmpStore();
+    try {
+      const root = join(dir, "sites", "portfolio");
+      expect(createProjectRoot(root, [dir])).toBe(root);
+      expect(existsSync(root)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects a root outside the allow-list without creating it", () => {
+    const { dir, cleanup } = tmpStore();
+    try {
+      const root = join(dir, "not-allowed", "portfolio");
+      expect(() => createProjectRoot(root, [join(dir, "allowed")])).toThrow(/outside allowed/);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // addProject
 // ---------------------------------------------------------------------------
@@ -187,6 +212,16 @@ describe("addProject", () => {
       expect(() =>
         addProject({ name: "x", root: dir, allowList: ["/nonexistent-base-sentinel"] }, file),
       ).toThrow(/outside allowed/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects a missing root until it is explicitly created", () => {
+    const { dir, file, cleanup } = tmpStore();
+    try {
+      const root = join(dir, "missing");
+      expect(() => addProject({ name: "missing", root, allowList: [dir] }, file)).toThrow(/does not exist/);
     } finally {
       cleanup();
     }

@@ -15,6 +15,7 @@
  *   GET  /api/usage              router usage snapshot as plain text
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { WebFileService, FILE_MAX_BYTES } from "./file-service.js";
@@ -72,6 +73,7 @@ import { runGoalLoop, type GoalProgress } from "../goal/runner.js";
 import {
   addProject,
   assertWithinAllowList,
+  createProjectRoot,
   getActiveProject,
   listProjects,
   readProjects,
@@ -241,7 +243,12 @@ export interface ServerOptions {
   allowList?: string[];
   /** Override provider-catalogue HTTP requests. Used by tests. */
   modelFetchImpl?: typeof fetch;
+  /** Address to bind. Defaults to IPv4 loopback for local-only operation. */
+  host?: string;
 }
+
+/** Upper bound for any JSON request handled by the web server. */
+export const MAX_REQUEST_BODY_BYTES = 3 * 1024 * 1024;
 
 /**
  * Select the resolver for this request based on the optional `useLocal`
@@ -277,8 +284,44 @@ function isAllowedOrigin(origin: string | undefined, port: number): boolean {
   );
 }
 
+function isAllowedHost(host: string | undefined, port: number): boolean {
+  if (!host) return false;
+  return host === `localhost:${port}` || host === `127.0.0.1:${port}` || host === `[::1]:${port}`;
+}
+
+function isAllowedFetchSite(site: string | string[] | undefined): boolean {
+  return !site || (!Array.isArray(site) && (site === "same-origin" || site === "none"));
+}
+
+function isJsonRequest(req: IncomingMessage): boolean {
+  return (req.headers["content-type"] ?? "").toLowerCase().includes("application/json");
+}
+
+function matchesCsrfToken(value: string | string[] | undefined, expected: string): boolean {
+  if (!value || Array.isArray(value)) return false;
+  const received = Buffer.from(value);
+  const token = Buffer.from(expected);
+  return received.length === token.length && timingSafeEqual(received, token);
+}
+
+/**
+ * Apply the local-write boundary shared by project and file mutation routes.
+ * This deliberately has no browser-only assumptions so scripted local clients
+ * can use it after first fetching the security context.
+ */
+function mutationRequestError(req: IncomingMessage, port: number, csrfToken: string): string | null {
+  if (!isJsonRequest(req)) return "Content-Type must be application/json";
+  if (!isAllowedHost(req.headers.host, port)) return "writes must target the local web server";
+  if (!isAllowedOrigin(req.headers.origin, port)) return "cross-origin writes are not allowed";
+  if (!isAllowedFetchSite(req.headers["sec-fetch-site"])) return "cross-site writes are not allowed";
+  if (!matchesCsrfToken(req.headers["x-csrf-token"], csrfToken)) return "valid X-CSRF-Token required";
+  return null;
+}
+
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
   const port = opts.port ?? 7421;
+  const host = opts.host ?? "127.0.0.1";
+  const csrfToken = randomBytes(32).toString("hex");
   const projectsPath = opts.projectsPath ?? DEFAULT_PROJECTS_PATH;
   const serverAllowList = opts.allowList ?? resolveAllowList();
 
@@ -343,7 +386,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       if (opts.cors) {
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token");
       }
       if (req.method === "OPTIONS") {
         res.statusCode = 204;
@@ -355,6 +398,12 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       const pathname = url.pathname;
 
       // --- API routes ---
+      if (pathname === "/api/security/context" && req.method === "GET") {
+        res.setHeader("Cache-Control", "no-store");
+        sendJson(res, 200, { csrfToken });
+        return;
+      }
+
       if (pathname === "/api/usage" && req.method === "GET") {
         sendText(res, 200, formatUsageReport(opts.router));
         return;
@@ -475,18 +524,24 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/projects" && req.method === "POST") {
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
-          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
           return;
         }
         const body = await readBody(req);
-        const parsed = safeJsonParse(body) as { name?: string; root?: string; pinnedFile?: string | null } | null;
+        const parsed = safeJsonParse(body) as { name?: string; root?: string; pinnedFile?: string | null; createRoot?: boolean } | null;
         if (typeof parsed?.name !== "string" || typeof parsed?.root !== "string") {
           sendJson(res, 400, { error: "name and root (strings) required" });
           return;
         }
+        if (parsed.createRoot !== undefined && typeof parsed.createRoot !== "boolean") {
+          sendJson(res, 400, { error: "createRoot must be a boolean when provided" });
+          return;
+        }
         try {
           assertWithinAllowList(parsed.root, serverAllowList);
+          if (parsed.createRoot === true) createProjectRoot(parsed.root, serverAllowList);
           const project = addProject(
             { name: parsed.name, root: parsed.root, pinnedFile: parsed.pinnedFile, allowList: serverAllowList },
             projectsPath,
@@ -502,8 +557,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/projects/active" && req.method === "POST") {
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
-          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
           return;
         }
         const body = await readBody(req);
@@ -513,8 +569,12 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         try {
+          const next = listProjects(projectsPath).find((project) => project.id === parsed.id);
+          if (!next) throw Object.assign(new Error(`project "${parsed.id}" not found`), { code: "NOT_FOUND" });
+          assertWithinAllowList(next.root, serverAllowList);
+          const nextFileService = new WebFileService(resolve(next.root));
           setActiveProject(parsed.id, projectsPath);
-          rebuildFileService();
+          fileService = nextFileService;
           const active = getActiveProject(projectsPath);
           sendJson(res, 200, { active });
         } catch (err) {
@@ -526,8 +586,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/projects/delete" && req.method === "POST") {
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
-          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
           return;
         }
         const body = await readBody(req);
@@ -551,8 +612,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/projects/pin" && req.method === "POST") {
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
-          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
           return;
         }
         const body = await readBody(req);
@@ -643,15 +705,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       if (pathname === "/api/files/write" && req.method === "POST") {
-        // CSRF guard: require application/json (forces CORS preflight from
-        // cross-origin pages) and reject requests with a foreign Origin header.
-        const ct = req.headers["content-type"] ?? "";
-        if (!ct.includes("application/json")) {
-          sendJson(res, 415, { error: "Content-Type must be application/json" });
-          return;
-        }
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
-          sendJson(res, 403, { error: "cross-origin writes are not allowed" });
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
           return;
         }
         const body = await readBody(req);
@@ -1290,25 +1346,58 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       sendText(res, 404, "not found");
     } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === "BODY_TOO_LARGE") {
+        if (!res.headersSent) sendJson(res, 413, { error: e.message });
+        else res.end();
+        return;
+      }
       console.error("[web] handler error:", err);
-      if (!res.headersSent) sendJson(res, 500, { error: (err as Error).message });
+      if (!res.headersSent) sendJson(res, 500, { error: e.message });
       else res.end();
     }
   });
 
-  server.listen(port);
-  const url = `http://localhost:${port}/`;
+  server.listen(port, host);
+  const url = `http://${host}:${port}/`;
   return {
     url,
     close: () => server.close(),
   };
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes = MAX_REQUEST_BODY_BYTES): Promise<string> {
   return new Promise((resolve, reject) => {
+    const declaredLength = Number(req.headers["content-length"] ?? "0");
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      req.resume();
+      reject(Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { code: "BODY_TOO_LARGE" }));
+      return;
+    }
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    let totalBytes = 0;
+    let settled = false;
+    const rejectOnce = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      req.resume();
+      reject(err);
+    };
+    req.on("data", (c: Buffer) => {
+      if (settled) return;
+      totalBytes += c.length;
+      if (totalBytes > maxBytes) {
+        rejectOnce(Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { code: "BODY_TOO_LARGE" }));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
     req.on("error", reject);
   });
 }

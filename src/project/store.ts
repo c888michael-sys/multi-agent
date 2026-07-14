@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { delimiter, dirname, isAbsolute, join, normalize, posix, relative, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -166,6 +166,40 @@ export function assertWithinAllowList(root: string, allowList?: string[]): void 
   );
 }
 
+/**
+ * Explicitly create a missing project root after checking its deepest existing
+ * ancestor and the completed directory through the allow-list's realpath
+ * boundary. Callers must opt in; this never creates a directory implicitly.
+ */
+export function createProjectRoot(root: string, allowList?: string[]): string {
+  const absRoot = resolve(root);
+  const list = allowList ?? resolveAllowList();
+  assertWithinAllowList(absRoot, list);
+
+  if (existsSync(absRoot)) {
+    if (!statSync(absRoot).isDirectory()) {
+      throw Object.assign(new Error(`project root "${root}" is not a directory`), { code: "NOT_DIRECTORY" });
+    }
+    return absRoot;
+  }
+
+  let ancestor = absRoot;
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) {
+      throw Object.assign(new Error(`no existing ancestor for project root "${root}"`), { code: "OUTSIDE_ALLOWLIST" });
+    }
+    ancestor = parent;
+  }
+  assertWithinAllowList(ancestor, list);
+
+  mkdirSync(absRoot, { recursive: true });
+  // Resolve the completed directory to detect a symlink introduced beneath an
+  // allowed lexical path while it was being created.
+  assertWithinAllowList(realpathSync(absRoot), list);
+  return absRoot;
+}
+
 // ---------------------------------------------------------------------------
 // High-level store API  (each function reads then writes atomically from disk)
 // ---------------------------------------------------------------------------
@@ -198,6 +232,15 @@ export function addProject(
 
   const absRoot = resolve(opts.root);
   assertWithinAllowList(absRoot, opts.allowList);
+  if (!existsSync(absRoot)) {
+    throw Object.assign(
+      new Error(`project root "${opts.root}" does not exist; enable createRoot to create it`),
+      { code: "PROJECT_ROOT_MISSING" },
+    );
+  }
+  if (!statSync(absRoot).isDirectory()) {
+    throw Object.assign(new Error(`project root "${opts.root}" is not a directory`), { code: "NOT_DIRECTORY" });
+  }
 
   let pinnedFile: string | null = null;
   if (opts.pinnedFile) {

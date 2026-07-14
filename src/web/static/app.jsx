@@ -3792,6 +3792,34 @@ class PhaseErrorBoundary extends React.Component {
   }
 }
 
+let csrfTokenPromise = null;
+
+function getCsrfToken() {
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = fetch('/api/security/context')
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok || typeof body.csrfToken !== 'string') {
+          throw new Error(body.error || 'Could not establish a secure local session');
+        }
+        return body.csrfToken;
+      })
+      .catch((error) => {
+        csrfTokenPromise = null;
+        throw error;
+      });
+  }
+  return csrfTokenPromise;
+}
+
+function secureMutationFetch(url, init = {}) {
+  return getCsrfToken().then((csrfToken) => {
+    const headers = new Headers(init.headers || {});
+    headers.set('X-CSRF-Token', csrfToken);
+    return fetch(url, { ...init, headers });
+  });
+}
+
 function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPreloadConsumed }) {
   const [rootInfo, setRootInfo] = React.useState(null);
   const [currentPath, setCurrentPath] = React.useState('.');
@@ -3816,6 +3844,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
   const [addOpen, setAddOpen] = React.useState(false);
   const [addName, setAddName] = React.useState('');
   const [addPath, setAddPath] = React.useState('');
+  const [addCreateRoot, setAddCreateRoot] = React.useState(false);
   const [addError, setAddError] = React.useState(null);
   const [addLoading, setAddLoading] = React.useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = React.useState(null);
@@ -3856,7 +3885,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
       setCurrentPath('.'); setEntries([]); setSelectedFile(null);
       setListError(null); setPreviewError(null);
       setEditMode(false); setEditContent(''); setDiffResult(null); setApplyError(null);
-      setAddOpen(false); setAddName(''); setAddPath(''); setAddError(null);
+      setAddOpen(false); setAddName(''); setAddPath(''); setAddCreateRoot(false); setAddError(null);
       setDeleteConfirmId(null);
     }
   }, [open]);
@@ -3871,20 +3900,17 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
     fetch('/api/files/read?path=' + encodeURIComponent(preload.path))
       .then(async r => {
         const j = await r.json();
-        if (!r.ok) {
-          // File doesn't exist yet — enter edit mode as a new-file creation.
-          setSelectedFile({ path: preload.path, content: '', size: 0, sha256: null, truncated: false });
-          setEditContent(preload.content);
-          setEditMode(true);
-          return;
-        }
-        setSelectedFile(j);
+        if (!r.ok && r.status !== 404) throw new Error(j.error || 'Error ' + r.status);
+        const target = r.ok
+          ? j
+          : { path: preload.path, content: '', size: 0, sha256: null, truncated: false };
+        setSelectedFile(target);
         setEditContent(preload.content);
-        // Auto-compute diff so the user lands directly on the diff view.
+        // Missing files receive a create preview from the same endpoint.
         return fetch('/api/files/diff', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: j.path, content: preload.content }),
+          body: JSON.stringify({ path: target.path, content: preload.content }),
         }).then(async dr => {
           const dj = await dr.json();
           if (!dr.ok) throw new Error(dj.error || 'Diff error');
@@ -3909,7 +3935,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
   function switchProject(id) {
     if (id === projActiveId) return;
     setProjSwitching(true);
-    fetch('/api/projects/active', {
+    secureMutationFetch('/api/projects/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -3928,20 +3954,20 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
     e.preventDefault();
     if (!addName.trim() || !addPath.trim()) return;
     setAddLoading(true); setAddError(null);
-    fetch('/api/projects', {
+    secureMutationFetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: addName.trim(), root: addPath.trim() }),
+      body: JSON.stringify({ name: addName.trim(), root: addPath.trim(), createRoot: addCreateRoot }),
     }).then(async r => {
       const j = await r.json();
       if (!r.ok) { setAddError(j.error || 'Error ' + r.status); return; }
-      setAddOpen(false); setAddName(''); setAddPath('');
+      setAddOpen(false); setAddName(''); setAddPath(''); setAddCreateRoot(false);
       await fetchProjects();
     }).catch(e => setAddError(e.message)).finally(() => setAddLoading(false));
   }
 
   function deleteProject(id) {
-    fetch('/api/projects/delete', {
+    secureMutationFetch('/api/projects/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -3960,7 +3986,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
     if (!selectedFile) return;
     const isPinned = rootInfo?.pinnedFile === selectedFile.path;
     setPinLoading(true);
-    fetch('/api/projects/pin', {
+    secureMutationFetch('/api/projects/pin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: isPinned ? null : selectedFile.path }),
@@ -4022,7 +4048,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
   function applyWrite() {
     if (!selectedFile || !diffResult) return;
     setApplyLoading(true); setApplyError(null);
-    fetch('/api/files/write', {
+    secureMutationFetch('/api/files/write', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: selectedFile.path, content: editContent, expectedSha256: diffResult.beforeSha256, confirm: true }),
@@ -4083,7 +4109,7 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
               </select>
               <button
                 className="mm-proj-add-btn"
-                onClick={() => { setAddOpen(o => !o); setAddError(null); setAddName(''); setAddPath(''); }}
+                onClick={() => { setAddOpen(o => !o); setAddError(null); setAddName(''); setAddPath(''); setAddCreateRoot(false); }}
                 title="Add new project"
                 aria-label="Add new project"
               >＋</button>
@@ -4119,6 +4145,14 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
                   onChange={e => setAddPath(e.target.value)}
                   required
                 />
+                <label className="mm-proj-create-root">
+                  <input
+                    type="checkbox"
+                    checked={addCreateRoot}
+                    onChange={e => setAddCreateRoot(e.target.checked)}
+                  />
+                  Create this folder if it does not exist
+                </label>
                 <div className="mm-proj-add-actions">
                   <button type="submit" className="mm-proj-save-btn" disabled={addLoading}>
                     {addLoading ? 'Adding…' : 'Add'}
