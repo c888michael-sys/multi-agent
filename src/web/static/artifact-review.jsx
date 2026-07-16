@@ -17,13 +17,27 @@
     return candidate ? candidate.content : '';
   }
 
-  function ArtifactTurnCard({ artifact, receipt, onReview, onUndo }) {
+  function countdownLabel(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
+  }
+
+  function ArtifactTurnCard({ artifact, receipt, onReview, onUndo, onOpenFiles }) {
     if (!artifact || !Array.isArray(artifact.candidates) || artifact.candidates.length === 0) return null;
     const count = artifact.candidates.length;
     const saved = receipt?.kind === 'applied';
     const undone = receipt?.kind === 'undone';
     const [undoing, setUndoing] = useState(false);
     const [undoError, setUndoError] = useState(null);
+    const [undoMs, setUndoMs] = useState(() => receipt?.undoExpiresAt ? Math.max(0, receipt.undoExpiresAt - Date.now()) : 0);
+    const fullContents = artifact.candidates.every((candidate) => typeof candidate.content === 'string');
+    useEffect(() => {
+      if (!saved || !receipt?.undoExpiresAt) return undefined;
+      const tick = () => setUndoMs(Math.max(0, receipt.undoExpiresAt - Date.now()));
+      tick();
+      const timer = setInterval(tick, 1000);
+      return () => clearInterval(timer);
+    }, [saved, receipt?.undoExpiresAt]);
     async function undo() {
       if (!onUndo || undoing) return;
       setUndoing(true); setUndoError(null);
@@ -36,16 +50,24 @@
         <div className="mm-artifact-turn-body">
           <strong>{saved ? 'Saved ' + receipt.count + ' files' : undone ? 'Saved files were undone' : 'Website ready to review'}</strong>
           <span>{count} proposed {count === 1 ? 'file' : 'files'} · {artifact.projectName || 'selected project'}</span>
+          <div className="mm-artifact-path-chips">
+            {artifact.candidates.slice(0, 4).map((candidate) => <code key={candidate.path}>{candidate.path}</code>)}
+            {count > 4 && <code>+{count - 4} more</code>}
+          </div>
+          {saved && undoMs > 0 && <span className="mm-artifact-undo-time">undo available for {countdownLabel(undoMs)}</span>}
           {undoError && <span className="mm-artifact-card-error" role="alert">{undoError}</span>}
         </div>
-        {!saved && !undone && <button type="button" className="mm-artifact-review-btn" onClick={onReview}>Review and save</button>}
-        {saved && <button type="button" className="mm-artifact-review-btn" onClick={undo} disabled={undoing}>{undoing ? 'Undoing...' : 'Undo save'}</button>}
+        {!saved && !undone && <button type="button" className="mm-artifact-review-btn" onClick={onReview} disabled={!fullContents} title={!fullContents ? 'Full contents are only held until reload — re-ask the model to regenerate' : undefined}>Review and save</button>}
+        {saved && <div className="mm-artifact-card-actions">
+          {undoMs > 0 && <button type="button" className="mm-artifact-review-btn" onClick={undo} disabled={undoing}>{undoing ? 'Undoing...' : 'Undo save'}</button>}
+          <button type="button" className="mm-artifact-review-btn" onClick={onOpenFiles}>Open project files</button>
+        </div>}
       </section>
     );
   }
 
-  function ArtifactReviewDialog({ artifact, onClose, onApplied, mutate }) {
-    const [phase, setPhase] = useState('idle');
+  function ArtifactReviewDialog({ artifact, onClose, onApplied, onOpenFiles, mutate }) {
+    const [phase, setPhase] = useState('validating');
     const [basePath, setBasePath] = useState('');
     const [proposal, setProposal] = useState(null);
     const [selected, setSelected] = useState(new Set());
@@ -55,8 +77,12 @@
     const [diffError, setDiffError] = useState(null);
     const [rootInfo, setRootInfo] = useState(null);
     const [error, setError] = useState(null);
+    const [changingFolder, setChangingFolder] = useState(false);
     const panelRef = useRef(null);
     const closeRef = useRef(null);
+    const tabRefs = useRef({});
+    const tabs = ['changes', 'content', 'preview'];
+    const preparedOnce = useRef(false);
 
     useEffect(() => {
       let live = true;
@@ -124,7 +150,7 @@
       return () => { live = false; };
     }, [proposal?.id, activeFile?.id, tab]);
 
-    async function prepare() {
+    async function prepare(nextBase = basePath) {
       setPhase('validating'); setError(null);
       try {
         const response = await mutate('/api/artifacts/proposals', {
@@ -135,7 +161,7 @@
             sessionId: artifact.sessionId || 'web-session',
             sourceTurnId: artifact.sourceTurnId,
             title: 'Generated files',
-            basePath: basePath.trim(),
+            basePath: nextBase.trim(),
             files: artifact.candidates,
           }),
         });
@@ -150,6 +176,8 @@
         setProposal(nextProposal);
         setSelected(defaults);
         setActiveFileId(nextProposal.files[0]?.id || null);
+        setBasePath(nextBase.trim());
+        setChangingFolder(false);
         setPhase('ready');
       } catch (reason) {
         setError(reason.message);
@@ -157,11 +185,31 @@
       }
     }
 
+    useEffect(() => {
+      if (preparedOnce.current) return;
+      preparedOnce.current = true;
+      prepare('');
+    }, []);
+
     function toggleFile(file) {
       if (file.operation === 'unchanged') return;
       setSelected((current) => {
         const next = new Set(current);
         if (next.has(file.id)) next.delete(file.id); else next.add(file.id);
+        return next;
+      });
+    }
+
+    const selectableFiles = proposal?.files.filter((file) => file.operation !== 'unchanged') || [];
+    const groups = [
+      ['create', 'New'],
+      ['update', 'Modified'],
+      ['unchanged', 'Unchanged'],
+    ].map(([operation, label]) => ({ operation, label, files: proposal?.files.filter((file) => file.operation === operation) || [] }));
+    function setFileSelection(files, checked) {
+      setSelected((current) => {
+        const next = new Set(current);
+        files.filter((file) => file.operation !== 'unchanged').forEach((file) => checked ? next.add(file.id) : next.delete(file.id));
         return next;
       });
     }
@@ -201,7 +249,21 @@
     }
 
     function resetProposal() {
-      setProposal(null); setSelected(new Set()); setActiveFileId(null); setDiff(null); setError(null); setPhase('idle');
+      setProposal(null); setSelected(new Set()); setActiveFileId(null); setDiff(null); setError(null);
+      prepare(basePath);
+    }
+
+    function onTabKeyDown(event, name) {
+      const index = tabs.indexOf(name);
+      let next = null;
+      if (event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+      else if (event.key === 'ArrowLeft') next = tabs[(index - 1 + tabs.length) % tabs.length];
+      else if (event.key === 'Home') next = tabs[0];
+      else if (event.key === 'End') next = tabs[tabs.length - 1];
+      if (!next) return;
+      event.preventDefault();
+      setTab(next);
+      tabRefs.current[next]?.focus();
     }
 
     return (
@@ -213,48 +275,46 @@
             <div>
               <span className="mm-artifact-eyebrow">Review generated files</span>
               <h2 id="artifact-review-title">Save a complete file set</h2>
-              <p>{artifact.projectName || 'Selected project'} · <code>{destination}</code></p>
+              <p>{artifact.projectName || 'Selected project'} · <code>{destination}</code> {proposal && !changingFolder && <button type="button" className="mm-artifact-link-button" onClick={() => setChangingFolder(true)}>change folder</button>}</p>
+              {(changingFolder || (error && !proposal)) && <span className="mm-artifact-folder-edit"><input aria-label="Destination folder under project" value={basePath} onChange={(event) => setBasePath(event.target.value)} placeholder="e.g. portfolio-site" disabled={phase === 'validating'} /><button type="button" onClick={() => { setProposal(null); prepare(basePath); }} disabled={phase === 'validating'}>Confirm</button></span>}
             </div>
             <button ref={closeRef} type="button" className="mm-artifact-close" onClick={onClose} disabled={phase === 'applying'} aria-label="Close artifact review">×</button>
           </header>
 
-          {(phase === 'idle' || phase === 'validating') && (
-            <div className="mm-artifact-prepare">
-              <p>The model proposed {artifact.candidates.length} files. Choose a folder under the captured project, then validate the complete batch before any disk changes.</p>
-              <label>
-                Destination folder under project <span>(optional)</span>
-                <input value={basePath} onChange={(event) => setBasePath(event.target.value)} placeholder="e.g. portfolio-site" disabled={phase === 'validating'} />
-              </label>
-              {error && <div className="mm-artifact-error" role="alert">{error}</div>}
-              <button type="button" className="mm-artifact-primary" onClick={prepare} disabled={phase === 'validating'}>
-                {phase === 'validating' ? 'Validating files…' : 'Prepare review'}
-              </button>
-            </div>
-          )}
+          {phase === 'validating' && <div className="mm-artifact-skeleton" role="status" aria-live="polite"><span /><span /><span />Validating files…</div>}
+          {phase === 'error' && !proposal && <div className="mm-artifact-prepare"><div className="mm-artifact-error" role="alert">{error}</div><button type="button" className="mm-artifact-primary" onClick={() => prepare(basePath)}>Try again</button></div>}
 
           {(phase === 'ready' || phase === 'applying' || phase === 'complete' || phase === 'conflict' || phase === 'error') && proposal && (
             <>
               <div className="mm-artifact-workspace">
                 <aside className="mm-artifact-file-list" aria-label="Proposed files">
-                  {proposal.files.map((file) => (
-                    <label key={file.id} className={'mm-artifact-file-row ' + (activeFileId === file.id ? 'active' : '')}>
-                      <input type="checkbox" checked={selected.has(file.id)} onChange={() => toggleFile(file)} disabled={file.operation === 'unchanged' || phase === 'applying' || phase === 'complete'} />
-                      <button type="button" onClick={() => setActiveFileId(file.id)} disabled={phase === 'applying'}>
-                        <span className="mm-artifact-file-path">{file.path}</span>
-                        <span><b className={'mm-artifact-status ' + file.operation}>{statusLabel(file.operation)}</b> {bytesLabel(file.bytes)}</span>
-                      </button>
-                    </label>
-                  ))}
+                  <div className="mm-artifact-list-controls"><strong>Files</strong><span><button type="button" onClick={() => setFileSelection(selectableFiles, true)}>all</button><button type="button" onClick={() => setFileSelection(selectableFiles, false)}>none</button></span></div>
+                  {groups.filter((group) => group.files.length > 0).map((group) => {
+                    const selectable = group.files.filter((file) => file.operation !== 'unchanged');
+                    const selectedInGroup = selectable.filter((file) => selected.has(file.id)).length;
+                    return <section key={group.operation} className="mm-artifact-file-group">
+                      <label className="mm-artifact-group-head"><input type="checkbox" checked={selectable.length > 0 && selectedInGroup === selectable.length} ref={(input) => { if (input) input.indeterminate = selectedInGroup > 0 && selectedInGroup < selectable.length; }} onChange={(event) => setFileSelection(selectable, event.target.checked)} disabled={selectable.length === 0 || phase === 'applying' || phase === 'complete'} />{group.label} ({group.files.length})</label>
+                      {group.files.map((file) => (
+                        <label key={file.id} className={'mm-artifact-file-row ' + (activeFileId === file.id ? 'active' : '')}>
+                          <input type="checkbox" checked={selected.has(file.id)} onChange={() => toggleFile(file)} disabled={file.operation === 'unchanged' || phase === 'applying' || phase === 'complete'} />
+                          <button type="button" onClick={() => setActiveFileId(file.id)} disabled={phase === 'applying'}>
+                            <span className="mm-artifact-file-path">{file.path}</span>
+                            <span><b className={'mm-artifact-status ' + file.operation}>{statusLabel(file.operation)}</b> {bytesLabel(file.bytes)}</span>
+                          </button>
+                        </label>
+                      ))}
+                    </section>;
+                  })}
                 </aside>
                 <main className="mm-artifact-main">
                   <div className="mm-artifact-tabs" role="tablist" aria-label="Artifact file view">
-                    {['changes', 'content', 'preview'].map((name) => (
-                      <button key={name} type="button" role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>
+                    {tabs.map((name) => (
+                      <button key={name} ref={(element) => { tabRefs.current[name] = element; }} type="button" role="tab" id={'artifact-tab-' + name} aria-controls="artifact-tab-panel" aria-selected={tab === name} tabIndex={tab === name ? 0 : -1} onKeyDown={(event) => onTabKeyDown(event, name)} onClick={() => setTab(name)}>
                         {name[0].toUpperCase() + name.slice(1)}
                       </button>
                     ))}
                   </div>
-                  <div className="mm-artifact-tabpanel" role="tabpanel">
+                  <div className="mm-artifact-tabpanel" role="tabpanel" id="artifact-tab-panel" aria-labelledby={'artifact-tab-' + tab}>
                     {!activeFile ? <p>Select a file to inspect it.</p> : tab === 'changes' ? (
                       diffError ? <div className="mm-artifact-error" role="alert">{diffError}</div>
                         : diff === null ? <p aria-live="polite">Loading changes…</p>
@@ -275,6 +335,7 @@
                 <div>
                   {phase === 'conflict' ? <button type="button" onClick={resetProposal}>Recreate review</button> : null}
                   <button type="button" onClick={onClose} disabled={phase === 'applying'}>{phase === 'complete' ? 'Done' : 'Cancel'}</button>
+                  {phase === 'complete' && <button type="button" onClick={onOpenFiles}>Open project files</button>}
                   <button type="button" className="mm-artifact-primary" onClick={apply} disabled={phase !== 'ready' || selectedCount === 0}>
                     {phase === 'applying' ? 'Saving…' : 'Apply selected (' + selectedCount + ')'}
                   </button>

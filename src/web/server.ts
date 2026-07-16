@@ -1330,7 +1330,11 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           });
         } catch (err) {
           if (!streamAbort.signal.aborted) {
-            writeEvent({ kind: "error", error: (err as Error).message });
+            writeEvent({
+              kind: "error",
+              error: (err as Error).message,
+              errorName: err instanceof Error ? err.name : "Error",
+            });
           }
         } finally {
           req.off("aborted", abortStream);

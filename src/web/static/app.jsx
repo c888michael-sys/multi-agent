@@ -875,6 +875,7 @@ function ModelRoutingSection({ open }) {
 
 function SettingsDrawer({ open, onClose, settings, onChange }) {
   const drawerRef = React.useRef(null);
+  const scrimRef = React.useRef(null);
   // Hybrid-mode health gate. When the user toggles 'Hybrid local models'
   // ON we ping /api/ollama-health; if the daemon isn't reachable OR the
   // two required models aren't pulled, we refuse the toggle and surface
@@ -895,6 +896,11 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+
+  React.useEffect(() => {
+    if (drawerRef.current) drawerRef.current.inert = !open;
+    if (scrimRef.current) scrimRef.current.inert = !open;
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -1006,6 +1012,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
   return (
     <>
       <div
+        ref={scrimRef}
         className={'mm-settings-scrim' + (open ? ' open' : '')}
         onClick={onClose}
         aria-hidden={!open}
@@ -1827,11 +1834,109 @@ function detectFileEdits(text) {
   return results;
 }
 
+function soonestCooldownMs(usage) {
+  const values = [];
+  for (const role of Object.values(usage?.roles || {})) {
+    for (const candidate of role?.candidates || []) {
+      if (candidate?.cooldownMsRemaining > 0) values.push(candidate.cooldownMsRemaining);
+    }
+  }
+  if (values.length === 0) {
+    for (const provider of usage?.providers || []) {
+      if (provider?.cooldownMsRemaining > 0) values.push(provider.cooldownMsRemaining);
+    }
+  }
+  return values.length ? Math.min(...values) : null;
+}
+
+function ErrorTurnCard({ entry, isNewest, onRetry, retryDisabled }) {
+  const quota = entry.error?.kind === 'quota';
+  const imagesMissing = (entry.imageCount || 0) > 0 && (!entry.images || entry.images.length === 0);
+  const disabled = retryDisabled || imagesMissing;
+  const [cooldownMs, setCooldownMs] = React.useState(null);
+  const [autoRetry, setAutoRetry] = React.useState(entry.autoRetryAllowed !== false);
+  const [visibilityTick, setVisibilityTick] = React.useState(0);
+  const autoFired = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!quota || !isNewest) return undefined;
+    let live = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/usage.json');
+        if (!response.ok) return;
+        const next = soonestCooldownMs(await response.json());
+        if (live && next !== null) setCooldownMs(next);
+      } catch {}
+    };
+    refresh();
+    const timer = setInterval(refresh, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, [quota, isNewest]);
+
+  React.useEffect(() => {
+    if (cooldownMs === null || cooldownMs <= 0) return undefined;
+    const timer = setInterval(() => setCooldownMs((value) => value === null ? null : Math.max(0, value - 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [cooldownMs === null]);
+
+  React.useEffect(() => {
+    const onVisibility = () => setVisibilityTick((value) => value + 1);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  React.useEffect(() => {
+    if (!quota || !isNewest || cooldownMs !== 0 || !autoRetry || disabled || autoFired.current) return;
+    if (document.visibilityState !== 'visible') return;
+    autoFired.current = true;
+    setAutoRetry(false);
+    onRetry?.(true);
+  }, [quota, isNewest, cooldownMs, autoRetry, disabled, onRetry, visibilityTick]);
+
+  return (
+    <section className="mm-turn-error-card" role="alert">
+      <div className="mm-turn-error-icon" aria-hidden="true">!</div>
+      <div className="mm-turn-error-body">
+        <strong>{quota ? 'All free candidates for this route are cooling' : 'This turn failed — the reply was not generated'}</strong>
+        {quota && isNewest && cooldownMs !== null && <span className="mm-turn-error-countdown">retries in ~{formatCountdown(cooldownMs)}</span>}
+        <details><summary>Technical details</summary><pre>{entry.error?.message || 'Unknown provider error'}</pre></details>
+        <div className="mm-turn-error-actions">
+          <button type="button" onClick={() => onRetry?.(false)} disabled={disabled}>↻ retry</button>
+          {quota && isNewest && entry.autoRetryAllowed !== false && (
+            <label><input type="checkbox" checked={autoRetry} onChange={(event) => setAutoRetry(event.target.checked)} disabled={disabled} /> auto-retry once</label>
+          )}
+        </div>
+        {imagesMissing && <span className="mm-turn-error-note">Retry is unavailable after reload because attached images are not stored.</span>}
+      </div>
+    </section>
+  );
+}
+
+function BuilderChecklist({ activities, streaming }) {
+  const [showAll, setShowAll] = React.useState(false);
+  const inspected = activities.filter((item) => item.name === 'list_project' || item.name === 'read_project_file');
+  const staged = activities.filter((item) => item.name === 'stage_file');
+  const rows = [
+    ...(inspected.length ? [{ name: `inspected ${inspected.length} file${inspected.length === 1 ? '' : 's'}`, ok: inspected.every((item) => item.ok !== false) }] : []),
+    ...staged.map((item) => ({ name: item.path || 'staged file', ok: item.ok !== false })),
+  ];
+  const visible = showAll ? rows : rows.slice(-12);
+  return (
+    <section className="mm-builder-activity" aria-live="polite">
+      <strong>builder · {staged.filter((item) => item.ok !== false).length} file(s) staged</strong>
+      {visible.map((row, index) => <span key={index} className={row.ok ? '' : 'failed'}><b aria-hidden="true">{row.ok ? '✓' : '✕'}</b> {row.name}</span>)}
+      {streaming && <span className="in-flight"><i aria-hidden="true" /> working…</span>}
+      {!showAll && rows.length > 12 && <button type="button" onClick={() => setShowAll(true)}>show all ({rows.length})</button>}
+    </section>
+  );
+}
+
 // One turn in the chat-style scroll view. User prompt on top
 // (right-aligned), AI response below (left-aligned). The AI bubble
 // renders the orchestrator's RAW prose answer (no category split —
 // that's the mindmap's job). Newest gets a subtle accent ring.
-function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUndoArtifact }) {
+function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUndoArtifact, onOpenArtifactFiles, onRetry, retryDisabled }) {
   const tpl = TEMPLATE_DEFS[entry.template];
   const streaming = !!entry.streaming;
   const ArtifactCard = window.ArtifactTurnCard;
@@ -1860,18 +1965,20 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUn
             {liveLabel}
           </span>
         </span>
-        <div className="mm-turn-ai-bubble">
-          {entry.text
-            ? <MarkdownProse text={entry.text} />
-            : <span className="mm-turn-empty">{streaming ? 'preparing reply…' : ''}</span>}
+        <div className="mm-turn-ai-bubble" aria-busy={streaming}>
+          {isNewest && (
+            <span className="mm-sr-only" role="status" aria-live="polite">
+              {streaming ? 'Generating reply...' : entry.error ? 'Turn failed' : 'Reply ready'}
+            </span>
+          )}
+          {entry.text ? (
+            <>{entry.error && !streaming && <span className="mm-turn-partial-label">Partial reply</span>}<MarkdownProse text={entry.text} /></>
+          ) : !entry.error ? <span className="mm-turn-empty">{streaming ? 'preparing reply…' : ''}</span> : null}
           {streaming && <span className="mm-turn-caret" aria-hidden="true" />}
           {Array.isArray(entry.toolActivity) && entry.toolActivity.length > 0 && (
-            <div className="mm-builder-activity" aria-live="polite">
-              {entry.toolActivity.map((activity, index) => (
-                <span key={index} className={activity.ok === false ? 'failed' : ''}>{activity.name.replace(/_/g, ' ')}{activity.path ? ' · ' + activity.path : ''}</span>
-              ))}
-            </div>
+            <BuilderChecklist activities={entry.toolActivity} streaming={streaming} />
           )}
+          {entry.error && !streaming && <ErrorTurnCard entry={entry} isNewest={isNewest} onRetry={onRetry} retryDisabled={retryDisabled} />}
           <div className="mm-turn-foot">
             <CopyButton getText={() => entry.text || ''} />
             {!streaming && onApplyEdit && detectFileEdits(entry.text).map(edit => (
@@ -1896,6 +2003,7 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUn
               receipt={entry.artifactReceipt}
               onReview={() => onReviewArtifact && onReviewArtifact(entry)}
               onUndo={() => onUndoArtifact && onUndoArtifact(entry)}
+              onOpenFiles={onOpenArtifactFiles}
             />
           )}
         </div>
@@ -3050,6 +3158,8 @@ function previewTextForNode(node) {
 
 function IdleView({ draft, setDraft, submit, attachments, setAttachments, settings, onTemplatePick }) {
   const [hintIndex, setHintIndex] = React.useState(0);
+  const { usage } = useUsage(undefined, settings.useLocal);
+  const noProviders = Array.isArray(usage.providers) && usage.providers.length === 0;
   React.useEffect(() => {
     if (draft.trim()) return;
     const id = setInterval(() => {
@@ -3078,6 +3188,11 @@ function IdleView({ draft, setDraft, submit, attachments, setAttachments, settin
           routes it across five specialized agents.
         </p>
       </div>
+      {noProviders && <section className="mm-setup-card" role="status">
+        <strong>No providers configured</strong>
+        <span>Copy <code>.env.example</code> to <code>.env</code>, add <code>GEMINI_KEY_1</code> (free at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio</a>), then restart <code>npm run web</code>.</span>
+        <div>{['OPENROUTER_KEY', 'GROQ_KEY', 'MISTRAL_KEY', 'CEREBRAS_KEY', 'BRAVE_SEARCH_KEY'].map((key) => <code key={key}>{key}</code>)}</div>
+      </section>}
       <div className="mm-composer-wrap">
         <Composer
           value={draft}
@@ -3170,7 +3285,7 @@ function LoadingView({ prompt, liveStatus, summarize, agentState }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
-  attachments, setAttachments, burstError, onApplyEdit, onReviewArtifact, onUndoArtifact, settings,
+  attachments, setAttachments, burstError, onApplyEdit, onReviewArtifact, onUndoArtifact, onOpenArtifactFiles, onRetryTurn, retryDisabled, settings,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -3270,6 +3385,9 @@ function ResponseStackView({
               onApplyEdit={onApplyEdit}
               onReviewArtifact={onReviewArtifact}
               onUndoArtifact={onUndoArtifact}
+              onOpenArtifactFiles={onOpenArtifactFiles}
+              onRetry={(automatic) => onRetryTurn?.(entry, automatic)}
+              retryDisabled={retryDisabled}
             />
           ))}
           {/* In-flight turn: shows the user prompt + the partial AI bubble
@@ -3617,6 +3735,7 @@ function formatResponseText(entry) {
 const STACK_LS_KEY = 'lattice.responseStack.v2';
 const SESSION_LS_KEY = 'lattice.chatSessionId.v1';
 const SETTINGS_LS_KEY = 'lattice.settings.v1';
+const DRAFT_LS_PREFIX = 'lattice.draft.v1:';
 
 // Persistent user-tunable knobs that mirror CLI flags one-for-one:
 //   serious  → thinking: "high"  (Gemini extended reasoning on every call)
@@ -3712,6 +3831,42 @@ function persistSessionId(id) {
   try { localStorage.setItem(SESSION_LS_KEY, id); } catch {}
 }
 
+function loadSessionDraft(id) {
+  try {
+    const value = localStorage.getItem(DRAFT_LS_PREFIX + id) || '';
+    return value.length <= 8192 ? value : '';
+  } catch { return ''; }
+}
+
+function clearSessionDraft(id) {
+  try { localStorage.removeItem(DRAFT_LS_PREFIX + id); } catch {}
+}
+
+function sanitizeGeneratedTitle(value) {
+  const title = String(value || '').replace(/[\r\n]+/g, ' ').trim().replace(/^["'“”]+|["'“”.,:;!?]+$/g, '').trim();
+  if (!title || title.length > 48 || /[.!?]\s+\S/.test(title)) return null;
+  return title;
+}
+
+async function generateSessionTitle(sessionId, prompt, reply) {
+  try {
+    const response = await fetch('/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'action-repetitive',
+        prompt: `Write a concise title (2-7 words, one line, no quotes or punctuation) for this conversation.\nUser: ${prompt}\nReply: ${String(reply).slice(0, 400)}`,
+      }),
+    });
+    if (!response.ok) return;
+    const title = sanitizeGeneratedTitle((await response.json()).reply);
+    if (!title) return;
+    await fetch('/api/sessions/' + encodeURIComponent(sessionId), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }),
+    });
+  } catch {}
+}
+
 function responsesFromSessionHistory(sessionId, history) {
   if (!Array.isArray(history)) return [];
   const out = [];
@@ -3751,7 +3906,13 @@ function loadPersistedStack() {
     return parsed.filter((e) =>
       e && typeof e.id === 'string' && typeof e.prompt === 'string' &&
       e.response && TEMPLATE_DEFS[e.response.template]
-    ).map((e) => ({ id: e.id, prompt: e.prompt, imageCount: e.imageCount || 0, ...e.response }));
+    ).map((e) => ({
+      id: e.id,
+      prompt: e.prompt,
+      imageCount: e.imageCount || 0,
+      ...e.response,
+      artifact: e.response.artifact || e.response.artifactSlim || null,
+    }));
   } catch { return []; }
 }
 function savePersistedStack(responses) {
@@ -3771,6 +3932,21 @@ function savePersistedStack(responses) {
         budgetPct: r.budgetPct,
         turns: r.turns,
         warning: r.warning,
+        error: r.error || null,
+        autoRetryAllowed: r.autoRetryAllowed !== false,
+        artifactSlim: r.artifact ? {
+          projectId: r.artifact.projectId,
+          projectName: r.artifact.projectName,
+          projectRevision: r.artifact.projectRevision,
+          sessionId: r.artifact.sessionId,
+          sourceTurnId: r.artifact.sourceTurnId,
+          candidates: (r.artifact.candidates || []).map((candidate) => ({
+            path: candidate.path,
+            bytes: Number.isFinite(candidate.bytes) ? candidate.bytes : new TextEncoder().encode(candidate.content || '').length,
+          })),
+        } : null,
+        artifactReceipt: r.artifactReceipt || null,
+        toolActivity: Array.isArray(r.toolActivity) ? r.toolActivity : [],
       },
     }));
     localStorage.setItem(STACK_LS_KEY, JSON.stringify(slim));
@@ -4337,6 +4513,7 @@ function ConversationDrawer({
   onDeleteSession,
   onDeleteAllSessions,
   onExportSession,
+  onExportMarkdown,
   onClearCurrent,
 }) {
   const filtered = React.useMemo(() => {
@@ -4388,7 +4565,8 @@ function ConversationDrawer({
                   <button onClick={() => onTogglePin(s)}>{s.pinned ? 'unpin' : 'pin'}</button>
                   <button onClick={() => onRenameSession(s)}>rename</button>
                   <button onClick={() => onDuplicateSession(s)}>duplicate</button>
-                  <button onClick={() => onExportSession(s)}>export</button>
+                  <button onClick={() => onExportSession(s)}>json</button>
+                  <button onClick={() => onExportMarkdown(s)}>md</button>
                   <button className="danger" onClick={() => onDeleteSession(s)}>delete</button>
                 </div>
               </article>
@@ -4750,6 +4928,20 @@ function HeroMindmap() {
   const [currentPrompt, setCurrentPrompt] = React.useState('');
   const [responses, setResponses] = React.useState(initialStack);
   const [sessionId, setSessionId] = React.useState(() => loadSessionId());
+  React.useEffect(() => {
+    if (draft) return;
+    const saved = loadSessionDraft(sessionId);
+    if (saved) setDraft(saved);
+  }, [sessionId]);
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        if (draft && draft.length <= 8192) localStorage.setItem(DRAFT_LS_PREFIX + sessionId, draft);
+        else if (!draft) clearSessionDraft(sessionId);
+      } catch {}
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [draft, sessionId]);
   const stageRef = React.useRef(null);
   const [stageRect, setStageRect] = React.useState({ w: 0, h: 0 });
   // Live streaming state: while a turn is in flight, hold partial text +
@@ -4775,6 +4967,10 @@ function HeroMindmap() {
   const [fileDrawerPreload, setFileDrawerPreload] = React.useState(null);
   const [artifactReview, setArtifactReview] = React.useState(null);
   const [fileRefreshToken, setFileRefreshToken] = React.useState(0);
+  const openArtifactFiles = React.useCallback(() => {
+    setArtifactReview(null);
+    setFilesOpen(true);
+  }, []);
   const openFileForEdit = React.useCallback((path, content) => {
     setFileDrawerPreload({ path, content });
     setFilesOpen(true);
@@ -4938,10 +5134,12 @@ function HeroMindmap() {
   // partial text already arrived as a normal turn (so the user doesn't
   // lose work mid-thought) but suppress the error-string fallback —
   // an abort is intentional, not a failure.
-  const submit = async (imagesArg = []) => {
-    const q = draft.trim();
+  const submit = async (imagesArg = [], promptOverride = null, retryMeta = null) => {
+    const retrying = typeof promptOverride === 'string';
+    const q = (retrying ? promptOverride : draft).trim();
     const imgs = Array.isArray(imagesArg) ? imagesArg : [];
-    if (!q && (!attachments || attachments.length === 0) && imgs.length === 0) return;
+    const turnAttachments = retrying ? [] : attachments;
+    if (!q && (!turnAttachments || turnAttachments.length === 0) && imgs.length === 0) return;
 
     // /goal <description> — start an autonomous goal loop instead of a chat turn
     if (q.startsWith('/goal ') || q === '/goal') {
@@ -4968,15 +5166,18 @@ function HeroMindmap() {
     // includes the file contents prepended.
     const displayPrompt = q
       || (imgs.length ? `(${imgs.length} image${imgs.length > 1 ? 's' : ''})`
-        : `(reviewing ${attachments.length} attached file${attachments.length > 1 ? 's' : ''})`);
+        : `(reviewing ${turnAttachments.length} attached file${turnAttachments.length > 1 ? 's' : ''})`);
     const fallbackPrompt = imgs.length
       ? 'Please look at the image(s) and respond.'
       : 'Please review the attached file(s) and respond.';
-    const modelPrompt = composeMessageWithAttachments(q || fallbackPrompt, attachments);
+    const modelPrompt = composeMessageWithAttachments(q || fallbackPrompt, turnAttachments);
     const template = detectTemplate(displayPrompt);
     setCurrentPrompt(displayPrompt);
-    setDraft('');
-    setAttachments([]);
+    if (!retrying) {
+      setDraft('');
+      clearSessionDraft(sessionId);
+      setAttachments([]);
+    }
     // Keep an existing transcript visible while the server routes the turn.
     setPhase(responses.length > 0 ? 'response' : 'loading');
     setLiveTurn({ prompt: displayPrompt, partial: '', status: { phase: 'plan-start' }, images: imgs });
@@ -4989,6 +5190,7 @@ function HeroMindmap() {
     let toolActivity = [];
     let doneEvent = null;
     let errorMsg = null;
+    let errorName = null;
     let aborted = false;
     // Data-layer agent-status accumulator. Mutated once per SSE status
     // event below (immune to React's setLiveTurn batching); a fresh
@@ -5065,13 +5267,14 @@ function HeroMindmap() {
             const agentSnapshot = agentAcc;
             setLiveTurn((prev) => prev ? { ...prev, status: statusSnapshot, agentState: agentSnapshot } : prev);
           } else if (evt.kind === 'tool') {
-            toolActivity = [...toolActivity.slice(-7), { name: evt.name || 'tool', path: evt.path || '', ok: evt.ok !== false }];
+            toolActivity = [...toolActivity, { name: evt.name || 'tool', path: evt.path || '', ok: evt.ok !== false }];
             setBusyChrome('building');
             setLiveTurn((prev) => prev ? { ...prev, toolActivity } : prev);
           } else if (evt.kind === 'done') {
             doneEvent = evt;
           } else if (evt.kind === 'error') {
             errorMsg = evt.error || 'request failed';
+            errorName = evt.errorName || 'Error';
           }
         }
       }
@@ -5084,6 +5287,7 @@ function HeroMindmap() {
         aborted = true;
       } else {
         errorMsg = e.message || 'request failed';
+        errorName = e.name || 'Error';
       }
     } finally {
       streamAbortRef.current = null;
@@ -5102,7 +5306,11 @@ function HeroMindmap() {
 
     // Finalize the turn into the responses array. On abort with partial
     // text we keep what arrived (no error string).
-    const finalText = doneEvent?.reply || partial || (errorMsg ? `(error: ${errorMsg})` : '');
+    const finalText = doneEvent?.reply || partial || '';
+    const turnError = errorMsg ? {
+      kind: errorName === 'AllProvidersExhaustedError' || errorName === 'NoProvidersConfiguredError' ? 'quota' : 'provider',
+      message: errorMsg,
+    } : null;
     const entry = {
       id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
       prompt: displayPrompt,
@@ -5112,6 +5320,8 @@ function HeroMindmap() {
       imageCount: imgs.length,
       template,
       text: finalText.trim(),
+      error: turnError,
+      autoRetryAllowed: retryMeta?.automatic !== true,
       servedBy: doneEvent?.servedBy || [],
       plan: doneEvent?.plan || lastStatus?.plan?.kind || null,
       elapsedMs: Math.round(performance.now() - reqStartMs),
@@ -5132,6 +5342,9 @@ function HeroMindmap() {
     savePersistedStack(next);
     setLiveTurn(null);
     setPhase('response');
+    if (!turnError && doneEvent?.turns === 1) {
+      void generateSessionTitle(sessionId, displayPrompt, finalText);
+    }
 
     // Mindmap enrichment remains available on demand. Do not spend a second
     // model call after every answer: it competes with the next interactive turn.
@@ -5297,6 +5510,7 @@ function HeroMindmap() {
     setTimeout(() => setPhase('response'), IMPLODE_DURATION_MS);
   };
   const startEmptyThread = () => {
+    clearSessionDraft(sessionId);
     const nextSession = resetSessionId();
     setSessionId(nextSession);
     setLiveTurn(null);
@@ -5431,6 +5645,32 @@ function HeroMindmap() {
     window.location.href = `/api/sessions/${encodeURIComponent(session.id)}/export`;
   };
 
+  const exportSessionMarkdown = async (session) => {
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}`);
+      if (!response.ok) throw new Error('export failed');
+      const snapshot = await response.json();
+      const lines = [`# ${session.title || session.id}`, ''];
+      for (const part of snapshot.history || []) {
+        if (part?.kind === 'user_text') {
+          lines.push('## you', '', part.text || '');
+          if (Array.isArray(part.images) && part.images.length) lines.push('', `*[${part.images.length} image(s) attached]*`);
+          lines.push('');
+        } else if (part?.kind === 'model_text') {
+          lines.push('## orchestrator', '', part.text || '', '');
+        }
+      }
+      const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeTitle = String(session.title || session.id).replace(/[^a-z0-9 _-]+/gi, '').trim().replace(/\s+/g, '-') || 'conversation';
+      link.href = href; link.download = safeTitle + '.md'; document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch (error) {
+      window.alert('Could not export markdown: ' + (error?.message || 'unknown error'));
+    }
+  };
+
   const clearCurrentSession = () => {
     reset();
     setSessionsOpen(false);
@@ -5541,6 +5781,7 @@ function HeroMindmap() {
         onDeleteSession={deleteSessionUi}
         onDeleteAllSessions={deleteAllSessionsUi}
         onExportSession={exportSessionUi}
+        onExportMarkdown={exportSessionMarkdown}
         onClearCurrent={clearCurrentSession}
       />
       <FileDrawer
@@ -5557,6 +5798,7 @@ function HeroMindmap() {
           artifact={artifactReview.artifact}
           onClose={() => setArtifactReview(null)}
           onApplied={(receipt) => recordArtifactApply(artifactReview.id, receipt)}
+          onOpenFiles={openArtifactFiles}
           mutate={secureMutationFetch}
         />
       )}
@@ -5624,6 +5866,9 @@ function HeroMindmap() {
               onApplyEdit={openFileForEdit}
               onReviewArtifact={setArtifactReview}
               onUndoArtifact={undoArtifact}
+              onOpenArtifactFiles={openArtifactFiles}
+              onRetryTurn={(entry, automatic) => submit(entry.images || [], entry.prompt, { automatic })}
+              retryDisabled={streaming}
               settings={settings}
             />
           </PhaseErrorBoundary>

@@ -217,10 +217,26 @@ describe("web server", () => {
     expect(app).toContain("mm-code-wrap-toggle");
     expect(app).toContain("theme: 'clay'");
     expect(app).toContain("onReviewArtifact");
+    expect(app).toContain("drawerRef.current.inert = !open");
+    expect(app).toContain('role="status" aria-live="polite"');
+    expect(app).toContain("function ErrorTurnCard");
+    expect(app).not.toContain("(error: ${errorMsg})");
+    expect(app).toContain("function BuilderChecklist");
+    expect(app).toContain("artifactSlim:");
+    expect(app).toContain("DRAFT_LS_PREFIX");
+    expect(app).toContain("generateSessionTitle");
+    expect(app).toContain("exportSessionMarkdown");
+    expect(app).toContain("No providers configured");
     expect(index).toContain("/artifact-review.jsx");
     expect(index).toContain("/artifact-preview.js");
     expect(artifact).toContain("ArtifactReviewDialog");
     expect(artifact).toContain("aria-modal=\"true\"");
+    expect(artifact).toContain("onTabKeyDown");
+    expect(artifact).toContain("aria-controls=\"artifact-tab-panel\"");
+    expect(artifact).toContain("preparedOnce");
+    expect(artifact).toContain("mm-artifact-file-group");
+    expect(artifact).toContain("Open project files");
+    expect(artifact).toContain("undo available for");
     expect(artifact).toContain("Sandboxed source preview");
     expect(preview).toContain("connect-src 'none'");
     expect(style).toContain(".mm-root[data-theme=\"paper\"]");
@@ -229,6 +245,7 @@ describe("web server", () => {
     expect(style).toContain(".mm-code-header");
     expect(style).toContain(".hljs-keyword");
     expect(style).toContain(".mm-artifact-dialog");
+    expect(style).toContain(".mm-sr-only");
   });
 
   it("runs Builder mode through staging tools and returns a review artifact", async () => {
@@ -1625,6 +1642,32 @@ describe("web server", () => {
       expect(rollback.status).toBe(200);
       expect(existsSync(join(artifactRoot, "index.html"))).toBe(false);
     });
+  });
+
+  it("/api/chat-stream preserves the resolver error type", async () => {
+    const port = pickPort();
+    const router = makeRouter([]);
+    const resolver = {
+      runRoleChatStream: async () => {
+        const error = new Error("all candidates are cooling down");
+        error.name = "AllProvidersExhaustedError";
+        throw error;
+      },
+      listRoles: () => [],
+      rosterDescription: () => "",
+    } as unknown as import("../src/roles/resolver.js").RoleResolver;
+    const handle = startWebServer({ router, resolver, port, sessionStorageDir: sessionDir });
+    handles.push(handle);
+
+    const response = await fetch(`http://localhost:${port}/api/chat-stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "typed-error", message: "fail", forceRole: "orchestration" }),
+    });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(body).toContain('"kind":"error"');
+    expect(body).toContain('"errorName":"AllProvidersExhaustedError"');
   });
 
   describe("project endpoints", () => {
