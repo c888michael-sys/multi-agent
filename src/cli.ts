@@ -50,6 +50,7 @@ import {
   startWebServer,
   DEFAULT_ROLES,
   buildDefaultRoles,
+  buildWebRoles,
   loadOllamaProviders,
   getEnvLoadReport,
   type ControllerMode,
@@ -108,7 +109,7 @@ const VALID_ROLES: RoleName[] = [
 
 const VALID_THINKING: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
 
-function buildRouter(opts?: { local?: boolean; persistentState?: boolean }): Router {
+function buildRouter(opts?: { local?: boolean; persistentState?: boolean; maxRetryWaitMs?: number }): Router {
   const configs = loadAllProviderConfigsFromEnv();
   if (opts?.local) {
     for (const p of loadOllamaProviders()) {
@@ -124,7 +125,10 @@ function buildRouter(opts?: { local?: boolean; persistentState?: boolean }): Rou
   }
   const stateStore =
     opts?.persistentState === false ? new InMemoryStateStore() : new FileStateStore();
-  const router = new Router(configs, { stateStore });
+  const router = new Router(configs, {
+    stateStore,
+    ...(opts?.maxRetryWaitMs !== undefined && { maxRetryWaitMs: opts.maxRetryWaitMs }),
+  });
   // ConservationPolicy auto-ticks after every successful call. With
   // ProviderConfig budgets now wired, this drives the sidebar's quota
   // gauges and the round-robin → serial mode flip in real time.
@@ -713,17 +717,20 @@ async function cmdServe(port: number, local: boolean, projectRoot?: string): Pro
   // `useLocal` toggle has something to route to. If the local daemon
   // isn't running, calls just fail with a fetch error — same shape as
   // any cloud provider with a bad key.
-  const router = buildRouter({ local: true });
-  const resolver = new RoleResolver(router, rolesFor(local), { onEvent: printRoleEvent });
+  // Browser turns already expose an explicit retry/countdown UI. Do not hold
+  // an interactive request for up to 90 seconds retrying one isolated
+  // candidate before trying the next healthy provider.
+  const router = buildRouter({ local: true, maxRetryWaitMs: 0 });
+  const resolver = new RoleResolver(router, buildWebRoles(local), { onEvent: printRoleEvent });
   // Alternate-mode resolver: when CLI booted with --local, this is the
   // cloud-only resolver; without --local, this is the local-prepend
   // resolver. Either way, the web UI can ask for the other mode per
   // request via `useLocal` in the body.
   const localResolver = local
     ? resolver
-    : new RoleResolver(router, rolesFor(true), { onEvent: printRoleEvent });
+    : new RoleResolver(router, buildWebRoles(true), { onEvent: printRoleEvent });
   const cloudResolver = local
-    ? new RoleResolver(router, rolesFor(false), { onEvent: printRoleEvent })
+    ? new RoleResolver(router, buildWebRoles(false), { onEvent: printRoleEvent })
     : resolver;
   const { url } = startWebServer({
     router,

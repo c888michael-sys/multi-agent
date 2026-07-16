@@ -5,7 +5,7 @@ import {
   UnknownRoleError,
   NoCandidatesAvailableError,
 } from "../src/roles/resolver.js";
-import { buildDefaultRoles } from "../src/roles/default-registry.js";
+import { buildDefaultRoles, buildWebRoles } from "../src/roles/default-registry.js";
 import type { RoleConfig, RoleEvent } from "../src/roles/types.js";
 import type { Provider } from "../src/provider.js";
 import { FakeProvider, ToolFakeProvider } from "./fixtures.js";
@@ -290,6 +290,17 @@ describe("default role registry", () => {
 
   it("mindmap categorization uses the same cloud/reserved chain in both modes", () => {
     expect(candidateIds("mindmap-categorize", true)).toEqual(candidateIds("mindmap-categorize", false));
+  });
+
+  it("web sessions keep tool-capable Builder fallbacks ahead of Gemma", () => {
+    const ids = buildWebRoles(false)
+      .find((role) => role.name === "action-code")!
+      .candidates.map((candidate) => candidate.providerId);
+    const gemmaIndex = ids.indexOf("gemma:1");
+    expect(ids.indexOf("groq:llama-70b")).toBeGreaterThan(-1);
+    expect(ids.indexOf("cerebras:gpt-oss-120b")).toBeGreaterThan(-1);
+    expect(ids.indexOf("nvidia:llama-70b")).toBeGreaterThan(-1);
+    expect(ids.indexOf("nvidia:llama-70b")).toBeLessThan(gemmaIndex);
   });
 });
 

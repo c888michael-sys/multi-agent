@@ -62,7 +62,11 @@ export class GeminiProvider implements Provider {
 
   isRateLimitError(err: unknown): boolean {
     const status = extractStatus(err);
-    if (status === 429 || status === 503) return true;
+    // Google documents 5xx responses as transient backend failures and
+    // recommends retrying or temporarily switching models. Treat the whole
+    // family as failover-able so one unhealthy Gemma/Gemini endpoint cannot
+    // abort an otherwise healthy role chain.
+    if (status === 429 || (status !== null && status >= 500 && status <= 599)) return true;
     const msg = String((err as { message?: string })?.message ?? err ?? "").toLowerCase();
     // Defensive failover for retired/unsupported model slugs. When Google
     // retires a model (e.g. `gemma-3-27b-it` was pulled from AI Studio by
@@ -93,6 +97,12 @@ export class GeminiProvider implements Provider {
 
   retryAfterMs(err: unknown): number | null {
     const e = err as { headers?: Record<string, string>; retryAfter?: number; message?: string };
+    const status = extractStatus(err);
+    // The Google SDK has already performed its own exponential retries before
+    // surfacing a 5xx. Cool this candidate beyond the router's normal 90s wait
+    // ceiling so the resolver switches models immediately instead of starting
+    // another long SDK retry cycle.
+    if (status !== null && status >= 500 && status <= 599) return 120_000;
     // 1) Standard Retry-After header (rare with the SDK but free if it's there).
     const header = e?.headers?.["retry-after"] ?? e?.headers?.["Retry-After"];
     if (header) {

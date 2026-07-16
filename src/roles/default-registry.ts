@@ -123,6 +123,16 @@ export function buildDefaultRoles(opts?: { local?: boolean; toolCapable?: boolea
   return roles;
 }
 
+/**
+ * Web sessions can enter Builder mode on any turn, so their resolver must
+ * always include the function-calling action-code fallbacks. Normal chat still
+ * keeps its configured primary first; these candidates are only reached when
+ * that primary cannot serve the call.
+ */
+export function buildWebRoles(local = false): RoleConfig[] {
+  return buildDefaultRoles({ local, toolCapable: true });
+}
+
 export const DEFAULT_ROLES: RoleConfig[] = [
   {
     name: "perception",

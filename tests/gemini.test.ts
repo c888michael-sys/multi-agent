@@ -31,9 +31,15 @@ describe("GeminiProvider.isRateLimitError", () => {
     expect(p.isRateLimitError(new Error("RESOURCE_EXHAUSTED"))).toBe(true);
   });
 
+  it("treats Google 5xx responses as transient and switches models", () => {
+    expect(p.isRateLimitError({ status: 500 })).toBe(true);
+    expect(p.isRateLimitError({ response: { status: 502 } })).toBe(true);
+    expect(p.retryAfterMs({ status: 500 })).toBe(120_000);
+  });
+
   it("ignores non-rate-limit errors", () => {
     expect(p.isRateLimitError(new Error("invalid api key"))).toBe(false);
-    expect(p.isRateLimitError({ status: 500 })).toBe(false);
+    expect(p.isRateLimitError({ status: 400 })).toBe(false);
     expect(p.isRateLimitError(null)).toBe(false);
   });
 });
