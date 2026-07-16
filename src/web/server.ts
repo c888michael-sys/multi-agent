@@ -19,13 +19,14 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { WebFileService, FILE_MAX_BYTES } from "./file-service.js";
+import { BuilderStage } from "./builder-stage.js";
 import { ArtifactService } from "./artifact-service.js";
 import { parseArtifactCandidates, type ArtifactCandidate } from "./artifact-parser.js";
 import { fileURLToPath } from "node:url";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
 import type { RoleName } from "../roles/types.js";
-import type { ImagePart } from "../tools/types.js";
+import type { ImagePart, Tool } from "../tools/types.js";
 import {
   ChatSession,
   deleteAllSessions,
@@ -397,16 +398,16 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
     return artifactProjectContext(active.id).revision;
   }
 
-  function responseArtifact(reply: string, sessionId: string): {
+  function responseArtifact(reply: string, sessionId: string, stagedCandidates?: ArtifactCandidate[], capturedContext?: ReturnType<typeof artifactProjectContext>): {
     sourceTurnId: string;
     projectId: string;
     projectRevision: string;
     projectName: string;
     candidates: ArtifactCandidate[];
   } | null {
-    const candidates = parseArtifactCandidates(reply);
+    const candidates = stagedCandidates?.length ? stagedCandidates : parseArtifactCandidates(reply);
     if (candidates.length === 0) return null;
-    const context = artifactProjectContext(getActiveProject(projectsPath).id);
+    const context = capturedContext ?? artifactProjectContext(getActiveProject(projectsPath).id);
     return {
       sourceTurnId: `turn_${randomBytes(10).toString("hex")}`,
       projectId: context.project.id,
@@ -1207,6 +1208,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               useSearch?: boolean;
               forceRole?: string | null;
               useLocal?: boolean;
+              builder?: boolean;
               routingMode?: string | null;
               images?: unknown;
             }
@@ -1221,10 +1223,15 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         const chatOpts = buildChatOpts(parsed);
-        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
+        const builder = parsed.builder === true ? new BuilderStage(fileService) : null;
+        const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
+        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
-          const result = await session.send(parsed.message, chatOpts.opts, undefined, chatOpts.routing, imagesResult.images);
-          const artifact = responseArtifact(result.reply, parsed.sessionId);
+          const message = builder
+            ? `[BUILDER MODE: Build through the available project-read and stage_file tools. Stage every complete output file. Never claim to have written the project; the user will review and apply the staged files.]\n\n${parsed.message}`
+            : parsed.message;
+          const result = await session.send(message, chatOpts.opts, undefined, chatOpts.routing, imagesResult.images);
+          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
           sendJson(res, 200, {
             reply: result.reply,
             servedBy: result.servedBy,
@@ -1258,6 +1265,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               useSearch?: boolean;
               forceRole?: string | null;
               useLocal?: boolean;
+              builder?: boolean;
               routingMode?: string | null;
               images?: unknown;
             }
@@ -1293,16 +1301,21 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           if (clientClosed || res.destroyed) return;
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
         };
-        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
+        const builder = parsed.builder === true ? new BuilderStage(fileService) : null;
+        const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
+        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
+          const message = builder
+            ? `[BUILDER MODE: Build through the available project-read and stage_file tools. Stage every complete output file. Never claim to have written the project; the user will review and apply the staged files.]\n\n${parsed.message}`
+            : parsed.message;
           const result = await session.send(
-            parsed.message,
+            message,
             { ...chatOpts.opts, signal: streamAbort.signal },
             (evt) => { writeEvent(evt); },
             chatOpts.routing,
             imagesResult.images,
           );
-          const artifact = responseArtifact(result.reply, parsed.sessionId);
+          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
           writeEvent({
             kind: "done",
             reply: result.reply,
@@ -1699,12 +1712,13 @@ function roleUsageSnapshot(
   return roles;
 }
 
-function createChatSession(opts: ServerOptions, id: string, useLocal?: boolean): ChatSession {
+function createChatSession(opts: ServerOptions, id: string, useLocal?: boolean, tools?: Tool[]): ChatSession {
   const roleInstructionsPathValue = roleInstructionsPath(opts);
   return new ChatSession({
     resolver: resolverFor(opts, useLocal),
     id,
     roleInstructions: readRoleInstructions(roleInstructionsPathValue),
+    ...(tools?.length ? { tools } : {}),
     ...(opts.sessionStorageDir && { storagePath: join(opts.sessionStorageDir, `${id}.json`) }),
   });
 }

@@ -1069,6 +1069,19 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
             <label className="mm-settings-label">
               <input
                 type="checkbox"
+                checked={settings.builder}
+                onChange={(e) => onChange({ ...settings, builder: e.target.checked })}
+              />
+              <span className="mm-settings-text">
+                <span className="mm-settings-name">Builder mode</span>
+                <span className="mm-settings-hint">slower multi-file workflow: the model may inspect project files and stage files for review, but cannot write to the project.</span>
+              </span>
+            </label>
+          </div>
+          <div className="mm-settings-row">
+            <label className="mm-settings-label">
+              <input
+                type="checkbox"
                 checked={settings.serious}
                 onChange={(e) => onChange({ ...settings, serious: e.target.checked })}
               />
@@ -1183,6 +1196,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
 function settingsActiveCount(s) {
   let n = 0;
   if (s.serious) n++;
+  if (s.builder) n++;
   if (s.search) n++;
   if (s.useLocal) n++;
   if (s.theme && s.theme !== 'clay') n++;
@@ -1213,6 +1227,7 @@ function composerModeLabel(settings) {
   let label = opt ? opt.label.replace(/\s*\([^)]*\)/g, '') : rv;
   const tags = [];
   if (settings.serious) tags.push('serious');
+  if (settings.builder) tags.push('builder');
   if (settings.useLocal) tags.push('local');
   if (tags.length) label += ' · ' + tags.join(' · ');
   return label;
@@ -1850,6 +1865,13 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUn
             ? <MarkdownProse text={entry.text} />
             : <span className="mm-turn-empty">{streaming ? 'preparing reply…' : ''}</span>}
           {streaming && <span className="mm-turn-caret" aria-hidden="true" />}
+          {Array.isArray(entry.toolActivity) && entry.toolActivity.length > 0 && (
+            <div className="mm-builder-activity" aria-live="polite">
+              {entry.toolActivity.map((activity, index) => (
+                <span key={index} className={activity.ok === false ? 'failed' : ''}>{activity.name.replace(/_/g, ' ')}{activity.path ? ' · ' + activity.path : ''}</span>
+              ))}
+            </div>
+          )}
           <div className="mm-turn-foot">
             <CopyButton getText={() => entry.text || ''} />
             {!streaming && onApplyEdit && detectFileEdits(entry.text).map(edit => (
@@ -3262,8 +3284,9 @@ function ResponseStackView({
                 prompt: liveTurn.prompt,
                 template: 'plan',
                 text: liveTurn.partial || '',
-                streaming: true,
-                status: liveTurn.status,
+              streaming: true,
+              status: liveTurn.status,
+              toolActivity: liveTurn.toolActivity,
               }}
               accent={accent}
               isNewest={true}
@@ -3604,7 +3627,7 @@ const SETTINGS_LS_KEY = 'lattice.settings.v1';
 // chosen mode. The settings drawer surfaces routingMode and forceRole as
 // a single merged dropdown (see ROUTING_OPTIONS) — internally they remain
 // independent so the wire format with the server is unchanged.
-const DEFAULT_SETTINGS = { serious: false, search: false, forceRole: 'auto', useLocal: false, routingMode: 'fast', theme: 'clay' };
+const DEFAULT_SETTINGS = { serious: false, search: false, builder: false, forceRole: 'auto', useLocal: false, routingMode: 'fast', theme: 'clay' };
 
 // Merged dropdown that replaces the prior separate Force-role select + a
 // Smart-vs-RoundRobin radio group. Two "meta" entries on top combine the
@@ -3653,6 +3676,7 @@ function loadSettings() {
     return {
       serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
       search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
+      builder: typeof parsed.builder === 'boolean' ? parsed.builder : false,
       forceRole: VALID_FORCE_ROLES.has(parsed.forceRole) ? parsed.forceRole : 'auto',
       useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
       routingMode: VALID_ROUTING_MODES.has(parsed.routingMode) ? parsed.routingMode : DEFAULT_SETTINGS.routingMode,
@@ -4962,6 +4986,7 @@ function HeroMindmap() {
     let partial = '';
     let lastStatus = { phase: 'plan-start' };
     let summarizedTurns = 0;
+    let toolActivity = [];
     let doneEvent = null;
     let errorMsg = null;
     let aborted = false;
@@ -4982,6 +5007,7 @@ function HeroMindmap() {
       const body = { sessionId, message: modelPrompt };
       if (settings.serious) body.thinking = 'high';
       if (settings.search) body.useSearch = true;
+      if (settings.builder) body.builder = true;
       if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
       body.useLocal = settings.useLocal === true;
       if (settings.routingMode && settings.routingMode !== 'smart') body.routingMode = settings.routingMode;
@@ -5038,6 +5064,10 @@ function HeroMindmap() {
             const statusSnapshot = lastStatus;
             const agentSnapshot = agentAcc;
             setLiveTurn((prev) => prev ? { ...prev, status: statusSnapshot, agentState: agentSnapshot } : prev);
+          } else if (evt.kind === 'tool') {
+            toolActivity = [...toolActivity.slice(-7), { name: evt.name || 'tool', path: evt.path || '', ok: evt.ok !== false }];
+            setBusyChrome('building');
+            setLiveTurn((prev) => prev ? { ...prev, toolActivity } : prev);
           } else if (evt.kind === 'done') {
             doneEvent = evt;
           } else if (evt.kind === 'error') {
@@ -5091,6 +5121,7 @@ function HeroMindmap() {
       turns: doneEvent?.turns || 0,
       warning: doneEvent?.warning || null,
       artifact: doneEvent?.artifact || null,
+      toolActivity,
       summarizedTurns: summarizedTurns || doneEvent?.summarizedTurns || 0,
       data: null,            // lazy-loaded by prefetchMindmapData
       dataLoading: false,

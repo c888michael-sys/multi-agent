@@ -2813,6 +2813,9 @@
   letter-spacing: 0.12em; text-transform: uppercase;
 }
 .mm-turn-foot { flex-wrap: wrap; gap: 6px; }
+.mm-builder-activity { display:flex; flex-wrap:wrap; gap:5px; margin-top:9px; color:var(--mm-fg-dim); font:9.5px var(--mm-font-mono); }
+.mm-builder-activity span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:3px 6px; border:0.5px solid var(--mm-line); border-radius:999px; background:color-mix(in oklch,var(--accent) 7%,transparent); }
+.mm-builder-activity span.failed { color:oklch(.8 .14 28); border-color:oklch(.67 .12 28 / .55); }
 .mm-turn-apply-btn {
   padding: 3px 9px;
   border-radius: 999px;

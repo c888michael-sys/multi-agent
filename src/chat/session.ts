@@ -7,7 +7,7 @@ import {
   formatRoleInstructionsForRole,
 } from "../roles/instructions.js";
 import type { CompleteOptions } from "../provider.js";
-import type { ConversationPart, ImagePart, Tool, ToolDeclaration } from "../tools/types.js";
+import type { ConversationPart, ImagePart, Tool, ToolCallRequest, ToolDeclaration } from "../tools/types.js";
 import { WebSearchTool } from "../tools/web-search.js";
 import { parsePlan, type Plan } from "../agents/role-orchestrator.js";
 import { LATEX_DIRECTIVE } from "../agents/prompts.js";
@@ -63,6 +63,16 @@ export function looksLikeUnfinishedIntent(text: string): boolean {
   return /\b(I (will|'ll|am going to|can|should)|let'?s|let me|first,?|to (create|build|make|write|set up|do)\b|here'?s how|i'?m going to|next,? I|i'?ll start)\b/i.test(
     t,
   );
+}
+
+function redactedToolActivity(call: ToolCallRequest): { name: string; path?: string } {
+  const path = typeof call.args.path === "string" ? call.args.path.replace(/\\/g, "/").slice(0, 200) : undefined;
+  return { name: call.name, ...(path ? { path } : {}) };
+}
+
+function redactedToolLabel(call: ToolCallRequest): string {
+  const activity = redactedToolActivity(call);
+  return activity.path ? `${activity.name}(${activity.path})` : `${activity.name}(redacted)`;
 }
 
 export interface ChatSessionOptions {
@@ -149,6 +159,7 @@ export type ChatProgressEvent =
   | { kind: "role-start"; role: RoleName; phase: "direct" | "single" | "parallel" | "synthesis" | WorkflowPhase; framing?: string }
   | { kind: "role-end"; role: RoleName; ok: boolean; error?: string }
   | { kind: "token"; text: string }
+  | { kind: "tool"; name: string; path?: string; ok: boolean }
   | { kind: "summarize-start" }
   | { kind: "summarize-end"; folded: number };
 
@@ -361,6 +372,7 @@ export class ChatSession {
           this.historyForRole(directRole),
           effectiveOpts,
           onProgress ? (text) => emit({ kind: "token", text }) : undefined,
+          onProgress ? (activity) => emit({ kind: "tool", ...activity }) : undefined,
         );
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
@@ -376,6 +388,7 @@ export class ChatSession {
           this.historyForRole(fastRole),
           { ...effectiveOpts, maxTokens: effectiveOpts.maxTokens ?? 1024, temperature: effectiveOpts.temperature ?? 0.3 },
           onProgress ? (text) => emit({ kind: "token", text }) : undefined,
+          onProgress ? (activity) => emit({ kind: "tool", ...activity }) : undefined,
         );
         emit({ kind: "role-end", role: fastRole, ok: true });
         servedBy = [fastRole];
@@ -574,6 +587,7 @@ Output ONLY the summary, no preamble.`;
     history: ConversationPart[],
     opts: CompleteOptions,
     onToken?: (text: string) => void,
+    onToolActivity?: (activity: { name: string; path?: string; ok: boolean }) => void,
   ): Promise<string> {
     if (this.toolDecls.length === 0 || !ChatSession.TOOL_ELIGIBLE_ROLES.has(role)) {
       // No tools registered, or this role shouldn't call tools — use existing
@@ -670,17 +684,19 @@ Output ONLY the summary, no preamble.`;
         let resultText: string;
         if (!tool) {
           resultText = `ERROR: unknown tool '${call.name}'. Available: ${[...this.toolsByName.keys()].join(", ")}`;
-          console.error(`\n[tool] ${call.name}(${JSON.stringify(call.args)}) → ERROR: unknown tool`);
+          console.error(`\n[tool] ${redactedToolLabel(call)} → ERROR: unknown tool`);
+          onToolActivity?.({ ...redactedToolActivity(call), ok: false });
         } else {
           try {
             resultText = await tool.execute(call.args);
             toolsExecuted++;
-            toolLog.push(`${call.name}(${JSON.stringify(call.args)})`);
-            const preview = resultText.length > 120 ? resultText.slice(0, 120) + "…" : resultText;
-            console.error(`\n[tool] ${call.name}(${JSON.stringify(call.args)}) → ${preview}`);
+            toolLog.push(redactedToolLabel(call));
+            console.error(`\n[tool] ${redactedToolLabel(call)} → completed`);
+            onToolActivity?.({ ...redactedToolActivity(call), ok: !resultText.startsWith("ERROR:") });
           } catch (err) {
             resultText = `ERROR: ${(err as Error).message}`;
-            console.error(`\n[tool] ${call.name} threw: ${(err as Error).message}`);
+            console.error(`\n[tool] ${redactedToolLabel(call)} threw: ${(err as Error).message}`);
+            onToolActivity?.({ ...redactedToolActivity(call), ok: false });
           }
         }
         workingHistory.push({
