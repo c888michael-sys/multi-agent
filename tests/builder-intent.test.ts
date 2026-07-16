@@ -8,7 +8,13 @@ describe("Builder intent routing", () => {
       source: "auto",
       requiresStagedFile: true,
       historyScope: "turn",
+      qualityProfile: "creative-web",
     });
+  });
+
+  it("keeps a deliberately simple or specifically directed build on the normal completion contract", () => {
+    expect(resolveBuilderIntent({ mode: "auto", intentText: "Build a simple single-file website" }).qualityProfile).toBeUndefined();
+    expect(resolveBuilderIntent({ mode: "auto", intentText: "Build a website for my cafe with a menu and booking form" }).qualityProfile).toBeUndefined();
   });
 
   it("does not mistake a request for an explanation or plan for a build", () => {

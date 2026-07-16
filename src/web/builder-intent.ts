@@ -1,3 +1,5 @@
+import { detectBuilderQualityProfile, type BuilderQualityProfile } from "./builder-quality.js";
+
 /**
  * Conservative, deterministic routing for requests that should create
  * reviewable project files. This is deliberately independent of model output:
@@ -15,6 +17,8 @@ export interface BuilderDecision {
   /** Standalone build requests should not inherit unrelated chat topics. */
   historyScope: "session" | "turn";
   reason?: string;
+  /** Stricter completion contract for genuinely open-ended creative work. */
+  qualityProfile?: BuilderQualityProfile;
 }
 
 export interface BuilderIntentInput {
@@ -50,6 +54,7 @@ export function resolveBuilderIntent(input: BuilderIntentInput): BuilderDecision
     !EXPLANATORY.test(text) &&
     !NEGATED.test(text);
   const historyScope: BuilderDecision["historyScope"] = CONTINUATION.test(text) ? "session" : "turn";
+  const qualityProfile = detectBuilderQualityProfile(text, hasCreationIntent);
 
   if (mode === "off") {
     return { active: false, requiresStagedFile: false, historyScope, reason: "disabled" };
@@ -61,6 +66,7 @@ export function resolveBuilderIntent(input: BuilderIntentInput): BuilderDecision
       requiresStagedFile: hasCreationIntent,
       historyScope,
       reason: hasCreationIntent ? "explicit creation request" : "always enabled",
+      ...(qualityProfile ? { qualityProfile } : {}),
     };
   }
   // A deliberately pinned non-code role is an explicit request for prose or
@@ -77,5 +83,6 @@ export function resolveBuilderIntent(input: BuilderIntentInput): BuilderDecision
     requiresStagedFile: true,
     historyScope,
     reason: "file-producing build request",
+    ...(qualityProfile ? { qualityProfile } : {}),
   };
 }

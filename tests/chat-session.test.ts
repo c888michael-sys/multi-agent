@@ -561,6 +561,48 @@ describe("ChatSession smart routing (plan-based)", () => {
     expect(code.toolCalls).toHaveLength(3);
   });
 
+  it("re-evaluates a live completion gate after files change and never streams premature success", async () => {
+    const code = new ToolFakeProvider("code", [
+      { kind: "calls", calls: [{ name: "stage", args: {} }] },
+      { kind: "calls", calls: [{ name: "review", args: {} }] },
+      { kind: "calls", calls: [{ name: "stage", args: {} }] },
+      { kind: "text", text: "Done too early." },
+      { kind: "calls", calls: [{ name: "review", args: {} }] },
+      { kind: "text", text: "Reviewed and ready." },
+    ]);
+    const router = new Router([code], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "action-code", description: "x", candidates: [{ providerId: "code" }] },
+    ]);
+    let reviewed = false;
+    const stage = {
+      name: "stage", description: "stage", parameters: { type: "object" as const, properties: {} },
+      async execute() { reviewed = false; return "staged"; },
+    };
+    const review = {
+      name: "review", description: "review", parameters: { type: "object" as const, properties: {} },
+      async execute() { reviewed = true; return "reviewed"; },
+    };
+    const streamed: string[] = [];
+    const s = new ChatSession({ resolver, id: "quality-gate", storagePath: storage, tools: [stage, review] });
+    const result = await s.send(
+      "build it",
+      undefined,
+      (event) => { if (event.kind === "token") streamed.push(event.text); },
+      undefined,
+      undefined,
+      {
+        completionGate: {
+          description: "stage and review the current revision",
+          evaluate: () => reviewed ? { ok: true, feedback: "reviewed" } : { ok: false, feedback: "review the current revision" },
+        },
+      },
+    );
+    expect(result.reply).toBe("Reviewed and ready.");
+    expect(streamed).toEqual(["Reviewed and ready."]);
+    expect(code.toolCalls).toHaveLength(6);
+  });
+
   it("uses Brave/DuckDuckGo search context when perception falls back from Gemini", async () => {
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {

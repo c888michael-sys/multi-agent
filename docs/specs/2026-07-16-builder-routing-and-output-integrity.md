@@ -28,3 +28,19 @@ People see only a finished response, never formatter/orchestration prose.
 - Unit tests cover intent classification and output-leak detection.
 - Typecheck and the full test suite must pass before transfer to the Desktop
   repository.
+
+## Ambiguous creative requests
+
+Open-ended website prompts such as “of your choice” or “showcase your skill”
+activate the `creative-web` quality contract unless the user explicitly asks
+for a simple/minimal result or supplies a concrete brief. The Builder must:
+
+- define an inferred concept, audience, visual direction, content structure,
+  interaction, and review criteria;
+- stage a substantive, responsive, accessible and non-placeholder result;
+- call the deterministic quality-review tool after the final file change;
+- revise and re-review when the gate reports missing evidence.
+
+The gate measures completion evidence rather than file count or subjective
+beauty. The inferred brief and passing review receipt are returned with the
+artifact so the user can inspect the decisions before saving files.

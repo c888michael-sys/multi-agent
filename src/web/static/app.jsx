@@ -1923,7 +1923,7 @@ function ErrorTurnCard({ entry, isNewest, onRetry, retryDisabled }) {
   );
 }
 
-function BuilderChecklist({ activities, streaming }) {
+function BuilderChecklist({ activities, streaming, execution }) {
   const [showAll, setShowAll] = React.useState(false);
   const inspected = activities.filter((item) => item.name === 'list_project' || item.name === 'read_project_file');
   const staged = activities.filter((item) => item.name === 'stage_file');
@@ -1932,11 +1932,14 @@ function BuilderChecklist({ activities, streaming }) {
     ...staged.map((item) => ({ name: item.path || 'staged file', ok: item.ok !== false })),
   ];
   const visible = showAll ? rows : rows.slice(-12);
+  const quality = execution?.quality;
   return (
     <section className="mm-builder-activity" aria-live="polite">
       <strong>builder · {staged.filter((item) => item.ok !== false).length} file(s) staged</strong>
       {visible.map((row, index) => <span key={index} className={row.ok ? '' : 'failed'}><b aria-hidden="true">{row.ok ? '✓' : '✕'}</b> {row.name}</span>)}
       {streaming && <span className="in-flight"><i aria-hidden="true" /> working…</span>}
+      {execution?.qualityProfile && <span>{quality?.passed ? 'quality review passed' : 'quality review required'}</span>}
+      {quality?.brief?.concept && <span title={quality.brief.visualDirection}>inferred brief: {quality.brief.concept}</span>}
       {!showAll && rows.length > 12 && <button type="button" onClick={() => setShowAll(true)}>show all ({rows.length})</button>}
     </section>
   );
@@ -1986,7 +1989,7 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUn
           ) : !entry.error ? <span className="mm-turn-empty">{streaming ? 'preparing reply…' : ''}</span> : null}
           {streaming && <span className="mm-turn-caret" aria-hidden="true" />}
           {entry.execution?.mode === 'builder' && (
-            <BuilderChecklist activities={entry.toolActivity || []} streaming={streaming} />
+            <BuilderChecklist activities={entry.toolActivity || []} streaming={streaming} execution={entry.execution} />
           )}
           {entry.error && !streaming && <ErrorTurnCard entry={entry} isNewest={isNewest} onRetry={onRetry} retryDisabled={retryDisabled} />}
           <div className="mm-turn-foot">
@@ -3943,6 +3946,7 @@ function savePersistedStack(responses) {
         turns: r.turns,
         warning: r.warning,
         error: r.error || null,
+        execution: r.execution || null,
         autoRetryAllowed: r.autoRetryAllowed !== false,
         artifactSlim: r.artifact ? {
           projectId: r.artifact.projectId,
@@ -3950,6 +3954,7 @@ function savePersistedStack(responses) {
           projectRevision: r.artifact.projectRevision,
           sessionId: r.artifact.sessionId,
           sourceTurnId: r.artifact.sourceTurnId,
+          quality: r.artifact.quality || null,
           candidates: (r.artifact.candidates || []).map((candidate) => ({
             path: candidate.path,
             bytes: Number.isFinite(candidate.bytes) ? candidate.bytes : new TextEncoder().encode(candidate.content || '').length,

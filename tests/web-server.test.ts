@@ -230,6 +230,7 @@ describe("web server", () => {
     expect(index).toContain("/artifact-review.jsx");
     expect(index).toContain("/artifact-preview.js");
     expect(artifact).toContain("ArtifactReviewDialog");
+    expect(artifact).toContain("Inferred brief");
     expect(artifact).toContain("aria-modal=\"true\"");
     expect(artifact).toContain("onTabKeyDown");
     expect(artifact).toContain("aria-controls=\"artifact-tab-panel\"");
@@ -268,7 +269,7 @@ describe("web server", () => {
     const response = await fetch(`${url}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: "builder-test", message: "make a landing page" }),
+      body: JSON.stringify({ sessionId: "builder-test", message: "make a simple single-file landing page" }),
     });
     expect(response.status).toBe(200);
     const body: any = await response.json();
@@ -276,6 +277,47 @@ describe("web server", () => {
     expect(body.artifact.candidates).toEqual([{ path: "landing/index.html", content: "<h1>Staged</h1>", language: "html" }]);
     expect(body.servedBy).toEqual(["action-code"]);
     expect(body.execution).toMatchObject({ mode: "builder", source: "auto", requiresStagedFile: true });
+  });
+
+  it("enforces an inferred brief and quality review for an ambiguous creative website", async () => {
+    let iteration = 0;
+    const html = `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Studio</title></head><body><header><nav aria-label="Primary">Work Process Contact</nav></header><main>${Array.from({ length: 6 }, (_, i) => `<section><h2>Project ${i + 1}</h2><img alt="Project ${i + 1}"><p>${"A complete case study with decisions, process, craft, and measurable outcomes. ".repeat(9)}</p></section>`).join("")}</main><footer>Start a project</footer></body></html>`;
+    const css = `:root{font-family:system-ui;color:#eee;background:#111}body{margin:0}section{display:grid;grid-template-columns:1fr 1fr;gap:clamp(1rem,4vw,4rem);padding:4rem;border-bottom:1px solid #555}:focus-visible{outline:3px solid orange}@media(max-width:700px){section{grid-template-columns:1fr}}${".card{display:flex;padding:1rem;margin:1rem;color:#eee;background:#222;transition:transform .2s}".repeat(18)}`;
+    const js = `document.querySelector('nav').addEventListener('click',()=>document.body.classList.toggle('open'));${"document.querySelectorAll('section').forEach(node=>node.dataset.ready='true');".repeat(6)}`;
+    const { url } = spawn({
+      toolHandler: async (role, _history, tools) => {
+        expect(role).toBe("action-code");
+        expect((tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+          "list_project", "read_project_file", "define_build_brief", "stage_file", "review_build_quality",
+        ]);
+        const responses = [
+          { kind: "calls", calls: [{ name: "define_build_brief", args: {
+            concept: "An interactive editorial studio portfolio for ambitious digital work.",
+            audience: "Prospective product and design clients",
+            visualDirection: "Warm dark editorial typography, precise grids, and restrained motion.",
+            sections: "Navigation; Hero; Selected work; Capabilities; Process; Contact",
+            interactions: "Interactive project cards and navigation state",
+            successCriteria: "Distinctive presentation; Responsive layout; Accessible controls; Finished content",
+          } }] },
+          { kind: "calls", calls: [{ name: "stage_file", args: { path: "index.html", content: html, language: "html" } }] },
+          { kind: "calls", calls: [{ name: "stage_file", args: { path: "style.css", content: css, language: "css" } }] },
+          { kind: "calls", calls: [{ name: "stage_file", args: { path: "script.js", content: js, language: "javascript" } }] },
+          { kind: "calls", calls: [{ name: "review_build_quality", args: {} }] },
+          { kind: "text", text: "The reviewed studio site is ready." },
+        ];
+        return responses[iteration++] as any;
+      },
+    });
+    const response = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "ambiguous-quality", message: "build a website of your choice to showcase your skill" }),
+    });
+    expect(response.status).toBe(200);
+    const body: any = await response.json();
+    expect(body.execution).toMatchObject({ mode: "builder", qualityProfile: "creative-web", quality: { passed: true } });
+    expect(body.artifact.quality.brief.concept).toContain("studio portfolio");
+    expect(body.artifact.candidates).toHaveLength(3);
   });
 
   it("keeps project-file attachments compatible with the composer attachment shape", () => {

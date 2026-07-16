@@ -212,6 +212,13 @@ export interface TurnExecutionOptions {
   historyScope?: "session" | "turn";
   /** A successful invocation of this tool is required before the turn can finish. */
   requiredToolName?: string;
+  /** Live completion condition, re-evaluated whenever the model tries to finish. */
+  completionGate?: TurnCompletionGate;
+}
+
+export interface TurnCompletionGate {
+  description: string;
+  evaluate(): { ok: boolean; feedback: string };
 }
 
 /** A Builder turn cannot claim success until it has staged a reviewable file. */
@@ -219,6 +226,13 @@ export class RequiredToolNotExecutedError extends Error {
   constructor(toolName: string) {
     super(`This Builder turn did not complete the required ${toolName} step. No files were staged.`);
     this.name = "RequiredToolNotExecutedError";
+  }
+}
+
+export class CompletionGateError extends Error {
+  constructor(feedback: string) {
+    super(`The Builder quality review did not pass. ${feedback}`);
+    this.name = "CompletionGateError";
   }
 }
 
@@ -394,6 +408,7 @@ export class ChatSession {
           onProgress ? (text) => emit({ kind: "token", text }) : undefined,
           onProgress ? (activity) => emit({ kind: "tool", ...activity }) : undefined,
           execution?.requiredToolName,
+          execution?.completionGate,
         );
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
@@ -411,6 +426,7 @@ export class ChatSession {
           onProgress ? (text) => emit({ kind: "token", text }) : undefined,
           onProgress ? (activity) => emit({ kind: "tool", ...activity }) : undefined,
           execution?.requiredToolName,
+          execution?.completionGate,
         );
         emit({ kind: "role-end", role: fastRole, ok: true });
         servedBy = [fastRole];
@@ -428,7 +444,7 @@ export class ChatSession {
         servedBy = planned.servedBy;
         plan = planned.plan;
       } else if (mode === "multi-agent") {
-        const workflow = await this.runMultiAgentTurn(userInput, effectiveOpts, emit, turnHistory, execution?.requiredToolName);
+        const workflow = await this.runMultiAgentTurn(userInput, effectiveOpts, emit, turnHistory, execution?.requiredToolName, execution?.completionGate);
         reply = workflow.reply;
         servedBy = workflow.servedBy;
         plan = workflow.plan;
@@ -611,6 +627,7 @@ Output ONLY the summary, no preamble.`;
     onToken?: (text: string) => void,
     onToolActivity?: (activity: { name: string; path?: string; ok: boolean }) => void,
     requiredToolName?: string,
+    completionGate?: TurnCompletionGate,
   ): Promise<string> {
     if (this.toolDecls.length === 0 || !ChatSession.TOOL_ELIGIBLE_ROLES.has(role)) {
       // No tools registered, or this role shouldn't call tools — use existing
@@ -632,9 +649,11 @@ Output ONLY the summary, no preamble.`;
     const requiredToolDirective = requiredToolName
       ? ` A successful ${requiredToolName} call is mandatory before you may finish.`
       : "";
+    const completionDirective = completionGate ? ` Completion gate: ${completionGate.description}` : "";
     const workingHistory: ConversationPart[] = [
       ...history,
       ...(requiredToolDirective ? [{ kind: "user_text" as const, text: `[BUILDER REQUIREMENT:${requiredToolDirective}]` }] : []),
+      ...(completionDirective ? [{ kind: "user_text" as const, text: `[BUILDER QUALITY CONTRACT:${completionDirective}]` }] : []),
       {
         kind: "user_text",
         text:
@@ -648,13 +667,25 @@ Output ONLY the summary, no preamble.`;
 
     // Some models (Codestral especially) narrate intent — "I will create the
     // HTML file..." — as a text reply instead of actually calling a tool. When
-    // that happens before any tool has run, nudge once or twice to force the
-    // call rather than accepting the narration as the final answer.
-    const MAX_NUDGES = 2;
+    // that happens before completion, nudge it to force the call rather than
+    // accepting narration as the final answer. Quality-gated builds receive a
+    // couple of extra repair opportunities because the review can be iterative.
+    const MAX_NUDGES = completionGate ? 4 : 2;
     let toolsExecuted = 0;
     let nudges = 0;
     const toolLog: string[] = [];
     let requiredToolSucceeded = false;
+    const completionState = () => {
+      const gate = completionGate?.evaluate();
+      const requiredOk = !requiredToolName || requiredToolSucceeded;
+      return {
+        ok: requiredOk && (!gate || gate.ok),
+        feedback: [
+          ...(!requiredOk ? [`A successful ${requiredToolName} call is still required.`] : []),
+          ...(!gate?.ok ? [gate?.feedback ?? "The completion gate has not passed."] : []),
+        ].join("\n"),
+      };
+    };
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       // Until a tool has actually run, force a tool call (tool_choice required /
@@ -664,7 +695,7 @@ Output ONLY the summary, no preamble.`;
       // Providers that don't honor tool_choice (Gemini/Gemma, Ollama) ignore it
       // and rely on the narration nudge below.
       const iterOpts: CompleteOptions =
-        (requiredToolName ? !requiredToolSucceeded : toolsExecuted === 0) ? { ...opts, toolChoice: "required" } : opts;
+        (!completionState().ok || (!requiredToolName && !completionGate && toolsExecuted === 0)) ? { ...opts, toolChoice: "required" } : opts;
 
       let result;
       try {
@@ -676,7 +707,7 @@ Output ONLY the summary, no preamble.`;
         // tool call that the provider rejects with a 400. If we've already
         // done useful work this turn, don't crash — summarize what happened.
         // If nothing has run yet, it's a genuine failure: rethrow.
-        if (toolsExecuted === 0 || (requiredToolName && !requiredToolSucceeded)) throw err;
+        if (toolsExecuted === 0 || !completionState().ok) throw err;
         console.error(`\n[tool] provider error after ${toolsExecuted} call(s): ${(err as Error).message.slice(0, 140)}`);
         const summary =
           `Done — completed ${toolsExecuted} tool action(s):\n` +
@@ -686,8 +717,12 @@ Output ONLY the summary, no preamble.`;
       }
 
       if (result.kind === "text") {
-        if ((requiredToolName && !requiredToolSucceeded) || (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text))) {
-          if (nudges >= MAX_NUDGES) throw new RequiredToolNotExecutedError(requiredToolName ?? "a tool");
+        const completion = completionState();
+        if (!completion.ok || (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text))) {
+          if (nudges >= MAX_NUDGES) {
+            if (completionGate) throw new CompletionGateError(completion.feedback);
+            throw new RequiredToolNotExecutedError(requiredToolName ?? "a tool");
+          }
           nudges++;
           // Leading \n so the note isn't clobbered by the REPL spinner's \r.
           console.error(`\n[tool] model described instead of acting — nudging it to call a tool`);
@@ -696,7 +731,8 @@ Output ONLY the summary, no preamble.`;
             kind: "user_text",
             text:
               `[You cannot finish yet. Stop describing and call the tool(s) NOW to actually perform the work. ` +
-              `Use ${toolNames}.${requiredToolName ? ` A successful ${requiredToolName} call is mandatory.` : ""}]`,
+              `Use ${toolNames}.${requiredToolName ? ` A successful ${requiredToolName} call is mandatory.` : ""}` +
+              `${completion.feedback ? `\nOutstanding completion requirements:\n${completion.feedback}` : ""}]`,
           });
           continue;
         }
@@ -738,7 +774,16 @@ Output ONLY the summary, no preamble.`;
       }
     }
 
-    if (requiredToolName && !requiredToolSucceeded) throw new RequiredToolNotExecutedError(requiredToolName);
+    const finalCompletion = completionState();
+    if (!finalCompletion.ok) {
+      if (completionGate) throw new CompletionGateError(finalCompletion.feedback);
+      throw new RequiredToolNotExecutedError(requiredToolName ?? "a tool");
+    }
+    if (completionGate) {
+      const summary = "Build completed and passed its quality review. The staged files are ready for your review.";
+      if (onToken) onToken(summary);
+      return summary;
+    }
     const truncMsg = `[truncated after ${MAX_ITERATIONS} tool iterations without a final text reply]`;
     if (onToken) onToken(truncMsg);
     return truncMsg;
@@ -884,15 +929,16 @@ Output ONLY the summary, no preamble.`;
     emit: (evt: ChatProgressEvent) => void,
     baseHistory: ConversationPart[] = this.history,
     requiredToolName?: string,
+    completionGate?: TurnCompletionGate,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: ChatPlan }> {
     const workflow = await runMultiAgentWorkflow(userInput, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
-        this.runWithToolLoop(role, this.historyWithFraming(role, prompt, baseHistory), opts, undefined, undefined, requiredToolName),
+        this.runWithToolLoop(role, this.historyWithFraming(role, prompt, baseHistory), opts, undefined, undefined, requiredToolName, completionGate),
       runRoleValidated: (role, prompt, validate) =>
         this.resolver.runRoleChatValidated(role, this.historyWithFraming(role, prompt, baseHistory), validate, opts),
       streamRole: (role, prompt, onToken) =>
-        this.runWithToolLoop(role, this.historyWithFraming(role, prompt, baseHistory), opts, onToken, undefined, requiredToolName),
+        this.runWithToolLoop(role, this.historyWithFraming(role, prompt, baseHistory), opts, onToken, undefined, requiredToolName, completionGate),
     });
     return {
       reply: workflow.finalOutput,

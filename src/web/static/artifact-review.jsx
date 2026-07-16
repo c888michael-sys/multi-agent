@@ -54,6 +54,11 @@
             {artifact.candidates.slice(0, 4).map((candidate) => <code key={candidate.path}>{candidate.path}</code>)}
             {count > 4 && <code>+{count - 4} more</code>}
           </div>
+          {artifact.quality?.brief && <div className="mm-artifact-quality-brief">
+            <b>Inferred brief</b>
+            <span>{artifact.quality.brief.concept}</span>
+            <small>{artifact.quality.brief.audience} · {artifact.quality.brief.visualDirection}</small>
+          </div>}
           {saved && undoMs > 0 && <span className="mm-artifact-undo-time">undo available for {countdownLabel(undoMs)}</span>}
           {undoError && <span className="mm-artifact-card-error" role="alert">{undoError}</span>}
         </div>

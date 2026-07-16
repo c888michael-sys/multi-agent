@@ -21,6 +21,7 @@ import { extname, join, dirname, resolve } from "node:path";
 import { WebFileService, FILE_MAX_BYTES } from "./file-service.js";
 import { BuilderStage } from "./builder-stage.js";
 import { resolveBuilderIntent, type BuilderMode } from "./builder-intent.js";
+import type { BuilderQualitySnapshot } from "./builder-quality.js";
 import { ArtifactService } from "./artifact-service.js";
 import { parseArtifactCandidates, type ArtifactCandidate } from "./artifact-parser.js";
 import { fileURLToPath } from "node:url";
@@ -399,12 +400,13 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
     return artifactProjectContext(active.id).revision;
   }
 
-  function responseArtifact(reply: string, sessionId: string, stagedCandidates?: ArtifactCandidate[], capturedContext?: ReturnType<typeof artifactProjectContext>): {
+  function responseArtifact(reply: string, sessionId: string, stagedCandidates?: ArtifactCandidate[], capturedContext?: ReturnType<typeof artifactProjectContext>, quality?: BuilderQualitySnapshot | null): {
     sourceTurnId: string;
     projectId: string;
     projectRevision: string;
     projectName: string;
     candidates: ArtifactCandidate[];
+    quality?: BuilderQualitySnapshot;
   } | null {
     const candidates = stagedCandidates?.length ? stagedCandidates : parseArtifactCandidates(reply);
     if (candidates.length === 0) return null;
@@ -415,6 +417,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       projectRevision: context.revision,
       projectName: context.project.name,
       candidates,
+      ...(quality ? { quality } : {}),
     };
   }
 
@@ -1232,15 +1235,22 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           intentText: typeof parsed.intentText === "string" ? parsed.intentText : parsed.message,
           forceRole: chatOpts.routing.forceRole,
         });
-        const builder = builderDecision.active ? new BuilderStage(fileService) : null;
+        const builder = builderDecision.active ? new BuilderStage(fileService, { qualityProfile: builderDecision.qualityProfile }) : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
           const routing = builder ? { ...chatOpts.routing, forceRole: "action-code" as RoleName } : chatOpts.routing;
           const result = await session.send(parsed.message, chatOpts.opts, undefined, routing, imagesResult.images, builder
-            ? { historyScope: builderDecision.historyScope, requiredToolName: builderDecision.requiresStagedFile ? "stage_file" : undefined }
+            ? {
+                historyScope: builderDecision.historyScope,
+                requiredToolName: builderDecision.requiresStagedFile && !builderDecision.qualityProfile ? "stage_file" : undefined,
+                completionGate: builderDecision.qualityProfile ? {
+                  description: "Infer a concrete creative brief, stage a substantial finished website, and pass review_build_quality. Ambiguity is creative freedom, not permission to return a generic or skeletal template.",
+                  evaluate: () => builder.completionStatus(),
+                } : undefined,
+              }
             : undefined);
-          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
+          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext, builder?.qualitySnapshot());
           sendJson(res, 200, {
             reply: result.reply,
             servedBy: result.servedBy,
@@ -1251,7 +1261,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             warning: result.warning ?? null,
             turns: session.turnCount(),
             artifact,
-            execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile } : undefined,
+            execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile, qualityProfile: builderDecision.qualityProfile, quality: builder.qualitySnapshot() } : undefined,
           });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
@@ -1319,13 +1329,13 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           intentText: typeof parsed.intentText === "string" ? parsed.intentText : parsed.message,
           forceRole: chatOpts.routing.forceRole,
         });
-        const builder = builderDecision.active ? new BuilderStage(fileService) : null;
+        const builder = builderDecision.active ? new BuilderStage(fileService, { qualityProfile: builderDecision.qualityProfile }) : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
           const routing = builder ? { ...chatOpts.routing, forceRole: "action-code" as RoleName } : chatOpts.routing;
           if (builder) {
-            writeEvent({ kind: "route", execution: { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile } });
+            writeEvent({ kind: "route", execution: { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile, qualityProfile: builderDecision.qualityProfile } });
           }
           const result = await session.send(
             parsed.message,
@@ -1333,9 +1343,16 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             (evt) => { writeEvent(evt); },
             routing,
             imagesResult.images,
-            builder ? { historyScope: builderDecision.historyScope, requiredToolName: builderDecision.requiresStagedFile ? "stage_file" : undefined } : undefined,
+            builder ? {
+              historyScope: builderDecision.historyScope,
+              requiredToolName: builderDecision.requiresStagedFile && !builderDecision.qualityProfile ? "stage_file" : undefined,
+              completionGate: builderDecision.qualityProfile ? {
+                description: "Infer a concrete creative brief, stage a substantial finished website, and pass review_build_quality. Ambiguity is creative freedom, not permission to return a generic or skeletal template.",
+                evaluate: () => builder.completionStatus(),
+              } : undefined,
+            } : undefined,
           );
-          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
+          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext, builder?.qualitySnapshot());
           writeEvent({
             kind: "done",
             reply: result.reply,
@@ -1347,7 +1364,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             warning: result.warning ?? null,
             turns: session.turnCount(),
             artifact,
-            execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile } : undefined,
+            execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile, qualityProfile: builderDecision.qualityProfile, quality: builder.qualitySnapshot() } : undefined,
           });
         } catch (err) {
           if (!streamAbort.signal.aborted) {
