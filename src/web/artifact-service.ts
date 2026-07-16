@@ -157,6 +157,7 @@ export class ArtifactService {
     proposal: ArtifactProposal;
     transactionId: string;
     undoToken: string;
+    undoExpiresAt: number;
     appliedFileIds: string[];
   } {
     if (!input.confirm) throw artifactError("CONFIRMATION_REQUIRED", "explicit confirmation is required to apply files");
@@ -208,6 +209,7 @@ export class ArtifactService {
       proposal: publicProposal(proposal),
       transactionId: transaction.id,
       undoToken: transaction.undoToken,
+      undoExpiresAt: transaction.expiresAt,
       appliedFileIds: selected.map((file) => file.id),
     };
   }

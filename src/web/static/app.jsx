@@ -1816,7 +1816,7 @@ function detectFileEdits(text) {
 // (right-aligned), AI response below (left-aligned). The AI bubble
 // renders the orchestrator's RAW prose answer (no category split —
 // that's the mindmap's job). Newest gets a subtle accent ring.
-function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact }) {
+function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUndoArtifact }) {
   const tpl = TEMPLATE_DEFS[entry.template];
   const streaming = !!entry.streaming;
   const ArtifactCard = window.ArtifactTurnCard;
@@ -1873,6 +1873,7 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact }) {
               artifact={entry.artifact}
               receipt={entry.artifactReceipt}
               onReview={() => onReviewArtifact && onReviewArtifact(entry)}
+              onUndo={() => onUndoArtifact && onUndoArtifact(entry)}
             />
           )}
         </div>
@@ -3147,7 +3148,7 @@ function LoadingView({ prompt, liveStatus, summarize, agentState }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
-  attachments, setAttachments, burstError, onApplyEdit, onReviewArtifact, settings,
+  attachments, setAttachments, burstError, onApplyEdit, onReviewArtifact, onUndoArtifact, settings,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -3246,6 +3247,7 @@ function ResponseStackView({
               isNewest={i === responses.length - 1 && !liveTurn}
               onApplyEdit={onApplyEdit}
               onReviewArtifact={onReviewArtifact}
+              onUndoArtifact={onUndoArtifact}
             />
           ))}
           {/* In-flight turn: shows the user prompt + the partial AI bubble
@@ -4761,6 +4763,25 @@ function HeroMindmap() {
     });
     setFileRefreshToken((token) => token + 1);
   }, []);
+  const undoArtifact = React.useCallback(async (entry) => {
+    const receipt = entry?.artifactReceipt;
+    const artifact = entry?.artifact;
+    if (!receipt?.transactionId || !receipt?.undoToken || !artifact?.projectId || !artifact?.projectRevision) {
+      throw new Error('This saved-file receipt is no longer available for undo.');
+    }
+    const response = await secureMutationFetch('/api/artifacts/transactions/' + encodeURIComponent(receipt.transactionId) + '/rollback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: artifact.projectId, projectRevision: artifact.projectRevision, undoToken: receipt.undoToken, confirm: true }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Could not undo the saved files.');
+    setResponses((current) => {
+      const next = current.map((item) => item.id === entry.id ? { ...item, artifactReceipt: { kind: 'undone', count: receipt.count } } : item);
+      savePersistedStack(next);
+      return next;
+    });
+    setFileRefreshToken((token) => token + 1);
+  }, []);
   const [sessionList, setSessionList] = React.useState([]);
   const [sessionQuery, setSessionQuery] = React.useState('');
   const [sessionBusy, setSessionBusy] = React.useState(false);
@@ -5571,6 +5592,7 @@ function HeroMindmap() {
               burstError={burstError}
               onApplyEdit={openFileForEdit}
               onReviewArtifact={setArtifactReview}
+              onUndoArtifact={undoArtifact}
               settings={settings}
             />
           </PhaseErrorBoundary>

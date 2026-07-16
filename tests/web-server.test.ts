@@ -185,20 +185,23 @@ describe("web server", () => {
 
   it("serves Phase B frontend assets", async () => {
     const { url } = spawn();
-    const [indexRes, appRes, styleRes, artifactRes] = await Promise.all([
+    const [indexRes, appRes, styleRes, artifactRes, previewRes] = await Promise.all([
       fetch(`${url}/`),
       fetch(`${url}/app.jsx`),
       fetch(`${url}/style.css`),
       fetch(`${url}/artifact-review.jsx`),
+      fetch(`${url}/artifact-preview.js`),
     ]);
     expect(indexRes.status).toBe(200);
     expect(appRes.status).toBe(200);
     expect(styleRes.status).toBe(200);
     expect(artifactRes.status).toBe(200);
+    expect(previewRes.status).toBe(200);
     const index = await indexRes.text();
     const app = await appRes.text();
     const style = await styleRes.text();
     const artifact = await artifactRes.text();
+    const preview = await previewRes.text();
 
     expect(index).not.toContain("atom-one-dark");
     expect(app).toContain("CommandBar");
@@ -208,8 +211,11 @@ describe("web server", () => {
     expect(app).toContain("theme: 'clay'");
     expect(app).toContain("onReviewArtifact");
     expect(index).toContain("/artifact-review.jsx");
+    expect(index).toContain("/artifact-preview.js");
     expect(artifact).toContain("ArtifactReviewDialog");
     expect(artifact).toContain("aria-modal=\"true\"");
+    expect(artifact).toContain("Sandboxed source preview");
+    expect(preview).toContain("connect-src 'none'");
     expect(style).toContain(".mm-root[data-theme=\"paper\"]");
     expect(style).toContain(".mm-command-bar");
     expect(style).toContain(".mm-jump-latest");
@@ -1567,6 +1573,7 @@ describe("web server", () => {
       });
       expect(apply.status).toBe(200);
       const applied: any = await apply.json();
+      expect(applied.undoExpiresAt).toBeGreaterThan(Date.now());
       expect(readFileSync(join(artifactRoot, "index.html"), "utf8")).toContain("Hello");
 
       const rollback = await localMutationFetch(`${url}/api/artifacts/transactions/${applied.transactionId}/rollback`, {

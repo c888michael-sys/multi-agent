@@ -17,18 +17,29 @@
     return candidate ? candidate.content : '';
   }
 
-  function ArtifactTurnCard({ artifact, receipt, onReview }) {
+  function ArtifactTurnCard({ artifact, receipt, onReview, onUndo }) {
     if (!artifact || !Array.isArray(artifact.candidates) || artifact.candidates.length === 0) return null;
     const count = artifact.candidates.length;
     const saved = receipt?.kind === 'applied';
+    const undone = receipt?.kind === 'undone';
+    const [undoing, setUndoing] = useState(false);
+    const [undoError, setUndoError] = useState(null);
+    async function undo() {
+      if (!onUndo || undoing) return;
+      setUndoing(true); setUndoError(null);
+      try { await onUndo(); } catch (reason) { setUndoError(reason.message || 'Could not undo the saved files.'); }
+      finally { setUndoing(false); }
+    }
     return (
-      <section className={'mm-artifact-turn-card' + (saved ? ' saved' : '')} aria-label="Generated files">
+      <section className={'mm-artifact-turn-card' + (saved ? ' saved' : '') + (undone ? ' undone' : '')} aria-label="Generated files">
         <div className="mm-artifact-turn-icon" aria-hidden="true">{saved ? '✓' : '⌁'}</div>
         <div className="mm-artifact-turn-body">
-          <strong>{saved ? 'Saved ' + receipt.count + ' files' : 'Website ready to review'}</strong>
+          <strong>{saved ? 'Saved ' + receipt.count + ' files' : undone ? 'Saved files were undone' : 'Website ready to review'}</strong>
           <span>{count} proposed {count === 1 ? 'file' : 'files'} · {artifact.projectName || 'selected project'}</span>
+          {undoError && <span className="mm-artifact-card-error" role="alert">{undoError}</span>}
         </div>
-        {!saved && <button type="button" className="mm-artifact-review-btn" onClick={onReview}>Review and save</button>}
+        {!saved && !undone && <button type="button" className="mm-artifact-review-btn" onClick={onReview}>Review and save</button>}
+        {saved && <button type="button" className="mm-artifact-review-btn" onClick={undo} disabled={undoing}>{undoing ? 'Undoing...' : 'Undo save'}</button>}
       </section>
     );
   }
@@ -180,6 +191,8 @@
           kind: 'applied',
           count: body.appliedFileIds?.length || selected.size,
           transactionId: body.transactionId,
+          undoToken: body.undoToken,
+          undoExpiresAt: body.undoExpiresAt,
         });
       } catch (reason) {
         setError(reason.message);
@@ -249,7 +262,7 @@
                     ) : tab === 'content' ? (
                       <pre className="mm-artifact-content">{contentFor(artifact, basePath.trim(), activeFile)}</pre>
                     ) : (
-                      <div className="mm-artifact-preview-note">Source preview is the next phase. This review keeps generated code separate from the app origin until its sandbox is ready.</div>
+                      <ArtifactPreview artifact={artifact} />
                     )}
                   </div>
                 </main>
@@ -270,6 +283,24 @@
             </>
           )}
         </section>
+      </div>
+    );
+  }
+
+  function ArtifactPreview({ artifact }) {
+    const [viewport, setViewport] = useState('desktop');
+    const preview = useMemo(() => window.ArtifactPreview?.buildPreviewDocument(artifact.candidates), [artifact]);
+    if (!preview?.ok) return <div className="mm-artifact-preview-note">{preview?.error || 'Source preview is unavailable.'}</div>;
+    return (
+      <div className="mm-artifact-preview">
+        <div className="mm-artifact-preview-controls" aria-label="Preview viewport">
+          <span>Static source preview</span>
+          {['desktop', 'mobile'].map((name) => <button key={name} type="button" aria-pressed={viewport === name} onClick={() => setViewport(name)}>{name}</button>)}
+        </div>
+        <p className="mm-artifact-preview-note">Runs in an isolated sandbox. Network, local project APIs and app storage are unavailable.</p>
+        <div className={'mm-artifact-preview-shell ' + viewport}>
+          <iframe title="Sandboxed source preview" sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={preview.document} />
+        </div>
       </div>
     );
   }

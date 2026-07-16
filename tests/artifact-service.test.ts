@@ -67,6 +67,7 @@ describe("ArtifactService", () => {
     });
     expect(readFileSync(join(root, "index.html"), "utf8")).toContain("Welcome");
     expect(readFileSync(join(root, "assets", "site.css"), "utf8")).toContain("margin");
+    expect(applied.undoExpiresAt).toBeGreaterThan(Date.now());
 
     expect(service.rollback({
       transactionId: applied.transactionId,
