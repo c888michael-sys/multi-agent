@@ -28,6 +28,14 @@ export class NoCandidatesAvailableError extends Error {
   }
 }
 
+/** A provider answered, but its content is unsafe to present for this role. */
+export class RejectedRoleOutputError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "RejectedRoleOutputError";
+  }
+}
+
 export interface RoleResolverOptions {
   /**
    * When ALL of a role's own candidates are exhausted, may the resolver borrow
@@ -153,6 +161,21 @@ export class RoleResolver {
     );
   }
 
+  /** Like runRoleChat, but discard semantically-invalid candidates without cooling them. */
+  async runRoleChatValidated(
+    name: RoleName,
+    history: ConversationPart[],
+    validate: (text: string) => string | null,
+    callerOpts?: CompleteOptions,
+  ): Promise<string> {
+    return this.runWithStrategy<string>(
+      name,
+      callerOpts,
+      (allowList, opts, attribution) => this.router.completeChat(history, opts, allowList, attribution),
+      (result) => validate(result),
+    );
+  }
+
   /**
    * Chat through a role, but let callers adjust the history per concrete
    * candidate. Used for perception fallback: Gemini primary keeps native
@@ -238,6 +261,7 @@ export class RoleResolver {
       attribution: CallAttribution,
       candidate: ProviderRef,
     ) => Promise<T>,
+    validate?: (result: T) => string | null,
   ): Promise<T> {
     const cfg = this.requireRole(name);
     const eligible = this.eligibleCandidates(name, cfg);
@@ -251,6 +275,11 @@ export class RoleResolver {
       const attribution: CallAttribution = {};
       try {
         const result = await attempt(allowList, mergedOpts, attribution, candidate);
+        const rejection = validate?.(result);
+        if (rejection) {
+          aggregateAttempts.push({ providerId: attribution.providerId ?? candidate.providerId, error: new RejectedRoleOutputError(rejection) });
+          continue;
+        }
         if (i > 0) {
           this.onEvent({
             type: "fallback-within-role",
@@ -285,6 +314,11 @@ export class RoleResolver {
             attribution,
             eligible[0]!,
           );
+          const rejection = validate?.(result);
+          if (rejection) {
+            aggregateAttempts.push({ providerId: attribution.providerId ?? foreignIds.join("|"), error: new RejectedRoleOutputError(rejection) });
+            throw new AllProvidersExhaustedError(aggregateAttempts);
+          }
           this.onEvent({
             type: "cross-role-substitution",
             role: name,

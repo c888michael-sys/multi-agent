@@ -28,6 +28,7 @@ A TypeScript CLI + library that runs agent workflows across free-tier LLM APIs, 
 - Bash exec tool (`--allow-bash`) with timeout, output cap, and process-tree kill on Windows
 - Backoff-and-retry when all providers are cooling
 - Builder-mode web routing includes every tool-capable cloud fallback and rotates immediately after transient provider failures; Gemini/Gemma HTTP 5xx responses no longer abort the remaining chain
+- Builder defaults to automatic file-producing-intent routing, isolates standalone build turns from unrelated history, requires staged files before success, and screens formatter output for internal workflow leakage
 - **6 roles × custom fallback chains** — perception's Flash key isolated; orchestration/reasoning share two Flash keys; Gemma 4 31B is the universal safety net (~14,400 RPD/key on free tier)
 - **Streaming web UI** with SSE token-by-token rendering, orbital-mindmap burst, MathJax, markdown formatting
 - CLI: `ask`, `agents`, `task`, `chat`, `usage`, `sessions`, `verify-keys`, `smoke`, `serve`

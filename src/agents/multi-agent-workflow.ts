@@ -1,5 +1,6 @@
 import type { RoleName } from "../roles/types.js";
 import { LATEX_DIRECTIVE } from "./prompts.js";
+import { finalOutputLeakReason } from "./output-integrity.js";
 
 export type RoutingMode = "auto" | "fast" | "multi-agent" | "brainstorming";
 
@@ -47,6 +48,7 @@ export type WorkflowProgress =
 
 export interface WorkflowRuntime {
   runRole(role: RoleName, prompt: string): Promise<string>;
+  runRoleValidated?(role: RoleName, prompt: string, validate: (text: string) => string | null): Promise<string>;
   streamRole?(
     role: RoleName,
     prompt: string,
@@ -239,10 +241,19 @@ export async function runMultiAgentWorkflow(
 
   const formatPrompt = buildFormatPrompt(task, research, actionOutputs);
   fire({ kind: "role-start", role: "action-structural", phase: "format" });
-  const finalOutput = runtime.streamRole
-    ? await runtime.streamRole("action-structural", formatPrompt, (text) => fire({ kind: "token", text }))
-    : await runtime.runRole("action-structural", formatPrompt);
-  if (!runtime.streamRole) fire({ kind: "token", text: finalOutput });
+  // Formatting is buffered deliberately. Streaming an invalid formatter reply
+  // leaks the internal prompt before a fallback candidate can replace it.
+  let finalOutput: string;
+  try {
+    finalOutput = runtime.runRoleValidated
+      ? await runtime.runRoleValidated("action-structural", formatPrompt, finalOutputLeakReason)
+      : await runtime.runRole("action-structural", formatPrompt);
+  } catch {
+    // Preserve usable action work rather than exposing an internal formatter
+    // transcript when every formatter candidate is unsuitable.
+    finalOutput = actionOutputs.map((output) => output.output).join("\n\n");
+  }
+  fire({ kind: "token", text: finalOutput });
   fire({ kind: "role-end", role: "action-structural", ok: true });
   servedBy.push("action-structural");
   perRole.push({ role: "action-structural", output: finalOutput });

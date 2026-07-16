@@ -206,6 +206,22 @@ export interface SendResult {
   summarizedTurns?: number;
 }
 
+/** Per-turn execution controls. These affect only outbound model context. */
+export interface TurnExecutionOptions {
+  /** A standalone build should not inherit unrelated earlier chat topics. */
+  historyScope?: "session" | "turn";
+  /** A successful invocation of this tool is required before the turn can finish. */
+  requiredToolName?: string;
+}
+
+/** A Builder turn cannot claim success until it has staged a reviewable file. */
+export class RequiredToolNotExecutedError extends Error {
+  constructor(toolName: string) {
+    super(`This Builder turn did not complete the required ${toolName} step. No files were staged.`);
+    this.name = "RequiredToolNotExecutedError";
+  }
+}
+
 const SESSION_VERSION = 1;
 const DEFAULT_BUDGET = 100_000;
 const DEFAULT_CHARS_PER_TOKEN = 4;
@@ -311,6 +327,7 @@ export class ChatSession {
     onProgress?: (evt: ChatProgressEvent) => void,
     routing?: { forceRole?: RoleName; roundRobin?: boolean; mode?: RoutingMode },
     images?: ImagePart[],
+    execution?: TurnExecutionOptions,
   ): Promise<SendResult> {
     // Merge powerful-mode thinking into the call opts. Caller opts win on conflict.
     const effectiveOpts: CompleteOptions = {
@@ -347,7 +364,7 @@ export class ChatSession {
 
     // Auto-summarize older turns if we're about to exceed budget.
     let summarizedTurns = 0;
-    if (this.autoSummarize) {
+    if (this.autoSummarize && execution?.historyScope !== "turn") {
       const projected =
         this.estimateTokens() + Math.ceil(userInput.length / this.charsPerToken);
       const projectedPct = (projected / this.tokenBudget) * 100;
@@ -359,6 +376,9 @@ export class ChatSession {
     }
 
     this.history.push({ kind: "user_text", text: userInput, ...(hasImages ? { images } : {}) });
+    // Keep the transcript intact, but allow a standalone artefact request to
+    // use only its own user message as model context.
+    const turnHistory = execution?.historyScope === "turn" ? [this.history[this.history.length - 1]!] : this.history;
 
     let reply: string;
     let servedBy: RoleName[];
@@ -369,10 +389,11 @@ export class ChatSession {
         emit({ kind: "role-start", role: directRole, phase: "single" });
         reply = await this.runWithToolLoop(
           directRole,
-          this.historyForRole(directRole),
+          this.historyForRole(directRole, turnHistory),
           effectiveOpts,
           onProgress ? (text) => emit({ kind: "token", text }) : undefined,
           onProgress ? (activity) => emit({ kind: "tool", ...activity }) : undefined,
+          execution?.requiredToolName,
         );
         emit({ kind: "role-end", role: directRole, ok: true });
         servedBy = [directRole];
@@ -385,10 +406,11 @@ export class ChatSession {
         emit({ kind: "role-start", role: fastRole, phase: "single" });
         reply = await this.runWithToolLoop(
           fastRole,
-          this.historyForRole(fastRole),
+          this.historyForRole(fastRole, turnHistory),
           { ...effectiveOpts, maxTokens: effectiveOpts.maxTokens ?? 1024, temperature: effectiveOpts.temperature ?? 0.3 },
           onProgress ? (text) => emit({ kind: "token", text }) : undefined,
           onProgress ? (activity) => emit({ kind: "tool", ...activity }) : undefined,
+          execution?.requiredToolName,
         );
         emit({ kind: "role-end", role: fastRole, ok: true });
         servedBy = [fastRole];
@@ -401,17 +423,17 @@ export class ChatSession {
           kind: "parallel",
           tasks: brainstormingTasks(userInput),
         };
-        const planned = await this.planAndExecute(effectiveOpts, emit, prebuilt);
+        const planned = await this.planAndExecute(effectiveOpts, emit, prebuilt, turnHistory);
         reply = planned.reply;
         servedBy = planned.servedBy;
         plan = planned.plan;
       } else if (mode === "multi-agent") {
-        const workflow = await this.runMultiAgentTurn(userInput, effectiveOpts, emit);
+        const workflow = await this.runMultiAgentTurn(userInput, effectiveOpts, emit, turnHistory, execution?.requiredToolName);
         reply = workflow.reply;
         servedBy = workflow.servedBy;
         plan = workflow.plan;
       } else {
-        const planned = await this.planAndExecute(effectiveOpts, emit);
+        const planned = await this.planAndExecute(effectiveOpts, emit, undefined, turnHistory);
         reply = planned.reply;
         servedBy = planned.servedBy;
         plan = planned.plan;
@@ -588,6 +610,7 @@ Output ONLY the summary, no preamble.`;
     opts: CompleteOptions,
     onToken?: (text: string) => void,
     onToolActivity?: (activity: { name: string; path?: string; ok: boolean }) => void,
+    requiredToolName?: string,
   ): Promise<string> {
     if (this.toolDecls.length === 0 || !ChatSession.TOOL_ELIGIBLE_ROLES.has(role)) {
       // No tools registered, or this role shouldn't call tools — use existing
@@ -606,8 +629,12 @@ Output ONLY the summary, no preamble.`;
     // rather than describe the solution. Without this, models in chat context
     // default to explaining rather than executing.
     const toolNames = this.toolDecls.map((t) => t.name).join(", ");
+    const requiredToolDirective = requiredToolName
+      ? ` A successful ${requiredToolName} call is mandatory before you may finish.`
+      : "";
     const workingHistory: ConversationPart[] = [
       ...history,
+      ...(requiredToolDirective ? [{ kind: "user_text" as const, text: `[BUILDER REQUIREMENT:${requiredToolDirective}]` }] : []),
       {
         kind: "user_text",
         text:
@@ -627,6 +654,7 @@ Output ONLY the summary, no preamble.`;
     let toolsExecuted = 0;
     let nudges = 0;
     const toolLog: string[] = [];
+    let requiredToolSucceeded = false;
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       // Until a tool has actually run, force a tool call (tool_choice required /
@@ -636,7 +664,7 @@ Output ONLY the summary, no preamble.`;
       // Providers that don't honor tool_choice (Gemini/Gemma, Ollama) ignore it
       // and rely on the narration nudge below.
       const iterOpts: CompleteOptions =
-        toolsExecuted === 0 ? { ...opts, toolChoice: "required" } : opts;
+        (requiredToolName ? !requiredToolSucceeded : toolsExecuted === 0) ? { ...opts, toolChoice: "required" } : opts;
 
       let result;
       try {
@@ -648,7 +676,7 @@ Output ONLY the summary, no preamble.`;
         // tool call that the provider rejects with a 400. If we've already
         // done useful work this turn, don't crash — summarize what happened.
         // If nothing has run yet, it's a genuine failure: rethrow.
-        if (toolsExecuted === 0) throw err;
+        if (toolsExecuted === 0 || (requiredToolName && !requiredToolSucceeded)) throw err;
         console.error(`\n[tool] provider error after ${toolsExecuted} call(s): ${(err as Error).message.slice(0, 140)}`);
         const summary =
           `Done — completed ${toolsExecuted} tool action(s):\n` +
@@ -658,7 +686,8 @@ Output ONLY the summary, no preamble.`;
       }
 
       if (result.kind === "text") {
-        if (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text)) {
+        if ((requiredToolName && !requiredToolSucceeded) || (toolsExecuted === 0 && nudges < MAX_NUDGES && looksLikeUnfinishedIntent(result.text))) {
+          if (nudges >= MAX_NUDGES) throw new RequiredToolNotExecutedError(requiredToolName ?? "a tool");
           nudges++;
           // Leading \n so the note isn't clobbered by the REPL spinner's \r.
           console.error(`\n[tool] model described instead of acting — nudging it to call a tool`);
@@ -666,8 +695,8 @@ Output ONLY the summary, no preamble.`;
           workingHistory.push({
             kind: "user_text",
             text:
-              `[You described what you would do but did NOT call any tool. Stop describing. ` +
-              `Call the tool(s) NOW to actually perform the work. Use ${toolNames}.]`,
+              `[You cannot finish yet. Stop describing and call the tool(s) NOW to actually perform the work. ` +
+              `Use ${toolNames}.${requiredToolName ? ` A successful ${requiredToolName} call is mandatory.` : ""}]`,
           });
           continue;
         }
@@ -690,6 +719,7 @@ Output ONLY the summary, no preamble.`;
           try {
             resultText = await tool.execute(call.args);
             toolsExecuted++;
+            if (call.name === requiredToolName && !resultText.startsWith("ERROR:")) requiredToolSucceeded = true;
             toolLog.push(redactedToolLabel(call));
             console.error(`\n[tool] ${redactedToolLabel(call)} → completed`);
             onToolActivity?.({ ...redactedToolActivity(call), ok: !resultText.startsWith("ERROR:") });
@@ -708,6 +738,7 @@ Output ONLY the summary, no preamble.`;
       }
     }
 
+    if (requiredToolName && !requiredToolSucceeded) throw new RequiredToolNotExecutedError(requiredToolName);
     const truncMsg = `[truncated after ${MAX_ITERATIONS} tool iterations without a final text reply]`;
     if (onToken) onToken(truncMsg);
     return truncMsg;
@@ -730,6 +761,7 @@ Output ONLY the summary, no preamble.`;
     opts: CompleteOptions,
     emit?: (evt: ChatProgressEvent) => void,
     prebuiltPlan?: Plan,
+    baseHistory: ConversationPart[] = this.history,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: Plan }> {
     const fire = emit ?? (() => {});
     let plan: Plan;
@@ -744,7 +776,7 @@ Output ONLY the summary, no preamble.`;
       const orchHistory: ConversationPart[] = [
         { kind: "user_text", text: PLAN_PREAMBLE },
         { kind: "model_text", text: PLAN_ACK },
-        ...this.historyForRole(this.role),
+        ...this.historyForRole(this.role, baseHistory),
       ];
       fire({ kind: "plan-start" });
       const planRaw = await this.runRoleChatMaybeFallbackSearch(this.role, orchHistory, opts);
@@ -762,7 +794,7 @@ Output ONLY the summary, no preamble.`;
     }
 
     if (plan.kind === "single") {
-      const specialistHistory = this.historyWithFraming(plan.role, plan.prompt);
+      const specialistHistory = this.historyWithFraming(plan.role, plan.prompt, baseHistory);
       fire({ kind: "role-start", role: plan.role, phase: "single", framing: plan.prompt });
       let reply: string;
       try {
@@ -788,7 +820,7 @@ Output ONLY the summary, no preamble.`;
         fire({ kind: "role-start", role: t.role, phase: "parallel", framing: t.prompt });
         try {
           const out = await this.runRoleChatMaybeFallbackSearch(
-            t.role, this.historyWithFraming(t.role, t.prompt), opts,
+            t.role, this.historyWithFraming(t.role, t.prompt, baseHistory), opts,
           );
           fire({ kind: "role-end", role: t.role, ok: true });
           return out;
@@ -812,7 +844,7 @@ Output ONLY the summary, no preamble.`;
     }
 
     const synthesisHistory: ConversationPart[] = [
-      ...this.historyForRole(this.role),
+      ...this.historyForRole(this.role, baseHistory),
       {
         kind: "user_text",
         text:
@@ -850,13 +882,17 @@ Output ONLY the summary, no preamble.`;
     userInput: string,
     opts: CompleteOptions,
     emit: (evt: ChatProgressEvent) => void,
+    baseHistory: ConversationPart[] = this.history,
+    requiredToolName?: string,
   ): Promise<{ reply: string; servedBy: RoleName[]; plan: ChatPlan }> {
     const workflow = await runMultiAgentWorkflow(userInput, {
       onProgress: (evt) => emit(evt as ChatProgressEvent),
       runRole: (role, prompt) =>
-        this.runWithToolLoop(role, this.historyWithFraming(role, prompt), opts),
+        this.runWithToolLoop(role, this.historyWithFraming(role, prompt, baseHistory), opts, undefined, undefined, requiredToolName),
+      runRoleValidated: (role, prompt, validate) =>
+        this.resolver.runRoleChatValidated(role, this.historyWithFraming(role, prompt, baseHistory), validate, opts),
       streamRole: (role, prompt, onToken) =>
-        this.runWithToolLoop(role, this.historyWithFraming(role, prompt), opts, onToken),
+        this.runWithToolLoop(role, this.historyWithFraming(role, prompt, baseHistory), opts, onToken, undefined, requiredToolName),
     });
     return {
       reply: workflow.finalOutput,
@@ -876,11 +912,11 @@ Output ONLY the summary, no preamble.`;
     return [{ kind: "user_text", text: instructionText }, ...base];
   }
 
-  private historyWithFraming(role: RoleName, framing: string): ConversationPart[] {
+  private historyWithFraming(role: RoleName, framing: string, base: ConversationPart[] = this.history): ConversationPart[] {
     const framingText = framing.trim()
       ? `[Orchestrator framing for you: ${framing}]\n\n${LATEX_DIRECTIVE}`
       : LATEX_DIRECTIVE;
-    return [...this.historyForRole(role), { kind: "user_text", text: framingText }];
+    return [...this.historyForRole(role, base), { kind: "user_text", text: framingText }];
   }
 
   /** Clear conversation history. Persists immediately. */

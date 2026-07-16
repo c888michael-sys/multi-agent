@@ -79,6 +79,14 @@ const TOOL_CAPABLE_ACTION_CODE = [
   { providerId: "nvidia:llama-70b" },
 ];
 
+// Strong general text fallbacks used before the small Gemma safety net. This
+// keeps formatting and synthesis coherent when the primary Groq model cools.
+const QUALITY_TEXT_FALLBACK = [
+  { providerId: "nvidia:llama-70b" },
+  { providerId: "mistral:large" },
+  { providerId: "cerebras:gpt-oss-120b" },
+];
+
 /**
  * Build the role registry. With `local: true`, prepend the local Ollama
  * candidates to the reasoning and action-code chains. In every mode, put
@@ -217,6 +225,7 @@ export const DEFAULT_ROLES: RoleConfig[] = [
     candidates: [
       // Primary: Groq Llama 3.3 70B — 30 RPM, 1000 RPD on its own quota.
       { providerId: "groq:llama-70b" },
+      ...QUALITY_TEXT_FALLBACK,
       ...GEMMA_FALLBACK,
     ],
     systemPromptTemplate:

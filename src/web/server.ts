@@ -20,6 +20,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { WebFileService, FILE_MAX_BYTES } from "./file-service.js";
 import { BuilderStage } from "./builder-stage.js";
+import { resolveBuilderIntent, type BuilderMode } from "./builder-intent.js";
 import { ArtifactService } from "./artifact-service.js";
 import { parseArtifactCandidates, type ArtifactCandidate } from "./artifact-parser.js";
 import { fileURLToPath } from "node:url";
@@ -1209,6 +1210,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               forceRole?: string | null;
               useLocal?: boolean;
               builder?: boolean;
+              builderMode?: BuilderMode;
+              intentText?: string;
               routingMode?: string | null;
               images?: unknown;
             }
@@ -1223,14 +1226,20 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         const chatOpts = buildChatOpts(parsed);
-        const builder = parsed.builder === true ? new BuilderStage(fileService) : null;
+        const builderDecision = resolveBuilderIntent({
+          mode: parsed.builderMode,
+          legacyBuilder: parsed.builder,
+          intentText: typeof parsed.intentText === "string" ? parsed.intentText : parsed.message,
+          forceRole: chatOpts.routing.forceRole,
+        });
+        const builder = builderDecision.active ? new BuilderStage(fileService) : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
-          const message = builder
-            ? `[BUILDER MODE: Build through the available project-read and stage_file tools. Stage every complete output file. Never claim to have written the project; the user will review and apply the staged files.]\n\n${parsed.message}`
-            : parsed.message;
-          const result = await session.send(message, chatOpts.opts, undefined, chatOpts.routing, imagesResult.images);
+          const routing = builder ? { ...chatOpts.routing, forceRole: "action-code" as RoleName } : chatOpts.routing;
+          const result = await session.send(parsed.message, chatOpts.opts, undefined, routing, imagesResult.images, builder
+            ? { historyScope: builderDecision.historyScope, requiredToolName: builderDecision.requiresStagedFile ? "stage_file" : undefined }
+            : undefined);
           const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
           sendJson(res, 200, {
             reply: result.reply,
@@ -1242,6 +1251,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             warning: result.warning ?? null,
             turns: session.turnCount(),
             artifact,
+            execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile } : undefined,
           });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
@@ -1266,6 +1276,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               forceRole?: string | null;
               useLocal?: boolean;
               builder?: boolean;
+              builderMode?: BuilderMode;
+              intentText?: string;
               routingMode?: string | null;
               images?: unknown;
             }
@@ -1301,19 +1313,27 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           if (clientClosed || res.destroyed) return;
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
         };
-        const builder = parsed.builder === true ? new BuilderStage(fileService) : null;
+        const builderDecision = resolveBuilderIntent({
+          mode: parsed.builderMode,
+          legacyBuilder: parsed.builder,
+          intentText: typeof parsed.intentText === "string" ? parsed.intentText : parsed.message,
+          forceRole: chatOpts.routing.forceRole,
+        });
+        const builder = builderDecision.active ? new BuilderStage(fileService) : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
-          const message = builder
-            ? `[BUILDER MODE: Build through the available project-read and stage_file tools. Stage every complete output file. Never claim to have written the project; the user will review and apply the staged files.]\n\n${parsed.message}`
-            : parsed.message;
+          const routing = builder ? { ...chatOpts.routing, forceRole: "action-code" as RoleName } : chatOpts.routing;
+          if (builder) {
+            writeEvent({ kind: "route", execution: { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile } });
+          }
           const result = await session.send(
-            message,
+            parsed.message,
             { ...chatOpts.opts, signal: streamAbort.signal },
             (evt) => { writeEvent(evt); },
-            chatOpts.routing,
+            routing,
             imagesResult.images,
+            builder ? { historyScope: builderDecision.historyScope, requiredToolName: builderDecision.requiresStagedFile ? "stage_file" : undefined } : undefined,
           );
           const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
           writeEvent({
@@ -1327,6 +1347,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             warning: result.warning ?? null,
             turns: session.turnCount(),
             artifact,
+            execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile } : undefined,
           });
         } catch (err) {
           if (!streamAbort.signal.aborted) {

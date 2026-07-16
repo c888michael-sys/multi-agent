@@ -72,7 +72,7 @@ function resetChrome() {
   setFavicon(IDLE_FAVICON);
 }
 
-function CopyButton({ getText, tiny }) {
+function CopyButton({ getText, tiny, label = 'copy' }) {
   const [copied, setCopied] = React.useState(false);
   const copy = async (e) => {
     e?.stopPropagation?.();
@@ -100,14 +100,14 @@ function CopyButton({ getText, tiny }) {
       type="button"
       className={'mm-copy' + (tiny ? ' tiny' : '')}
       onClick={copy}
-      title="Copy"
-      aria-label="Copy"
+      title={label}
+      aria-label={label}
     >
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
         <rect x="5" y="4" width="8" height="9" rx="1.5" />
         <path d="M3 10.5V3.5A1.5 1.5 0 0 1 4.5 2h6" />
       </svg>
-      <span>{copied ? 'copied' : 'copy'}</span>
+      <span>{copied ? 'copied' : label}</span>
     </button>
   );
 }
@@ -1074,14 +1074,14 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
           <ModelRoutingSection open={open} />
           <div className="mm-settings-row">
             <label className="mm-settings-label">
-              <input
-                type="checkbox"
-                checked={settings.builder}
-                onChange={(e) => onChange({ ...settings, builder: e.target.checked })}
-              />
+              <select value={settings.builderMode} onChange={(e) => onChange({ ...settings, builderMode: e.target.value })}>
+                <option value="auto">auto</option>
+                <option value="always">always</option>
+                <option value="off">off</option>
+              </select>
               <span className="mm-settings-text">
                 <span className="mm-settings-name">Builder mode</span>
-                <span className="mm-settings-hint">slower multi-file workflow: the model may inspect project files and stage files for review, but cannot write to the project.</span>
+                <span className="mm-settings-hint">auto detects file-producing requests; always forces the staged-file workflow. Files are staged for review and never written directly to the project.</span>
               </span>
             </label>
           </div>
@@ -1203,7 +1203,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
 function settingsActiveCount(s) {
   let n = 0;
   if (s.serious) n++;
-  if (s.builder) n++;
+  if (s.builderMode && s.builderMode !== 'auto') n++;
   if (s.search) n++;
   if (s.useLocal) n++;
   if (s.theme && s.theme !== 'clay') n++;
@@ -1220,6 +1220,16 @@ function stripSlot(id) {
   return id ? id.replace(/:(\d+)$/, '') : id;
 }
 
+function servedByLabel(roles) {
+  const structuralCount = roles.filter((role) => role === 'action-structural').length;
+  const lastStructural = roles.lastIndexOf('action-structural');
+  return roles.map((role, index) =>
+    role === 'action-structural' && structuralCount > 1 && index === lastStructural
+      ? 'formatter'
+      : stripSlot(role),
+  ).join(' + ');
+}
+
 function roleChromeLabel(role) {
   if (!role) return 'working';
   return String(role).replace(/^action-/, '').replace(/-/g, ' ');
@@ -1234,7 +1244,7 @@ function composerModeLabel(settings) {
   let label = opt ? opt.label.replace(/\s*\([^)]*\)/g, '') : rv;
   const tags = [];
   if (settings.serious) tags.push('serious');
-  if (settings.builder) tags.push('builder');
+  if (settings.builderMode === 'always') tags.push('builder');
   if (settings.useLocal) tags.push('local');
   if (tags.length) label += ' · ' + tags.join(' · ');
   return label;
@@ -1946,7 +1956,7 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUn
   const liveLabel = streaming
     ? statusLabel(entry.status)
     : (entry.servedBy?.length
-        ? entry.servedBy.map(stripSlot).join(' + ')
+        ? servedByLabel(entry.servedBy)
         : (tpl?.label || entry.template));
   return (
     <div
@@ -1975,12 +1985,12 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact, onUn
             <>{entry.error && !streaming && <span className="mm-turn-partial-label">Partial reply</span>}<MarkdownProse text={entry.text} /></>
           ) : !entry.error ? <span className="mm-turn-empty">{streaming ? 'preparing reply…' : ''}</span> : null}
           {streaming && <span className="mm-turn-caret" aria-hidden="true" />}
-          {Array.isArray(entry.toolActivity) && entry.toolActivity.length > 0 && (
-            <BuilderChecklist activities={entry.toolActivity} streaming={streaming} />
+          {entry.execution?.mode === 'builder' && (
+            <BuilderChecklist activities={entry.toolActivity || []} streaming={streaming} />
           )}
           {entry.error && !streaming && <ErrorTurnCard entry={entry} isNewest={isNewest} onRetry={onRetry} retryDisabled={retryDisabled} />}
           <div className="mm-turn-foot">
-            <CopyButton getText={() => entry.text || ''} />
+            <CopyButton getText={() => entry.text || ''} label="copy markdown" />
             {!streaming && onApplyEdit && detectFileEdits(entry.text).map(edit => (
               <button
                 key={edit.path}
@@ -3746,7 +3756,7 @@ const DRAFT_LS_PREFIX = 'lattice.draft.v1:';
 // chosen mode. The settings drawer surfaces routingMode and forceRole as
 // a single merged dropdown (see ROUTING_OPTIONS) — internally they remain
 // independent so the wire format with the server is unchanged.
-const DEFAULT_SETTINGS = { serious: false, search: false, builder: false, forceRole: 'auto', useLocal: false, routingMode: 'fast', theme: 'clay' };
+const DEFAULT_SETTINGS = { serious: false, search: false, builderMode: 'auto', forceRole: 'auto', useLocal: false, routingMode: 'fast', theme: 'clay' };
 
 // Merged dropdown that replaces the prior separate Force-role select + a
 // Smart-vs-RoundRobin radio group. Two "meta" entries on top combine the
@@ -3795,7 +3805,7 @@ function loadSettings() {
     return {
       serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
       search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
-      builder: typeof parsed.builder === 'boolean' ? parsed.builder : false,
+      builderMode: ['auto', 'always', 'off'].includes(parsed.builderMode) ? parsed.builderMode : (parsed.builder === true ? 'always' : 'auto'),
       forceRole: VALID_FORCE_ROLES.has(parsed.forceRole) ? parsed.forceRole : 'auto',
       useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
       routingMode: VALID_ROUTING_MODES.has(parsed.routingMode) ? parsed.routingMode : DEFAULT_SETTINGS.routingMode,
@@ -5188,6 +5198,7 @@ function HeroMindmap() {
     let lastStatus = { phase: 'plan-start' };
     let summarizedTurns = 0;
     let toolActivity = [];
+    let execution = null;
     let doneEvent = null;
     let errorMsg = null;
     let errorName = null;
@@ -5209,7 +5220,8 @@ function HeroMindmap() {
       const body = { sessionId, message: modelPrompt };
       if (settings.serious) body.thinking = 'high';
       if (settings.search) body.useSearch = true;
-      if (settings.builder) body.builder = true;
+      body.builderMode = settings.builderMode || 'auto';
+      body.intentText = displayPrompt;
       if (settings.forceRole && settings.forceRole !== 'auto') body.forceRole = settings.forceRole;
       body.useLocal = settings.useLocal === true;
       if (settings.routingMode && settings.routingMode !== 'smart') body.routingMode = settings.routingMode;
@@ -5242,7 +5254,11 @@ function HeroMindmap() {
           // Phase moves to 'response' the moment the first token arrives;
           // until then we stay in 'loading' so the LoadingView shows the
           // live agent status rectangles.
-          if (evt.kind === 'token') {
+          if (evt.kind === 'route') {
+            execution = evt.execution || null;
+            setBusyChrome('building');
+            setLiveTurn((prev) => prev ? { ...prev, execution } : prev);
+          } else if (evt.kind === 'token') {
             partial += evt.text;
             // First token → flip to response phase so the partial bubble shows.
             if (phaseRef.current === 'loading') {
@@ -5331,6 +5347,7 @@ function HeroMindmap() {
       turns: doneEvent?.turns || 0,
       warning: doneEvent?.warning || null,
       artifact: doneEvent?.artifact || null,
+      execution: doneEvent?.execution || execution,
       toolActivity,
       summarizedTurns: summarizedTurns || doneEvent?.summarizedTurns || 0,
       data: null,            // lazy-loaded by prefetchMindmapData

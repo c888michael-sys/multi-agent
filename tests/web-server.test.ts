@@ -268,13 +268,14 @@ describe("web server", () => {
     const response = await fetch(`${url}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: "builder-test", message: "make a landing page", builder: true }),
+      body: JSON.stringify({ sessionId: "builder-test", message: "make a landing page" }),
     });
     expect(response.status).toBe(200);
     const body: any = await response.json();
     expect(body.reply).toContain("ready for review");
     expect(body.artifact.candidates).toEqual([{ path: "landing/index.html", content: "<h1>Staged</h1>", language: "html" }]);
     expect(body.servedBy).toEqual(["action-code"]);
+    expect(body.execution).toMatchObject({ mode: "builder", source: "auto", requiresStagedFile: true });
   });
 
   it("keeps project-file attachments compatible with the composer attachment shape", () => {
