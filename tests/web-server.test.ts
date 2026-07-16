@@ -1456,6 +1456,104 @@ describe("web server", () => {
     });
   });
 
+  describe("reviewed artifact API", () => {
+    let artifactRoot: string;
+    let artifactStoreDir: string;
+    let artifactHandles: Array<{ close: () => void }> = [];
+
+    beforeEach(() => {
+      artifactRoot = mkdtempSync(join(tmpdir(), "multi-agent-artifact-web-"));
+      artifactStoreDir = mkdtempSync(join(tmpdir(), "multi-agent-artifact-store-"));
+    });
+
+    afterEach(() => {
+      for (const handle of artifactHandles) handle.close();
+      artifactHandles = [];
+      rmSync(artifactRoot, { recursive: true, force: true });
+      rmSync(artifactStoreDir, { recursive: true, force: true });
+    });
+
+    function spawnArtifacts() {
+      const port = pickPort();
+      const handle = startWebServer({
+        router: makeRouter([]),
+        resolver: makeResolver(async (_n, p) => `reply:${p}`),
+        port,
+        projectRoot: artifactRoot,
+        projectsPath: join(artifactStoreDir, "projects.json"),
+        allowList: [tmpdir()],
+        sessionStorageDir: sessionDir,
+      });
+      artifactHandles.push(handle);
+      return { url: `http://localhost:${port}` };
+    }
+
+    it("requires local mutation credentials before creating a proposal", async () => {
+      const { url } = spawnArtifacts();
+      const context: any = await (await fetch(`${url}/api/security/context`)).json();
+      const response = await fetch(`${url}/api/artifacts/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: context.activeProjectId, sessionId: "s", sourceTurnId: "t",
+          files: [{ path: "index.html", content: "<h1>Hi</h1>" }],
+        }),
+      });
+      expect(response.status).toBe(403);
+    });
+
+    it("creates, diffs, applies, and rolls back a project-bound file batch", async () => {
+      const { url } = spawnArtifacts();
+      const context: any = await (await fetch(`${url}/api/security/context`)).json();
+      const create = await localMutationFetch(`${url}/api/artifacts/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: context.activeProjectId,
+          sessionId: "session-1",
+          sourceTurnId: "turn-1",
+          title: "Landing page",
+          files: [
+            { path: "index.html", content: "<h1>Hello</h1>\n", language: "html" },
+            { path: "assets/site.css", content: "body { margin: 0; }\n", language: "css" },
+          ],
+        }),
+      });
+      expect(create.status).toBe(201);
+      const proposal = (await create.json() as { proposal: any }).proposal;
+      expect(JSON.stringify(proposal)).not.toContain("<h1>Hello");
+      const diff = await fetch(`${url}/api/artifacts/proposals/${proposal.id}/files/${proposal.files[0].id}/diff`);
+      expect(diff.status).toBe(200);
+      expect((await diff.json() as { diff: string }).diff).toContain("+<h1>Hello</h1>");
+
+      const apply = await localMutationFetch(`${url}/api/artifacts/proposals/${proposal.id}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: context.activeProjectId,
+          projectRevision: context.projectRevision,
+          confirm: true,
+        }),
+      });
+      expect(apply.status).toBe(200);
+      const applied: any = await apply.json();
+      expect(readFileSync(join(artifactRoot, "index.html"), "utf8")).toContain("Hello");
+
+      const rollback = await localMutationFetch(`${url}/api/artifacts/transactions/${applied.transactionId}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: context.activeProjectId,
+          projectRevision: context.projectRevision,
+          undoToken: applied.undoToken,
+          confirm: true,
+        }),
+      });
+      expect(rollback.status).toBe(200);
+      expect(existsSync(join(artifactRoot, "index.html"))).toBe(false);
+    });
+  });
+
   describe("project endpoints", () => {
     let projDir: string;
     let projDir2: string;

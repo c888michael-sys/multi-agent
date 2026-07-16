@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { TextDecoder } from "node:util";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 export const FILE_MAX_BYTES = 262_144; // 256 KB per file, matches composer attachment cap
@@ -80,7 +80,7 @@ export interface ReadResult {
 export class WebFileService {
   readonly root: string;
   readonly maxBytes: number;
-  private readonly realRoot: string;
+  readonly realRoot: string;
 
   constructor(root: string, opts?: { maxBytes?: number }) {
     if (!isAbsolute(root)) throw new Error(`projectRoot must be absolute, got: ${root}`);
@@ -307,6 +307,19 @@ export class WebFileService {
     writeFileSync(abs, buf);
     const sha256 = createHash("sha256").update(buf).digest("hex");
     return { path: rel, sha256, bytes: buf.length };
+  }
+
+  /** Delete an existing reviewed text file only when it still has the expected hash. */
+  deleteText(userPath: string, expectedSha256: string): { path: string } {
+    const abs = this.resolveSafe(userPath);
+    if (!existsSync(abs)) throw Object.assign(new Error(`not found: ${userPath}`), { code: "NOT_FOUND" });
+    const lst = lstatSync(abs);
+    if (lst.isSymbolicLink()) throw Object.assign(new Error("refusing to delete symlink"), { code: "TRAVERSAL" });
+    if (lst.isDirectory()) throw Object.assign(new Error(`path is a directory: ${userPath}`), { code: "IS_DIR" });
+    const currentSha = createHash("sha256").update(readFileSync(abs)).digest("hex");
+    if (currentSha !== expectedSha256) throw Object.assign(new Error("file changed on disk; refresh before applying"), { code: "CONFLICT" });
+    unlinkSync(abs);
+    return { path: relative(this.root, abs).replace(/\\/g, "/") };
   }
 }
 

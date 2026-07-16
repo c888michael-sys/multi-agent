@@ -15,10 +15,12 @@
  *   GET  /api/usage              router usage snapshot as plain text
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { WebFileService, FILE_MAX_BYTES } from "./file-service.js";
+import { ArtifactService } from "./artifact-service.js";
+import { parseArtifactCandidates, type ArtifactCandidate } from "./artifact-parser.js";
 import { fileURLToPath } from "node:url";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
@@ -318,6 +320,22 @@ function mutationRequestError(req: IncomingMessage, port: number, csrfToken: str
   return null;
 }
 
+function sendArtifactError(res: ServerResponse, err: unknown): void {
+  const error = err as Error & { code?: string; rollbackFailures?: string[] };
+  const code = error.code ?? "INVALID_ARTIFACT";
+  const status =
+    code === "PROJECT_CONTEXT_CHANGED" || code === "ARTIFACT_CONFLICT" || code === "PROPOSAL_NOT_PENDING" ? 409 :
+    code === "PROPOSAL_NOT_FOUND" || code === "FILE_NOT_FOUND" || code === "TRANSACTION_NOT_FOUND" ? 404 :
+    code === "TOO_LARGE" || code === "TOO_MANY_FILES" ? 413 :
+    code === "BLOCKED" || code === "TRAVERSAL" ? 403 :
+    code === "BINARY" ? 415 : 400;
+  sendJson(res, status, {
+    error: error.message,
+    code,
+    ...(error.rollbackFailures?.length ? { rollbackFailures: error.rollbackFailures } : {}),
+  });
+}
+
 export function startWebServer(opts: ServerOptions): { close: () => void; url: string } {
   const port = opts.port ?? 7421;
   const host = opts.host ?? "127.0.0.1";
@@ -353,6 +371,50 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
   function rebuildFileService(): void {
     fileService = new WebFileService(resolve(getActiveProject(projectsPath).root));
   }
+
+  /** Resolve an artifact request against the *currently active* project. */
+  function artifactProjectContext(projectId: string) {
+    // Legacy single-root callers (including the original file-browser tests)
+    // have no isolated project store. Bind artifacts to the root that server
+    // actually serves instead of the persisted default project's unrelated root.
+    const storedActive = getActiveProject(projectsPath);
+    const active = opts.projectsPath
+      ? storedActive
+      : { ...storedActive, root: fileService.root };
+    if (active.id !== projectId) {
+      throw Object.assign(new Error("the active project changed; refresh the proposal"), { code: "PROJECT_CONTEXT_CHANGED" });
+    }
+    if (opts.projectsPath) assertWithinAllowList(active.root, serverAllowList);
+    const files = new WebFileService(resolve(active.root));
+    const revision = createHash("sha256")
+      .update(`${active.id}\0${files.realRoot}`, "utf8")
+      .digest("hex");
+    return { project: active, revision, files };
+  }
+
+  function projectRevision() {
+    const active = getActiveProject(projectsPath);
+    return artifactProjectContext(active.id).revision;
+  }
+
+  function responseArtifact(reply: string, sessionId: string): {
+    sourceTurnId: string;
+    projectId: string;
+    projectRevision: string;
+    candidates: ArtifactCandidate[];
+  } | null {
+    const candidates = parseArtifactCandidates(reply);
+    if (candidates.length === 0) return null;
+    const context = artifactProjectContext(getActiveProject(projectsPath).id);
+    return {
+      sourceTurnId: `turn_${randomBytes(10).toString("hex")}`,
+      projectId: context.project.id,
+      projectRevision: context.revision,
+      candidates,
+    };
+  }
+
+  const artifactService = new ArtifactService(artifactProjectContext);
 
   const goalStore = new GoalStore(opts.goalStorageDir);
   // In-memory listeners for SSE goal streams: goalId → set of write callbacks.
@@ -400,7 +462,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       // --- API routes ---
       if (pathname === "/api/security/context" && req.method === "GET") {
         res.setHeader("Cache-Control", "no-store");
-        sendJson(res, 200, { csrfToken });
+        const active = getActiveProject(projectsPath);
+        sendJson(res, 200, { csrfToken, activeProjectId: active.id, projectRevision: projectRevision() });
         return;
       }
 
@@ -737,6 +800,122 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         return;
       }
 
+      // ── Reviewed artifact proposal API ───────────────────────────────────
+      if (pathname === "/api/artifacts/proposals" && req.method === "POST") {
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+          return;
+        }
+        const parsed = safeJsonParse(await readBody(req)) as {
+          projectId?: string; sessionId?: string; sourceTurnId?: string; title?: string; basePath?: string;
+          files?: ArtifactCandidate[];
+        } | null;
+        if (!parsed || typeof parsed.projectId !== "string" || typeof parsed.sessionId !== "string" ||
+          typeof parsed.sourceTurnId !== "string" || !Array.isArray(parsed.files)) {
+          sendJson(res, 400, { error: "projectId, sessionId, sourceTurnId, and files are required" });
+          return;
+        }
+        try {
+          sendJson(res, 201, {
+            proposal: artifactService.create({
+              projectId: parsed.projectId,
+              sessionId: parsed.sessionId,
+              sourceTurnId: parsed.sourceTurnId,
+              title: parsed.title,
+              basePath: parsed.basePath,
+              files: parsed.files,
+            }),
+          });
+        } catch (err) {
+          sendArtifactError(res, err);
+        }
+        return;
+      }
+
+      const artifactDiffMatch = pathname.match(/^\/api\/artifacts\/proposals\/([^/]+)\/files\/([^/]+)\/diff$/);
+      if (artifactDiffMatch && req.method === "GET") {
+        try {
+          const result = artifactService.getDiff(decodeURIComponent(artifactDiffMatch[1]!), decodeURIComponent(artifactDiffMatch[2]!));
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendArtifactError(res, err);
+        }
+        return;
+      }
+
+      const artifactApplyMatch = pathname.match(/^\/api\/artifacts\/proposals\/([^/]+)\/apply$/);
+      if (artifactApplyMatch && req.method === "POST") {
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+          return;
+        }
+        const parsed = safeJsonParse(await readBody(req)) as {
+          projectId?: string; projectRevision?: string; fileIds?: string[]; confirm?: boolean;
+        } | null;
+        if (!parsed || typeof parsed.projectId !== "string" || typeof parsed.projectRevision !== "string" || parsed.confirm !== true) {
+          sendJson(res, 400, { error: "projectId, projectRevision, and confirm: true are required" });
+          return;
+        }
+        try {
+          sendJson(res, 200, artifactService.apply({
+            proposalId: decodeURIComponent(artifactApplyMatch[1]!),
+            projectId: parsed.projectId,
+            projectRevision: parsed.projectRevision,
+            fileIds: parsed.fileIds,
+            confirm: true,
+          }));
+        } catch (err) {
+          sendArtifactError(res, err);
+        }
+        return;
+      }
+
+      const artifactCancelMatch = pathname.match(/^\/api\/artifacts\/proposals\/([^/]+)$/);
+      if (artifactCancelMatch && req.method === "DELETE") {
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+          return;
+        }
+        try {
+          sendJson(res, 200, artifactService.cancel(decodeURIComponent(artifactCancelMatch[1]!)));
+        } catch (err) {
+          sendArtifactError(res, err);
+        }
+        return;
+      }
+
+      const artifactRollbackMatch = pathname.match(/^\/api\/artifacts\/transactions\/([^/]+)\/rollback$/);
+      if (artifactRollbackMatch && req.method === "POST") {
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+          return;
+        }
+        const parsed = safeJsonParse(await readBody(req)) as {
+          projectId?: string; projectRevision?: string; undoToken?: string; confirm?: boolean;
+        } | null;
+        if (!parsed || typeof parsed.projectId !== "string" || typeof parsed.projectRevision !== "string" ||
+          typeof parsed.undoToken !== "string" || parsed.confirm !== true) {
+          sendJson(res, 400, { error: "projectId, projectRevision, undoToken, and confirm: true are required" });
+          return;
+        }
+        try {
+          sendJson(res, 200, artifactService.rollback({
+            transactionId: decodeURIComponent(artifactRollbackMatch[1]!),
+            projectId: parsed.projectId,
+            projectRevision: parsed.projectRevision,
+            undoToken: parsed.undoToken,
+            confirm: true,
+          }));
+        } catch (err) {
+          sendArtifactError(res, err);
+        }
+        return;
+      }
+
       // ─────────────────────────────────────────────────────────────────────
 
       if (pathname === "/api/sessions" && req.method === "GET") {
@@ -1043,6 +1222,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         const session = createChatSession(opts, parsed.sessionId, parsed.useLocal);
         try {
           const result = await session.send(parsed.message, chatOpts.opts, undefined, chatOpts.routing, imagesResult.images);
+          const artifact = responseArtifact(result.reply, parsed.sessionId);
           sendJson(res, 200, {
             reply: result.reply,
             servedBy: result.servedBy,
@@ -1052,6 +1232,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             budgetPct: Math.round(result.budgetPct),
             warning: result.warning ?? null,
             turns: session.turnCount(),
+            artifact,
           });
         } catch (err) {
           sendJson(res, 500, { error: (err as Error).message });
@@ -1119,6 +1300,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             chatOpts.routing,
             imagesResult.images,
           );
+          const artifact = responseArtifact(result.reply, parsed.sessionId);
           writeEvent({
             kind: "done",
             reply: result.reply,
@@ -1129,6 +1311,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             budgetPct: Math.round(result.budgetPct),
             warning: result.warning ?? null,
             turns: session.turnCount(),
+            artifact,
           });
         } catch (err) {
           if (!streamAbort.signal.aborted) {
