@@ -401,6 +401,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
     sourceTurnId: string;
     projectId: string;
     projectRevision: string;
+    projectName: string;
     candidates: ArtifactCandidate[];
   } | null {
     const candidates = parseArtifactCandidates(reply);
@@ -410,6 +411,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       sourceTurnId: `turn_${randomBytes(10).toString("hex")}`,
       projectId: context.project.id,
       projectRevision: context.revision,
+      projectName: context.project.name,
       candidates,
     };
   }

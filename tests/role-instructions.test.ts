@@ -14,6 +14,7 @@ describe("role instructions storage", () => {
     const defaults = defaultRoleInstructions();
     expect(defaults.version).toBe(1);
     expect(defaults.global).toContain("rigorous expert collaborator");
+    expect(defaults.global).toContain('path="..."');
     expect(Object.keys(defaults.roles).sort()).toEqual([
       "action-code",
       "action-repetitive",

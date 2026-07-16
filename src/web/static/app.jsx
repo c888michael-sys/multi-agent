@@ -1816,9 +1816,10 @@ function detectFileEdits(text) {
 // (right-aligned), AI response below (left-aligned). The AI bubble
 // renders the orchestrator's RAW prose answer (no category split —
 // that's the mindmap's job). Newest gets a subtle accent ring.
-function ChatTurn({ entry, accent, isNewest, onApplyEdit }) {
+function ChatTurn({ entry, accent, isNewest, onApplyEdit, onReviewArtifact }) {
   const tpl = TEMPLATE_DEFS[entry.template];
   const streaming = !!entry.streaming;
+  const ArtifactCard = window.ArtifactTurnCard;
   // Status pill: while streaming, surface the live phase (plan / role /
   // synth) so the user reads what's happening. Once the turn lands, fall
   // back to servedBy or the template label.
@@ -1867,6 +1868,13 @@ function ChatTurn({ entry, accent, isNewest, onApplyEdit }) {
               </span>
             )}
           </div>
+          {!streaming && ArtifactCard && entry.artifact && (
+            <ArtifactCard
+              artifact={entry.artifact}
+              receipt={entry.artifactReceipt}
+              onReview={() => onReviewArtifact && onReviewArtifact(entry)}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -3139,7 +3147,7 @@ function LoadingView({ prompt, liveStatus, summarize, agentState }) {
 // user just sent). New turns smooth-scroll into view.
 function ResponseStackView({
   draft, setDraft, submit, responses, expand, reset, phase, liveTurn,
-  attachments, setAttachments, burstError, onApplyEdit, settings,
+  attachments, setAttachments, burstError, onApplyEdit, onReviewArtifact, settings,
 }) {
   const newest = responses[responses.length - 1];
   const accent = newest ? (TEMPLATE_DEFS[newest.template]?.accent || 'var(--accent)') : 'var(--accent)';
@@ -3237,6 +3245,7 @@ function ResponseStackView({
               accent={TEMPLATE_DEFS[entry.template]?.accent || accent}
               isNewest={i === responses.length - 1 && !liveTurn}
               onApplyEdit={onApplyEdit}
+              onReviewArtifact={onReviewArtifact}
             />
           ))}
           {/* In-flight turn: shows the user prompt + the partial AI bubble
@@ -3820,7 +3829,7 @@ function secureMutationFetch(url, init = {}) {
   });
 }
 
-function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPreloadConsumed }) {
+function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPreloadConsumed, refreshToken }) {
   const [rootInfo, setRootInfo] = React.useState(null);
   const [currentPath, setCurrentPath] = React.useState('.');
   const [entries, setEntries] = React.useState([]);
@@ -3879,6 +3888,10 @@ function FileDrawer({ open, onClose, attachments, setAttachments, preload, onPre
       .catch(e => setListError(e.message))
       .finally(() => setListLoading(false));
   }, [open, currentPath, listKey]);
+
+  React.useEffect(() => {
+    if (open) setListKey((key) => key + 1);
+  }, [open, refreshToken]);
 
   React.useEffect(() => {
     if (!open) {
@@ -4703,6 +4716,7 @@ function CommandBar({
 }
 
 function HeroMindmap() {
+  const ArtifactDialog = window.ArtifactReviewDialog;
   const initialStack = React.useMemo(loadPersistedStack, []);
   const [phase, setPhase] = React.useState(initialStack.length > 0 ? 'response' : 'idle');
   const [draft, setDraft] = React.useState('');
@@ -4733,9 +4747,19 @@ function HeroMindmap() {
   const [goalOpen, setGoalOpen] = React.useState(false);
   const [activeGoalId, setActiveGoalId] = React.useState(null);
   const [fileDrawerPreload, setFileDrawerPreload] = React.useState(null);
+  const [artifactReview, setArtifactReview] = React.useState(null);
+  const [fileRefreshToken, setFileRefreshToken] = React.useState(0);
   const openFileForEdit = React.useCallback((path, content) => {
     setFileDrawerPreload({ path, content });
     setFilesOpen(true);
+  }, []);
+  const recordArtifactApply = React.useCallback((entryId, receipt) => {
+    setResponses((current) => {
+      const next = current.map((entry) => entry.id === entryId ? { ...entry, artifactReceipt: receipt } : entry);
+      savePersistedStack(next);
+      return next;
+    });
+    setFileRefreshToken((token) => token + 1);
   }, []);
   const [sessionList, setSessionList] = React.useState([]);
   const [sessionQuery, setSessionQuery] = React.useState('');
@@ -5045,6 +5069,7 @@ function HeroMindmap() {
       budgetPct: doneEvent?.budgetPct || 0,
       turns: doneEvent?.turns || 0,
       warning: doneEvent?.warning || null,
+      artifact: doneEvent?.artifact || null,
       summarizedTurns: summarizedTurns || doneEvent?.summarizedTurns || 0,
       data: null,            // lazy-loaded by prefetchMindmapData
       dataLoading: false,
@@ -5473,7 +5498,16 @@ function HeroMindmap() {
         setAttachments={setAttachments}
         preload={fileDrawerPreload}
         onPreloadConsumed={() => setFileDrawerPreload(null)}
+        refreshToken={fileRefreshToken}
       />
+      {artifactReview && ArtifactDialog && (
+        <ArtifactDialog
+          artifact={artifactReview.artifact}
+          onClose={() => setArtifactReview(null)}
+          onApplied={(receipt) => recordArtifactApply(artifactReview.id, receipt)}
+          mutate={secureMutationFetch}
+        />
+      )}
       {goalOpen && activeGoalId && (
         <GoalView goalId={activeGoalId} onClose={() => setGoalOpen(false)} />
       )}
@@ -5536,6 +5570,7 @@ function HeroMindmap() {
               attachments={attachments} setAttachments={setAttachments}
               burstError={burstError}
               onApplyEdit={openFileForEdit}
+              onReviewArtifact={setArtifactReview}
               settings={settings}
             />
           </PhaseErrorBoundary>

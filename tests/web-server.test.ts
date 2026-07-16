@@ -185,17 +185,20 @@ describe("web server", () => {
 
   it("serves Phase B frontend assets", async () => {
     const { url } = spawn();
-    const [indexRes, appRes, styleRes] = await Promise.all([
+    const [indexRes, appRes, styleRes, artifactRes] = await Promise.all([
       fetch(`${url}/`),
       fetch(`${url}/app.jsx`),
       fetch(`${url}/style.css`),
+      fetch(`${url}/artifact-review.jsx`),
     ]);
     expect(indexRes.status).toBe(200);
     expect(appRes.status).toBe(200);
     expect(styleRes.status).toBe(200);
+    expect(artifactRes.status).toBe(200);
     const index = await indexRes.text();
     const app = await appRes.text();
     const style = await styleRes.text();
+    const artifact = await artifactRes.text();
 
     expect(index).not.toContain("atom-one-dark");
     expect(app).toContain("CommandBar");
@@ -203,11 +206,16 @@ describe("web server", () => {
     expect(app).toContain("data-theme");
     expect(app).toContain("mm-code-wrap-toggle");
     expect(app).toContain("theme: 'clay'");
+    expect(app).toContain("onReviewArtifact");
+    expect(index).toContain("/artifact-review.jsx");
+    expect(artifact).toContain("ArtifactReviewDialog");
+    expect(artifact).toContain("aria-modal=\"true\"");
     expect(style).toContain(".mm-root[data-theme=\"paper\"]");
     expect(style).toContain(".mm-command-bar");
     expect(style).toContain(".mm-jump-latest");
     expect(style).toContain(".mm-code-header");
     expect(style).toContain(".hljs-keyword");
+    expect(style).toContain(".mm-artifact-dialog");
   });
 
   it("keeps project-file attachments compatible with the composer attachment shape", () => {
@@ -473,6 +481,28 @@ describe("web server", () => {
     const secondHistory = histories[1]!;
     expect(secondHistory.some((p) => p.kind === "user_text" && p.text === "remember Apollo")).toBe(true);
     expect(secondHistory.some((p) => p.kind === "model_text" && p.text === "Apollo noted")).toBe(true);
+  });
+
+  it("/api/chat attaches grouped artifact metadata only to its final response", async () => {
+    const fence = String.fromCharCode(96).repeat(3);
+    const { url } = spawn({
+      handler: async () => JSON.stringify({
+        kind: "direct",
+        answer: fence + 'html path="index.html"\n<h1>Ready</h1>\n' + fence,
+      }),
+    });
+    const response = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "artifact-thread", message: "make a page" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      artifact: { projectId: string; projectName: string; candidates: Array<{ path: string; content: string }> };
+    };
+    expect(body.artifact.projectId).toBeTruthy();
+    expect(body.artifact.projectName).toBeTruthy();
+    expect(body.artifact.candidates).toEqual([{ path: "index.html", content: "<h1>Ready</h1>\n", language: "html" }]);
   });
 
   it("CORS preflight returns 204 when cors is enabled", async () => {
