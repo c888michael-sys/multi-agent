@@ -5052,7 +5052,7 @@ function HeroMindmap() {
   // fall through to the cloud fallback while the UI still suggested
   // local-first routing.
   React.useEffect(() => {
-    if (!settings.useLocal) return;
+    if (CHAT_ONLY || !settings.useLocal) return;
     let cancelled = false;
     (async () => {
       try {

@@ -278,11 +278,13 @@ function runtimeConfig(opts: ServerOptions): {
   return {
     defaultUseLocal: opts.defaultUseLocal === true,
     chatOnly: opts.chatOnly === true,
-    localModels: Object.entries(LOCAL_OLLAMA_MODELS).map(([role, model]) => ({
-      role,
-      providerId: model.providerId,
-      model: process.env[model.modelEnv]?.trim() || model.model,
-    })),
+    localModels: opts.chatOnly
+      ? []
+      : Object.entries(LOCAL_OLLAMA_MODELS).map(([role, model]) => ({
+          role,
+          providerId: model.providerId,
+          model: process.env[model.modelEnv]?.trim() || model.model,
+        })),
   };
 }
 
@@ -290,7 +292,6 @@ const CHAT_ONLY_API_ROUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["/api/chat", new Set(["POST"])],
   ["/api/chat-stream", new Set(["POST"])],
   ["/api/complete", new Set(["POST"])],
-  ["/api/ollama-health", new Set(["GET"])],
 ]);
 
 function isChatOnlyApiRoute(pathname: string, method: string | undefined): boolean {

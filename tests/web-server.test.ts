@@ -205,7 +205,9 @@ describe("web server", () => {
 
     const shell = await fetch(`${url}/`);
     expect(shell.status).toBe(200);
-    expect(await shell.text()).toContain('"chatOnly":true');
+    const shellBody = await shell.text();
+    expect(shellBody).toContain('"chatOnly":true');
+    expect(shellBody).toContain('"localModels":[]');
 
     const completion = await fetch(`${url}/api/complete`, {
       method: "POST",
@@ -218,6 +220,7 @@ describe("web server", () => {
       ["/api/security/context", "GET"],
       ["/api/usage", "GET"],
       ["/api/usage.json", "GET"],
+      ["/api/ollama-health", "GET"],
       ["/api/projects", "GET"],
       ["/api/files/read?path=host-secret.txt", "GET"],
       ["/api/sessions", "GET"],
