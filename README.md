@@ -1046,13 +1046,15 @@ multi-agent/
 For private access by a trusted friend, keep the app on loopback and proxy it inside an authenticated Tailscale tailnet:
 
 ```powershell
-npm run web -- --local --chat-only
-tailscale serve --bg 7421
+npm run web -- --local --share-chat-port=7422
+tailscale serve --bg 7422
 ```
 
-`--chat-only` is the required sharing profile. It uses a server-side allowlist rather than relying on hidden buttons: only chat, streamed chat, and the chat UI's mindmap completion remain available. Project/file APIs, Builder tools, artifacts, goals, autonomous tasks, model health/catalogue and instruction settings, security context, and saved-session APIs all return 404. The browser also removes those controls and does not disclose the installed local-model list. Chat history is kept in a bounded in-memory cache, never loaded from or written to the session directory, and disappears when the server restarts. Provider quota/cooldown state may still use the application's normal host-side state store; the remote user cannot read or manage it.
+This starts two independent loopback listeners. Open `http://127.0.0.1:7421` on the host PC for the full interface, including local projects, files, Builder tools, settings, goals, and saved sessions. Tailscale proxies only port `7422`, whose server-side allowlist exposes chat, streamed chat, and the chat UI's mindmap completion. On that shared listener, project/file APIs, Builder tools, artifacts, goals, autonomous tasks, model health/catalogue and instruction settings, security context, and saved-session APIs all return 404. Its browser UI removes those controls and does not disclose the installed local-model list. Shared chat history is kept in a bounded in-memory cache, never loaded from or written to the session directory, and disappears when the server restarts.
 
-Share the HTTPS URL printed by `tailscale serve status` only with a friend who has been granted access to the device in your tailnet. Do **not** use `tailscale funnel`: Funnel is public internet exposure, and chat-only mode does not add application-level authentication or per-user rate limiting. `serve --host=<address>` remains available for deliberate custom bindings, but `127.0.0.1` plus Tailscale Serve is the secure default.
+The two-port boundary is deliberate: it does not depend on `Host` headers or client-supplied identity. Only software already running on the host can reach the full listener because it stays bound to loopback, and Tailscale is configured with only the restricted port. `--chat-only` remains available when you want the main listener itself restricted, but do not combine it with `--share-chat-port`.
+
+Share the HTTPS URL printed by `tailscale serve status` only with a friend who has been granted access to the device in your tailnet. Do **not** use `tailscale funnel`: Funnel is public internet exposure, and the shared chat listener does not add application-level authentication or per-user rate limiting. Provider quota/cooldown state may still use the application's normal host-side state store; the remote user cannot read or manage it.
 
 ### Minimal (Gemini only)
 

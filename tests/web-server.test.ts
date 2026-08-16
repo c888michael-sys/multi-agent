@@ -167,6 +167,43 @@ describe("web server", () => {
     expect(response.status).toBe(200);
   });
 
+  it("can run a full local listener beside an isolated chat-only share listener", async () => {
+    const projectRoot = join(sessionDir, "host-project");
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(join(projectRoot, "local-only.txt"), "owner can read this", "utf8");
+    const router = makeRouter([]);
+    const resolver = makeResolver(async (_name, prompt) => `reply:${prompt}`);
+    const localPort = pickPort();
+    let sharePort = pickPort();
+    while (sharePort === localPort) sharePort = pickPort();
+    const common = {
+      router,
+      resolver,
+      sessionStorageDir: sessionDir,
+      roleInstructionsPath,
+      projectRoot,
+    };
+    const local = startWebServer({ ...common, port: localPort });
+    const shared = startWebServer({ ...common, port: sharePort, chatOnly: true });
+    handles.push(local, shared);
+
+    const localFile = await fetch(`${local.url}api/files/read?path=local-only.txt`);
+    expect(localFile.status).toBe(200);
+    expect((await localFile.json() as { content?: string }).content).toBe("owner can read this");
+    expect((await fetch(`${local.url}api/role-instructions`)).status).toBe(200);
+
+    const sharedFile = await fetch(`${shared.url}api/files/read?path=local-only.txt`);
+    expect(sharedFile.status).toBe(404);
+    expect((await fetch(`${shared.url}api/role-instructions`)).status).toBe(404);
+
+    const [localShell, sharedShell] = await Promise.all([
+      fetch(local.url).then((response) => response.text()),
+      fetch(shared.url).then((response) => response.text()),
+    ]);
+    expect(localShell).toContain('"chatOnly":false');
+    expect(sharedShell).toContain('"chatOnly":true');
+  });
+
   it("serves the SPA shell at /", async () => {
     const { url } = spawn();
     const r = await fetch(`${url}/`);

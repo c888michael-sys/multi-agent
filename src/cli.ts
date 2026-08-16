@@ -718,6 +718,7 @@ async function cmdServe(
   projectRoot?: string,
   host = "127.0.0.1",
   chatOnly = false,
+  shareChatPort?: number,
 ): Promise<void> {
   // Always register Ollama providers at boot so the web UI's per-request
   // `useLocal` toggle has something to route to. If the local daemon
@@ -752,6 +753,21 @@ async function cmdServe(
   console.log(`multi-agent web UI live at ${url}`);
   if (chatOnly) {
     console.log("chat-only mode: local files/tools/settings are blocked; sessions are memory-only");
+  }
+  if (shareChatPort !== undefined) {
+    const { url: shareUrl } = startWebServer({
+      router,
+      resolver,
+      localResolver,
+      cloudResolver,
+      defaultUseLocal: local,
+      chatOnly: true,
+      host: "127.0.0.1",
+      port: shareChatPort,
+      projectRoot,
+    });
+    console.log(`chat-only share target live at ${shareUrl}`);
+    console.log(`proxy port ${shareChatPort} with Tailscale; keep port ${port} for this PC only`);
   }
   console.log(`open it in a browser. Ctrl+C to stop.`);
   // Keep the process alive — server holds the event loop. Wait forever.
@@ -884,6 +900,9 @@ Flags for 'serve':
   --chat-only                     expose chat only: block projects, files, tools,
                                   artifacts, goals, saved sessions, and settings;
                                   keep conversation history in memory only
+  --share-chat-port=<n>           also start a separate loopback-only, memory-only
+                                  chat listener for Tailscale (for example 7422),
+                                  while the main port keeps the full local UI
   --project=<name|id>             activate the named project before starting the server
                                   (sets it as the global active project)
   --local                         default the web UI into hybrid local-model mode
@@ -1147,6 +1166,7 @@ async function main(): Promise<void> {
         port: { type: "string", default: "7421" },
         local: { type: "boolean", default: false },
         "chat-only": { type: "boolean", default: false },
+        "share-chat-port": { type: "string" },
         project: { type: "string" },
       },
       allowPositionals: false,
@@ -1162,6 +1182,25 @@ async function main(): Promise<void> {
       console.error("Error: --host must not be empty");
       process.exit(2);
     }
+    const shareChatPort = sv["share-chat-port"] === undefined
+      ? undefined
+      : Number(sv["share-chat-port"]);
+    if (shareChatPort !== undefined && (!Number.isFinite(shareChatPort) || shareChatPort < 1 || shareChatPort > 65535)) {
+      console.error(`Error: --share-chat-port must be a valid port number (got: ${sv["share-chat-port"]})`);
+      process.exit(2);
+    }
+    if (shareChatPort === port) {
+      console.error("Error: --share-chat-port must differ from --port");
+      process.exit(2);
+    }
+    if (shareChatPort !== undefined && Boolean(sv["chat-only"])) {
+      console.error("Error: use either --chat-only or --share-chat-port, not both");
+      process.exit(2);
+    }
+    if (shareChatPort !== undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+      console.error("Error: --share-chat-port requires the full UI to stay on a loopback --host");
+      process.exit(2);
+    }
     let serveRoot: string | undefined;
     if (sv.project) {
       const projects = listProjects();
@@ -1175,7 +1214,14 @@ async function main(): Promise<void> {
     } else {
       serveRoot = getActiveProject().root;
     }
-    await cmdServe(port, Boolean(sv.local), serveRoot, host, Boolean(sv["chat-only"]));
+    await cmdServe(
+      port,
+      Boolean(sv.local),
+      serveRoot,
+      host,
+      Boolean(sv["chat-only"]),
+      shareChatPort,
+    );
     return;
   }
 
