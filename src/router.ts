@@ -444,15 +444,22 @@ export class Router {
     }
 
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        reject(new ProviderTimeoutError(providerId, timeoutMs));
-      }, timeoutMs);
-    });
+    let timeout: Promise<never> | undefined;
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new ProviderTimeoutError(providerId, timeoutMs));
+        }, timeoutMs);
+      });
+    }
 
     try {
-      return await Promise.race([fn(controller.signal), timeout, aborted]);
+      return await Promise.race([
+        fn(controller.signal),
+        aborted,
+        ...(timeout ? [timeout] : []),
+      ]);
     } finally {
       if (timer) clearTimeout(timer);
       parentSignal?.removeEventListener("abort", abortFromParent);

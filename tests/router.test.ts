@@ -146,12 +146,27 @@ describe("Router", () => {
     expect(signalAborted).toBe(true);
   });
 
+  it("allows a provider to disable the fixed deadline", async () => {
+    const slowLocal = {
+      id: "slow-local",
+      model: "fake-local-model",
+      requestTimeoutMs: Number.POSITIVE_INFINITY,
+      complete: () => new Promise<string>((resolve) => setTimeout(() => resolve("local ok"), 30)),
+      isRateLimitError: () => false,
+      retryAfterMs: () => null,
+    };
+    const r = new Router([slowLocal], { requestTimeoutMs: 5 });
+
+    await expect(r.complete("hi")).resolves.toBe("local ok");
+  });
+
   it("rejects promptly when the caller aborts a stalled provider request", async () => {
     const controller = new AbortController();
     let signalAborted = false;
     const stalled = {
       id: "stalled",
       model: "fake-model",
+      requestTimeoutMs: Number.POSITIVE_INFINITY,
       complete: (_prompt: string, opts?: { signal?: AbortSignal }) =>
         new Promise<string>((_resolve) => {
           opts?.signal?.addEventListener("abort", () => {

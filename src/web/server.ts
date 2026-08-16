@@ -1414,6 +1414,15 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         };
         req.on("aborted", abortStream);
         res.on("close", abortStream);
+        // A local model can spend minutes loading or thinking before its first
+        // token. SSE comments keep browsers and reverse proxies from treating
+        // that quiet period as an abandoned connection.
+        const heartbeat = setInterval(() => {
+          if (!clientClosed && !res.destroyed && !res.writableEnded) {
+            res.write(`: keepalive\n\n`);
+          }
+        }, 15_000);
+        heartbeat.unref();
         const writeEvent = (payload: unknown) => {
           if (clientClosed || res.destroyed) return;
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -1456,6 +1465,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             });
           }
         } finally {
+          clearInterval(heartbeat);
           req.off("aborted", abortStream);
           res.off("close", abortStream);
           if (!clientClosed && !res.writableEnded) res.end();

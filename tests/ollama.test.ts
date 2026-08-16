@@ -4,6 +4,56 @@ import { OllamaProvider, parseInlineToolCalls } from "../src/providers/ollama.js
 import type { ToolDeclaration } from "../src/tools/types.js";
 
 describe("OllamaProvider", () => {
+  it("forwards attached images as Ollama base64 image payloads", async () => {
+    let requestBody: any;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({ message: { content: "I can see it" } });
+    }) as unknown as typeof fetch;
+    const provider = new OllamaProvider({
+      id: "ollama:qwen",
+      model: "qwen3.8:latest",
+      fetchImpl,
+    });
+
+    await expect(provider.completeChat([
+      {
+        kind: "user_text",
+        text: "What is in this image?",
+        images: [{ mimeType: "image/png", dataBase64: "aGVsbG8=" }],
+      },
+    ])).resolves.toBe("I can see it");
+    expect(requestBody.messages).toEqual([
+      { role: "user", content: "What is in this image?", images: ["aGVsbG8="] },
+    ]);
+  });
+
+  it("forwards caller cancellation with the default unbounded deadline", async () => {
+    let underlyingRequestAborted = false;
+    const fetchImpl = ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => {
+          underlyingRequestAborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+        if (init?.signal?.aborted) rejectAbort();
+        else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+      })) as unknown as typeof fetch;
+    const provider = new OllamaProvider({
+      id: "ollama:qwen",
+      model: "qwen3.8:latest",
+      fetchImpl,
+    });
+    const controller = new AbortController();
+
+    const pending = provider.complete("keep thinking", { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(underlyingRequestAborted).toBe(true);
+    expect(provider.requestTimeoutMs).toBe(Number.POSITIVE_INFINITY);
+  });
+
   it("retries with an installed same-family tag when the configured tag 404s", async () => {
     const calls: Array<{ url: string; body?: any }> = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -209,17 +259,33 @@ describe("loadOllamaProviders", () => {
   it("defaults hybrid mode to the smaller local model pair", () => {
     const oldReasoning = process.env.OLLAMA_REASONING_MODEL;
     const oldCoder = process.env.OLLAMA_CODER_MODEL;
+    const oldTimeout = process.env.OLLAMA_REQUEST_TIMEOUT_MS;
     delete process.env.OLLAMA_REASONING_MODEL;
     delete process.env.OLLAMA_CODER_MODEL;
+    delete process.env.OLLAMA_REQUEST_TIMEOUT_MS;
     try {
       const providers = loadOllamaProviders();
       expect(providers.find((p) => p.id === "ollama:qwen3.5-9b")?.model).toBe("qwen3.5:9b");
       expect(providers.find((p) => p.id === "ollama:qwen2.5-coder")?.model).toBe("qwen2.5-coder:14b");
+      expect(providers.every((p) => p.requestTimeoutMs === Number.POSITIVE_INFINITY)).toBe(true);
     } finally {
       if (oldReasoning === undefined) delete process.env.OLLAMA_REASONING_MODEL;
       else process.env.OLLAMA_REASONING_MODEL = oldReasoning;
       if (oldCoder === undefined) delete process.env.OLLAMA_CODER_MODEL;
       else process.env.OLLAMA_CODER_MODEL = oldCoder;
+      if (oldTimeout === undefined) delete process.env.OLLAMA_REQUEST_TIMEOUT_MS;
+      else process.env.OLLAMA_REQUEST_TIMEOUT_MS = oldTimeout;
+    }
+  });
+
+  it("allows an explicit finite local generation deadline", () => {
+    const oldTimeout = process.env.OLLAMA_REQUEST_TIMEOUT_MS;
+    process.env.OLLAMA_REQUEST_TIMEOUT_MS = "1234";
+    try {
+      expect(loadOllamaProviders().every((p) => p.requestTimeoutMs === 1234)).toBe(true);
+    } finally {
+      if (oldTimeout === undefined) delete process.env.OLLAMA_REQUEST_TIMEOUT_MS;
+      else process.env.OLLAMA_REQUEST_TIMEOUT_MS = oldTimeout;
     }
   });
 
