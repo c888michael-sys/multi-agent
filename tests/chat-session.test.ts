@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Router } from "../src/router.js";
@@ -69,6 +69,39 @@ describe("ChatSession", () => {
       { kind: "model_text", text: "hi there" },
     ]);
     expect(existsSync(storage)).toBe(true);
+  });
+
+  it("can keep a session entirely in memory without loading or writing its backing file", async () => {
+    const seeded = JSON.stringify({
+      version: 1,
+      id: "memory-only",
+      createdAt: 1,
+      updatedAt: 1,
+      history: [
+        { kind: "user_text", text: "host-only history" },
+        { kind: "model_text", text: "must not be loaded" },
+      ],
+    });
+    writeFileSync(storage, seeded, "utf8");
+    const p = chatProvider(["volatile reply"]);
+    const router = new Router([p], { maxRetryWaitMs: 0 });
+    const resolver = new RoleResolver(router, [
+      { name: "orchestration", description: "x", candidates: [{ providerId: "chat" }] },
+    ]);
+    const s = new ChatSession({
+      resolver,
+      id: "memory-only",
+      storagePath: storage,
+      persistence: false,
+      smartRouting: false,
+    });
+
+    expect(s.snapshot().history).toEqual([]);
+    await s.send("temporary message");
+    expect(s.turnCount()).toBe(1);
+    expect(readFileSync(storage, "utf8")).toBe(seeded);
+    expect(() => s.saveAs("copy")).toThrow("persistence is disabled");
+    expect(() => s.loadFrom("copy")).toThrow("persistence is disabled");
   });
 
   it("routes an image turn to the vision role and persists the images", async () => {

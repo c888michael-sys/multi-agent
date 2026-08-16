@@ -717,6 +717,7 @@ async function cmdServe(
   local: boolean,
   projectRoot?: string,
   host = "127.0.0.1",
+  chatOnly = false,
 ): Promise<void> {
   // Always register Ollama providers at boot so the web UI's per-request
   // `useLocal` toggle has something to route to. If the local daemon
@@ -743,11 +744,15 @@ async function cmdServe(
     localResolver,
     cloudResolver,
     defaultUseLocal: local,
+    chatOnly,
     host,
     port,
     projectRoot,
   });
   console.log(`multi-agent web UI live at ${url}`);
+  if (chatOnly) {
+    console.log("chat-only mode: local files/tools/settings are blocked; sessions are memory-only");
+  }
   console.log(`open it in a browser. Ctrl+C to stop.`);
   // Keep the process alive — server holds the event loop. Wait forever.
   await new Promise<void>(() => {});
@@ -876,6 +881,9 @@ Flags for 'serve':
   --host=<address>                interface to bind (default 127.0.0.1). Keep the
                                   default when proxying privately with Tailscale Serve.
   --port=<n>                      port to bind (default 7421)
+  --chat-only                     expose chat only: block projects, files, tools,
+                                  artifacts, goals, saved sessions, and settings;
+                                  keep conversation history in memory only
   --project=<name|id>             activate the named project before starting the server
                                   (sets it as the global active project)
   --local                         default the web UI into hybrid local-model mode
@@ -1138,6 +1146,7 @@ async function main(): Promise<void> {
         host: { type: "string", default: "127.0.0.1" },
         port: { type: "string", default: "7421" },
         local: { type: "boolean", default: false },
+        "chat-only": { type: "boolean", default: false },
         project: { type: "string" },
       },
       allowPositionals: false,
@@ -1166,7 +1175,7 @@ async function main(): Promise<void> {
     } else {
       serveRoot = getActiveProject().root;
     }
-    await cmdServe(port, Boolean(sv.local), serveRoot, host);
+    await cmdServe(port, Boolean(sv.local), serveRoot, host, Boolean(sv["chat-only"]));
     return;
   }
 

@@ -1046,11 +1046,13 @@ multi-agent/
 For private access by a trusted friend, keep the app on loopback and proxy it inside an authenticated Tailscale tailnet:
 
 ```powershell
-npm run web -- --local
+npm run web -- --local --chat-only
 tailscale serve --bg 7421
 ```
 
-Share the HTTPS URL printed by `tailscale serve status` only with a friend who has been granted access to the device in your tailnet. Do **not** use `tailscale funnel`: Funnel is public internet exposure and this app does not provide its own authentication or per-user rate limiting. `serve --host=<address>` is available for deliberate custom bindings, but `127.0.0.1` is the secure default. State-changing project and file operations remain restricted to direct loopback requests; the private proxy is for chat access, not remote workspace administration.
+`--chat-only` is the required sharing profile. It uses a server-side allowlist rather than relying on hidden buttons: only chat, streamed chat, mindmap completion, and the local-model health check remain available. Project/file APIs, Builder tools, artifacts, goals, autonomous tasks, model and instruction settings, security context, and saved-session APIs all return 404. The browser also removes those controls. Chat history is kept in a bounded in-memory cache, never loaded from or written to the session directory, and disappears when the server restarts. Provider quota/cooldown state may still use the application's normal host-side state store; the remote user cannot read or manage it.
+
+Share the HTTPS URL printed by `tailscale serve status` only with a friend who has been granted access to the device in your tailnet. Do **not** use `tailscale funnel`: Funnel is public internet exposure, and chat-only mode does not add application-level authentication or per-user rate limiting. `serve --host=<address>` remains available for deliberate custom bindings, but `127.0.0.1` plus Tailscale Serve is the secure default.
 
 ### Minimal (Gemini only)
 

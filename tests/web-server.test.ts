@@ -44,6 +44,9 @@ function makeResolver(
     runRole: (name: string, prompt: string) => handler(name, prompt),
     runRoleChat: (name: string, history: ConversationPart[]) =>
       handler(name, JSON.stringify(history)),
+    runRoleChatStream: async function* (name: string, history: ConversationPart[]) {
+      yield await handler(name, JSON.stringify(history));
+    },
     runRoleWithTools: (name: string, history: ConversationPart[], tools: unknown[]) => (
       toolHandler ? toolHandler(name, history, tools) : Promise.resolve({ kind: "text", text: "no tool work" })
     ),
@@ -115,6 +118,8 @@ describe("web server", () => {
     handler?: (name: string, prompt: string) => Promise<string>;
     toolHandler?: (name: string, history: ConversationPart[], tools: unknown[]) => Promise<unknown>;
     modelFetchImpl?: typeof fetch;
+    chatOnly?: boolean;
+    projectRoot?: string;
   } = {}) {
     const port = pickPort();
     const router = makeRouter(opts.snap ?? [
@@ -128,6 +133,8 @@ describe("web server", () => {
       port,
       sessionStorageDir: sessionDir,
       roleInstructionsPath,
+      chatOnly: opts.chatOnly,
+      projectRoot: opts.projectRoot,
       ...(opts.modelFetchImpl ? { modelFetchImpl: opts.modelFetchImpl } : {}),
     });
     handles.push(handle);
@@ -169,6 +176,114 @@ describe("web server", () => {
     expect(body).toContain("HeroMindmap");
     expect(body).toContain("Lattice — multi-agent");
     expect(body).toContain("id=\"favicon\"");
+  });
+
+  it("enforces chat-only mode server-side and keeps chat history off disk", async () => {
+    const projectRoot = join(sessionDir, "private-project");
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(join(projectRoot, "host-secret.txt"), "must remain unreachable", "utf8");
+    writeFileSync(roleInstructionsPath, JSON.stringify({
+      version: 1,
+      global: "HOST_INSTRUCTION_MARKER",
+      roles: { orchestration: "HOST_ROLE_MARKER" },
+    }), "utf8");
+
+    const prompts: string[] = [];
+    let toolCalls = 0;
+    const { url } = spawn({
+      chatOnly: true,
+      projectRoot,
+      handler: async (_role, prompt) => {
+        prompts.push(prompt);
+        return "// host-secret.txt\nreplacement content";
+      },
+      toolHandler: async () => {
+        toolCalls += 1;
+        return { kind: "text", text: "tool should not run" };
+      },
+    });
+
+    const shell = await fetch(`${url}/`);
+    expect(shell.status).toBe(200);
+    expect(await shell.text()).toContain('"chatOnly":true');
+
+    const completion = await fetch(`${url}/api/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "categorise this", role: "mindmap-categorize" }),
+    });
+    expect(completion.status).toBe(200);
+
+    for (const [path, method] of [
+      ["/api/security/context", "GET"],
+      ["/api/usage", "GET"],
+      ["/api/usage.json", "GET"],
+      ["/api/projects", "GET"],
+      ["/api/files/read?path=host-secret.txt", "GET"],
+      ["/api/sessions", "GET"],
+      ["/api/role-instructions", "GET"],
+      ["/api/reasoning-models", "GET"],
+      ["/api/providers", "GET"],
+      ["/api/role-models", "GET"],
+      ["/api/goals", "GET"],
+      ["/api/task", "POST"],
+      ["/api/files/write", "POST"],
+      ["/api/artifacts/proposals", "POST"],
+      ["/api/goal", "POST"],
+      ["/api/role-instructions", "PUT"],
+      ["/api/sessions", "DELETE"],
+    ] as const) {
+      const response = await fetch(`${url}${path}`, {
+        method,
+        ...(method === "POST" || method === "PUT"
+          ? { headers: { "Content-Type": "application/json" }, body: "{}" }
+          : {}),
+      });
+      expect(response.status, `${method} ${path}`).toBe(404);
+      expect(await response.json()).toEqual({ error: "not available in chat-only mode" });
+    }
+
+    const send = (message: string) => fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "friend-chat",
+        message,
+        forceRole: "orchestration",
+        builder: true,
+      }),
+    });
+    const first = await send("hello");
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as { artifact?: unknown; turns?: number };
+    expect(firstBody.artifact).toBeNull();
+    expect(firstBody.turns).toBe(1);
+
+    const streamed = await fetch(`${url}/api/chat-stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "friend-stream",
+        message: "stream this",
+        forceRole: "orchestration",
+        builder: true,
+      }),
+    });
+    expect(streamed.status).toBe(200);
+    expect(streamed.headers.get("content-type")).toContain("text/event-stream");
+    expect(await streamed.text()).toContain('"kind":"done"');
+
+    const second = await send("do you remember me?");
+    expect(second.status).toBe(200);
+    expect((await second.json() as { turns?: number }).turns).toBe(2);
+    expect(toolCalls).toBe(0);
+    expect(prompts.some((prompt) => prompt.includes("HOST_INSTRUCTION_MARKER"))).toBe(false);
+    expect(prompts.some((prompt) => prompt.includes("HOST_ROLE_MARKER"))).toBe(false);
+    expect(prompts.at(-1)).toContain("do you remember me?");
+    expect(prompts.at(-1)).toContain("replacement content");
+    expect(existsSync(join(sessionDir, "friend-chat.json"))).toBe(false);
+    expect(existsSync(join(sessionDir, "friend-stream.json"))).toBe(false);
+    expect(readFileSync(join(projectRoot, "host-secret.txt"), "utf8")).toBe("must remain unreachable");
   });
 
   it("serves /app.jsx with the conversation manager entry point", async () => {

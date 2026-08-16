@@ -248,6 +248,12 @@ export interface ServerOptions {
   modelFetchImpl?: typeof fetch;
   /** Address to bind. Defaults to IPv4 loopback for local-only operation. */
   host?: string;
+  /**
+   * Expose only the conversational model surface. Project files, artifacts,
+   * goals, saved sessions, task execution, and settings APIs are unavailable,
+   * and chat history is retained in memory only.
+   */
+  chatOnly?: boolean;
 }
 
 /** Upper bound for any JSON request handled by the web server. */
@@ -266,16 +272,29 @@ function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleRe
 
 function runtimeConfig(opts: ServerOptions): {
   defaultUseLocal: boolean;
+  chatOnly: boolean;
   localModels: Array<{ role: string; providerId: string; model: string }>;
 } {
   return {
     defaultUseLocal: opts.defaultUseLocal === true,
+    chatOnly: opts.chatOnly === true,
     localModels: Object.entries(LOCAL_OLLAMA_MODELS).map(([role, model]) => ({
       role,
       providerId: model.providerId,
       model: process.env[model.modelEnv]?.trim() || model.model,
     })),
   };
+}
+
+const CHAT_ONLY_API_ROUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["/api/chat", new Set(["POST"])],
+  ["/api/chat-stream", new Set(["POST"])],
+  ["/api/complete", new Set(["POST"])],
+  ["/api/ollama-health", new Set(["GET"])],
+]);
+
+function isChatOnlyApiRoute(pathname: string, method: string | undefined): boolean {
+  return CHAT_ONLY_API_ROUTES.get(pathname)?.has(method ?? "") === true;
 }
 
 /** Allowed Origin values for state-changing file endpoints (localhost only). */
@@ -420,6 +439,38 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
   const artifactService = new ArtifactService(artifactProjectContext);
 
   const goalStore = new GoalStore(opts.goalStorageDir);
+  // Chat-only sessions deliberately never touch the filesystem. Keep a small
+  // LRU-style cache so an untrusted client cannot create an unbounded number
+  // of named sessions and exhaust host memory.
+  const volatileSessions = new Map<string, ChatSession>();
+  const maxVolatileSessions = 64;
+
+  function sessionForChat(id: string, useLocal?: boolean, tools?: Tool[]): ChatSession {
+    if (!opts.chatOnly) return createChatSession(opts, id, useLocal, tools);
+
+    const existing = volatileSessions.get(id);
+    if (existing) {
+      existing.setUseLocal(useLocal ?? opts.defaultUseLocal ?? false);
+      volatileSessions.delete(id);
+      volatileSessions.set(id, existing);
+      return existing;
+    }
+
+    const session = new ChatSession({
+      resolver: opts.cloudResolver ?? opts.resolver,
+      ...(opts.localResolver ? { localResolver: opts.localResolver } : {}),
+      useLocal: useLocal ?? opts.defaultUseLocal ?? false,
+      id,
+      persistence: false,
+    });
+    volatileSessions.set(id, session);
+    if (volatileSessions.size > maxVolatileSessions) {
+      const oldestId = volatileSessions.keys().next().value as string | undefined;
+      if (oldestId) volatileSessions.delete(oldestId);
+    }
+    return session;
+  }
+
   // In-memory listeners for SSE goal streams: goalId → set of write callbacks.
   const goalListeners = new Map<string, Set<(evt: GoalProgress) => void>>();
 
@@ -461,6 +512,14 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       const url = new URL(req.url ?? "/", `http://localhost:${port}`);
       const pathname = url.pathname;
+
+      if (opts.chatOnly && pathname.startsWith("/api/")) {
+        res.setHeader("Cache-Control", "no-store");
+        if (!isChatOnlyApiRoute(pathname, req.method)) {
+          sendJson(res, 404, { error: "not available in chat-only mode" });
+          return;
+        }
+      }
 
       // --- API routes ---
       if (pathname === "/api/security/context" && req.method === "GET") {
@@ -1164,7 +1223,11 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           // orchestration). The mindmap pre-fetch uses the dedicated
           // mindmap-categorize role and passes useLocal:false so a burst
           // never depends on local Ollama availability.
-          const role = (parsed.role as RoleName) || ("orchestration" as RoleName);
+          const role = (parsed.role || "orchestration") as RoleName;
+          if (!VALID_ROLES.has(role)) {
+            sendJson(res, 400, { error: "invalid role" });
+            return;
+          }
           const r = resolverFor(opts, parsed.useLocal);
           const reply = await r.runRole(role, parsed.prompt);
           sendJson(res, 200, { reply });
@@ -1213,7 +1276,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               images?: unknown;
             }
           | null;
-        if (!parsed?.sessionId || typeof parsed.message !== "string") {
+        if (!parsed?.sessionId || !isSafeSessionId(parsed.sessionId) || typeof parsed.message !== "string") {
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
           return;
         }
@@ -1223,15 +1286,17 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         const chatOpts = buildChatOpts(parsed);
-        const builder = parsed.builder === true ? new BuilderStage(fileService) : null;
+        const builder = !opts.chatOnly && parsed.builder === true ? new BuilderStage(fileService) : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
-        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
+        const session = sessionForChat(parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
           const message = builder
             ? `[BUILDER MODE: Build through the available project-read and stage_file tools. Stage every complete output file. Never claim to have written the project; the user will review and apply the staged files.]\n\n${parsed.message}`
             : parsed.message;
           const result = await session.send(message, chatOpts.opts, undefined, chatOpts.routing, imagesResult.images);
-          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
+          const artifact = opts.chatOnly
+            ? null
+            : responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
           sendJson(res, 200, {
             reply: result.reply,
             servedBy: result.servedBy,
@@ -1270,7 +1335,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               images?: unknown;
             }
           | null;
-        if (!parsed?.sessionId || typeof parsed.message !== "string") {
+        if (!parsed?.sessionId || !isSafeSessionId(parsed.sessionId) || typeof parsed.message !== "string") {
           sendJson(res, 400, { error: "sessionId (string) and message (string) required" });
           return;
         }
@@ -1301,9 +1366,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           if (clientClosed || res.destroyed) return;
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
         };
-        const builder = parsed.builder === true ? new BuilderStage(fileService) : null;
+        const builder = !opts.chatOnly && parsed.builder === true ? new BuilderStage(fileService) : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
-        const session = createChatSession(opts, parsed.sessionId, parsed.useLocal, builder?.toolset());
+        const session = sessionForChat(parsed.sessionId, parsed.useLocal, builder?.toolset());
         try {
           const message = builder
             ? `[BUILDER MODE: Build through the available project-read and stage_file tools. Stage every complete output file. Never claim to have written the project; the user will review and apply the staged files.]\n\n${parsed.message}`
@@ -1315,7 +1380,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             chatOpts.routing,
             imagesResult.images,
           );
-          const artifact = responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
+          const artifact = opts.chatOnly
+            ? null
+            : responseArtifact(result.reply, parsed.sessionId, builder?.candidates(), builderContext);
           writeEvent({
             kind: "done",
             reply: result.reply,

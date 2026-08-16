@@ -3787,7 +3787,16 @@ function runtimeDefaultUseLocal() {
   return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.defaultUseLocal === true;
 }
 
+function runtimeChatOnly() {
+  return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.chatOnly === true;
+}
+
+const CHAT_ONLY = runtimeChatOnly();
+
 function loadSettings() {
+  if (CHAT_ONLY) {
+    return { ...DEFAULT_SETTINGS, builder: false, useLocal: runtimeDefaultUseLocal() };
+  }
   try {
     const raw = localStorage.getItem(SETTINGS_LS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS, useLocal: runtimeDefaultUseLocal() };
@@ -5142,7 +5151,7 @@ function HeroMindmap() {
     if (!q && (!turnAttachments || turnAttachments.length === 0) && imgs.length === 0) return;
 
     // /goal <description> — start an autonomous goal loop instead of a chat turn
-    if (q.startsWith('/goal ') || q === '/goal') {
+    if (!CHAT_ONLY && (q.startsWith('/goal ') || q === '/goal')) {
       const description = q.slice('/goal'.length).trim();
       if (!description) return;
       setDraft('');
@@ -5708,6 +5717,12 @@ function HeroMindmap() {
           Lattice
         </div>
         <div className="mm-nav-right">
+          {CHAT_ONLY ? (
+            <span className="mm-status local" title="File access, tools, saved sessions, and host settings are disabled">
+              <i />CHAT ONLY
+            </span>
+          ) : (
+          <>
           <SystemStatus useLocal={settings.useLocal} />
           <button
             className={'mm-nav-sessions' + (sessionsOpen ? ' open' : '')}
@@ -5745,9 +5760,12 @@ function HeroMindmap() {
             </svg>
             {activeSettingsCount > 0 && <span className="mm-nav-settings-badge">{activeSettingsCount}</span>}
           </button>
+          </>
+          )}
         </div>
       </nav>
 
+      {!CHAT_ONLY && <>
       <Sidebar phase={phase} latestResponse={newest} open={sidebarOpen} useLocal={settings.useLocal} />
       {/* Mobile-only quota/stats toggle. Hidden via media query >880px. */}
       <button
@@ -5820,6 +5838,7 @@ function HeroMindmap() {
         onStartGoal={onStartGoalCommand}
         onOpenSession={openSession}
       />
+      </>}
 
       <div
         ref={stageRef}
@@ -5834,7 +5853,7 @@ function HeroMindmap() {
           Lives inside the stage so it overlays content without
           taking layout space when hidden.
         */}
-        <QuotaBanner phase={phase} useLocal={settings.useLocal} />
+        {!CHAT_ONLY && <QuotaBanner phase={phase} useLocal={settings.useLocal} />}
         {hybridAutoOff ? (
           <div className="mm-quota-banner mm-quota-warn" role="status" aria-live="polite">
             <span className="mm-quota-banner-dot" />
@@ -5863,10 +5882,10 @@ function HeroMindmap() {
               liveTurn={liveTurn}
               attachments={attachments} setAttachments={setAttachments}
               burstError={burstError}
-              onApplyEdit={openFileForEdit}
-              onReviewArtifact={setArtifactReview}
-              onUndoArtifact={undoArtifact}
-              onOpenArtifactFiles={openArtifactFiles}
+              onApplyEdit={CHAT_ONLY ? null : openFileForEdit}
+              onReviewArtifact={CHAT_ONLY ? null : setArtifactReview}
+              onUndoArtifact={CHAT_ONLY ? null : undoArtifact}
+              onOpenArtifactFiles={CHAT_ONLY ? null : openArtifactFiles}
               onRetryTurn={(entry, automatic) => submit(entry.images || [], entry.prompt, { automatic })}
               retryDisabled={streaming}
               settings={settings}

@@ -123,6 +123,11 @@ export interface ChatSessionOptions {
   keepRecentTurns?: number;
   /** Path to JSON file backing this session. Default ~/.multi-agent/sessions/<id>.json. */
   storagePath?: string;
+  /**
+   * Whether this session may read or write its backing file. Default true.
+   * Set false for untrusted, memory-only chat surfaces.
+   */
+  persistence?: boolean;
   /** Soft token budget. Warn at 80%, prompt at 95%. Default 100_000 tokens. */
   tokenBudget?: number;
   /**
@@ -228,6 +233,7 @@ export class ChatSession {
   readonly autoSummarizeAtPct: number;
   readonly keepRecentTurns: number;
   private readonly charsPerToken: number;
+  private readonly persistenceEnabled: boolean;
   private readonly _cloudResolver: RoleResolver;
   private readonly _localResolver: RoleResolver | undefined;
   private _useLocal: boolean;
@@ -259,6 +265,7 @@ export class ChatSession {
     this.keepRecentTurns = opts.keepRecentTurns ?? 3;
     this.storagePath =
       opts.storagePath ?? join(homedir(), ".multi-agent", "sessions", `${opts.id}.json`);
+    this.persistenceEnabled = opts.persistence !== false;
     this.tokenBudget = opts.tokenBudget ?? DEFAULT_BUDGET;
     this.charsPerToken = opts.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN;
     this.roleInstructions = opts.roleInstructions;
@@ -267,7 +274,7 @@ export class ChatSession {
     this.toolDecls = tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
     this.createdAt = Date.now();
     this.updatedAt = this.createdAt;
-    this.load();
+    if (this.persistenceEnabled) this.load();
   }
 
   isPowerful(): boolean {
@@ -897,6 +904,7 @@ Output ONLY the summary, no preamble.`;
    * this session's storage file by default.
    */
   saveAs(newId: string): string {
+    if (!this.persistenceEnabled) throw new Error("Session persistence is disabled");
     const newPath = join(dirname(this.storagePath), `${newId}.json`);
     mkdirSync(dirname(newPath), { recursive: true });
     const body = JSON.stringify(
@@ -924,6 +932,7 @@ Output ONLY the summary, no preamble.`;
    * Returns true if the load succeeded, false if the source didn't exist.
    */
   loadFrom(otherId: string): boolean {
+    if (!this.persistenceEnabled) throw new Error("Session persistence is disabled");
     const otherPath = join(dirname(this.storagePath), `${otherId}.json`);
     if (!existsSync(otherPath)) return false;
     try {
@@ -1001,6 +1010,7 @@ Output ONLY the summary, no preamble.`;
   }
 
   private persist(): void {
+    if (!this.persistenceEnabled) return;
     try {
       mkdirSync(dirname(this.storagePath), { recursive: true });
       const body = JSON.stringify(
