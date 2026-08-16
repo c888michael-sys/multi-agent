@@ -712,7 +712,12 @@ async function cmdChat(
   await repl.run();
 }
 
-async function cmdServe(port: number, local: boolean, projectRoot?: string): Promise<void> {
+async function cmdServe(
+  port: number,
+  local: boolean,
+  projectRoot?: string,
+  host = "127.0.0.1",
+): Promise<void> {
   // Always register Ollama providers at boot so the web UI's per-request
   // `useLocal` toggle has something to route to. If the local daemon
   // isn't running, calls just fail with a fetch error — same shape as
@@ -738,6 +743,7 @@ async function cmdServe(port: number, local: boolean, projectRoot?: string): Pro
     localResolver,
     cloudResolver,
     defaultUseLocal: local,
+    host,
     port,
     projectRoot,
   });
@@ -812,7 +818,7 @@ Commands:
   chat <session-name>      interactive multi-turn REPL with persistent history
                            (multi-agent mode by default)
   sessions                 list saved chat session names
-  serve                    start the local web UI on http://localhost:<port>
+  serve                    start the local web UI on http://127.0.0.1:<port>
                            (default 7421). Also exposed as: npm run web
   usage                    print router state (counts, cooldowns, % remaining)
   doctor                   print env/provider diagnostics without secret values
@@ -867,6 +873,8 @@ Flags for 'diagnose-routing':
                                   Omit for a cheap config-only diagnostic.
 
 Flags for 'serve':
+  --host=<address>                interface to bind (default 127.0.0.1). Keep the
+                                  default when proxying privately with Tailscale Serve.
   --port=<n>                      port to bind (default 7421)
   --project=<name|id>             activate the named project before starting the server
                                   (sets it as the global active project)
@@ -1127,6 +1135,7 @@ async function main(): Promise<void> {
     const { values: sv } = parseArgs({
       args: argv.slice(1),
       options: {
+        host: { type: "string", default: "127.0.0.1" },
         port: { type: "string", default: "7421" },
         local: { type: "boolean", default: false },
         project: { type: "string" },
@@ -1137,6 +1146,11 @@ async function main(): Promise<void> {
     const port = Number(sv.port);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
       console.error(`Error: --port must be a valid port number (got: ${sv.port})`);
+      process.exit(2);
+    }
+    const host = String(sv.host).trim();
+    if (!host) {
+      console.error("Error: --host must not be empty");
       process.exit(2);
     }
     let serveRoot: string | undefined;
@@ -1152,7 +1166,7 @@ async function main(): Promise<void> {
     } else {
       serveRoot = getActiveProject().root;
     }
-    await cmdServe(port, Boolean(sv.local), serveRoot);
+    await cmdServe(port, Boolean(sv.local), serveRoot, host);
     return;
   }
 

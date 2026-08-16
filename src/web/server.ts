@@ -1561,7 +1561,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
   });
 
   server.listen(port, host);
-  const url = `http://${host}:${port}/`;
+  const displayHost = host.includes(":") ? `[${host}]` : host;
+  const url = `http://${displayHost}:${port}/`;
   return {
     url,
     close: () => server.close(),

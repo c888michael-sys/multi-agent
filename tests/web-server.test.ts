@@ -144,6 +144,22 @@ describe("web server", () => {
     return fetch(url, { ...init, headers });
   }
 
+  it("binds to loopback by default", async () => {
+    const port = pickPort();
+    const handle = startWebServer({
+      router: makeRouter([]),
+      resolver: makeResolver(async () => ""),
+      port,
+      sessionStorageDir: sessionDir,
+      roleInstructionsPath,
+    });
+    handles.push(handle);
+
+    expect(handle.url).toBe(`http://127.0.0.1:${port}/`);
+    const response = await fetch(handle.url);
+    expect(response.status).toBe(200);
+  });
+
   it("serves the SPA shell at /", async () => {
     const { url } = spawn();
     const r = await fetch(`${url}/`);
