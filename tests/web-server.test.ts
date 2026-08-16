@@ -119,6 +119,7 @@ describe("web server", () => {
     toolHandler?: (name: string, history: ConversationPart[], tools: unknown[]) => Promise<unknown>;
     modelFetchImpl?: typeof fetch;
     chatOnly?: boolean;
+    allowSharedSettings?: boolean;
     projectRoot?: string;
   } = {}) {
     const port = pickPort();
@@ -134,6 +135,7 @@ describe("web server", () => {
       sessionStorageDir: sessionDir,
       roleInstructionsPath,
       chatOnly: opts.chatOnly,
+      allowSharedSettings: opts.allowSharedSettings,
       projectRoot: opts.projectRoot,
       ...(opts.modelFetchImpl ? { modelFetchImpl: opts.modelFetchImpl } : {}),
     });
@@ -167,12 +169,16 @@ describe("web server", () => {
     expect(response.status).toBe(200);
   });
 
-  it("can run a full local listener beside an isolated chat-only share listener", async () => {
+  it("can run a full local listener beside a shared chat-and-settings listener", async () => {
     const projectRoot = join(sessionDir, "host-project");
     mkdirSync(projectRoot, { recursive: true });
     writeFileSync(join(projectRoot, "local-only.txt"), "owner can read this", "utf8");
     const router = makeRouter([]);
-    const resolver = makeResolver(async (_name, prompt) => `reply:${prompt}`);
+    const sharedPrompts: string[] = [];
+    const resolver = makeResolver(async (_name, prompt) => {
+      sharedPrompts.push(prompt);
+      return `reply:${prompt}`;
+    });
     const localPort = pickPort();
     let sharePort = pickPort();
     while (sharePort === localPort) sharePort = pickPort();
@@ -184,7 +190,12 @@ describe("web server", () => {
       projectRoot,
     };
     const local = startWebServer({ ...common, port: localPort });
-    const shared = startWebServer({ ...common, port: sharePort, chatOnly: true });
+    const shared = startWebServer({
+      ...common,
+      port: sharePort,
+      chatOnly: true,
+      allowSharedSettings: true,
+    });
     handles.push(local, shared);
 
     const localFile = await fetch(`${local.url}api/files/read?path=local-only.txt`);
@@ -194,7 +205,71 @@ describe("web server", () => {
 
     const sharedFile = await fetch(`${shared.url}api/files/read?path=local-only.txt`);
     expect(sharedFile.status).toBe(404);
-    expect((await fetch(`${shared.url}api/role-instructions`)).status).toBe(404);
+    const sharedInstructions = await fetch(`${shared.url}api/role-instructions`);
+    expect(sharedInstructions.status).toBe(200);
+    expect(await sharedInstructions.json()).not.toHaveProperty("path");
+    expect((await fetch(`${shared.url}api/usage.json`)).status).toBe(200);
+    expect((await fetch(`${shared.url}api/usage`)).status).toBe(200);
+    expect((await fetch(`${shared.url}api/providers`)).status).toBe(200);
+    expect((await fetch(`${shared.url}api/role-models`)).status).toBe(400);
+    expect((await fetch(`${shared.url}api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })).status).toBe(400);
+    expect((await fetch(`${shared.url}api/reasoning-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })).status).toBe(400);
+
+    const sharedOrigin = "https://friend-node.example.ts.net";
+    const savedInstructions = await fetch(`${shared.url}api/role-instructions`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Host": "friend-node.example.ts.net",
+        "Origin": sharedOrigin,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ instructions: { global: "shared preference", roles: {} } }),
+    });
+    expect(savedInstructions.status).toBe(200);
+    expect(await savedInstructions.json()).not.toHaveProperty("path");
+
+    const sharedTurn = await fetch(`${shared.url}api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "shared-settings-turn",
+        message: "hello",
+        forceRole: "orchestration",
+      }),
+    });
+    expect(sharedTurn.status).toBe(200);
+    expect(sharedPrompts.some((prompt) => prompt.includes("shared preference"))).toBe(true);
+
+    const crossOriginWrite = await fetch(`${shared.url}api/role-instructions`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Host": "friend-node.example.ts.net",
+        "Origin": "https://evil.example",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ instructions: { global: "evil", roles: {} } }),
+    });
+    expect(crossOriginWrite.status).toBe(403);
+
+    for (const path of [
+      "/api/security/context",
+      "/api/projects",
+      "/api/sessions",
+      "/api/goals",
+      "/api/artifacts/proposals",
+    ]) {
+      expect((await fetch(`${shared.url}${path}`)).status, path).toBe(404);
+    }
 
     const [localShell, sharedShell] = await Promise.all([
       fetch(local.url).then((response) => response.text()),
@@ -202,6 +277,8 @@ describe("web server", () => {
     ]);
     expect(localShell).toContain('"chatOnly":false');
     expect(sharedShell).toContain('"chatOnly":true');
+    expect(sharedShell).toContain('"allowSharedSettings":true');
+    expect(sharedShell).not.toContain(roleInstructionsPath);
   });
 
   it("serves the SPA shell at /", async () => {
@@ -342,6 +419,9 @@ describe("web server", () => {
     expect(body).toContain("mm-empty");
     expect(body).toContain("onPointerDown={() => loadModels(role, provider, true, true)}");
     expect(body).toContain("Model catalogue through");
+    expect(body).toContain("SHOW_NON_FILE_CONTROLS");
+    expect(body).toContain("SHARED CHAT");
+    expect(body).toContain("allowBuilder={!CHAT_ONLY}");
   });
 
   it("serves Phase A polish CSS and template starters", async () => {

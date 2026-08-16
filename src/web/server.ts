@@ -254,6 +254,12 @@ export interface ServerOptions {
    * and chat history is retained in memory only.
    */
   chatOnly?: boolean;
+  /**
+   * In chat-only mode, also expose quota/model telemetry and non-workspace
+   * settings. This is intended for a separate trusted-share listener: file,
+   * project, tool, goal, artifact, task, and saved-session APIs stay blocked.
+   */
+  allowSharedSettings?: boolean;
 }
 
 /** Upper bound for any JSON request handled by the web server. */
@@ -273,12 +279,14 @@ function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleRe
 function runtimeConfig(opts: ServerOptions): {
   defaultUseLocal: boolean;
   chatOnly: boolean;
+  allowSharedSettings: boolean;
   localModels: Array<{ role: string; providerId: string; model: string }>;
 } {
   return {
     defaultUseLocal: opts.defaultUseLocal === true,
     chatOnly: opts.chatOnly === true,
-    localModels: opts.chatOnly
+    allowSharedSettings: opts.chatOnly === true && opts.allowSharedSettings === true,
+    localModels: opts.chatOnly && !opts.allowSharedSettings
       ? []
       : Object.entries(LOCAL_OLLAMA_MODELS).map(([role, model]) => ({
           role,
@@ -294,8 +302,22 @@ const CHAT_ONLY_API_ROUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["/api/complete", new Set(["POST"])],
 ]);
 
-function isChatOnlyApiRoute(pathname: string, method: string | undefined): boolean {
-  return CHAT_ONLY_API_ROUTES.get(pathname)?.has(method ?? "") === true;
+const SHARED_SETTINGS_API_ROUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["/api/usage", new Set(["GET"])],
+  ["/api/usage.json", new Set(["GET"])],
+  ["/api/ollama-health", new Set(["GET"])],
+  ["/api/role-instructions", new Set(["GET", "PUT"])],
+  ["/api/reasoning-models", new Set(["GET"])],
+  ["/api/reasoning-model", new Set(["PUT"])],
+  ["/api/providers", new Set(["GET"])],
+  ["/api/role-models", new Set(["GET"])],
+  ["/api/role-model", new Set(["PUT"])],
+]);
+
+function isChatOnlyApiRoute(opts: ServerOptions, pathname: string, method: string | undefined): boolean {
+  if (CHAT_ONLY_API_ROUTES.get(pathname)?.has(method ?? "") === true) return true;
+  return opts.allowSharedSettings === true
+    && SHARED_SETTINGS_API_ROUTES.get(pathname)?.has(method ?? "") === true;
 }
 
 /** Allowed Origin values for state-changing file endpoints (localhost only). */
@@ -305,6 +327,27 @@ function isAllowedOrigin(origin: string | undefined, port: number): boolean {
     origin === `http://localhost:${port}` ||
     origin === `http://127.0.0.1:${port}`
   );
+}
+
+/**
+ * Non-workspace settings may be changed through the trusted reverse-proxied
+ * share listener. Require a same-origin browser fetch with a normal HTTP(S)
+ * Origin; local owner calls retain the existing localhost rule. Reverse
+ * proxies are not required to preserve Host exactly. This guard is never used
+ * for file/project/artifact mutations.
+ */
+function isAllowedSettingsOrigin(req: IncomingMessage, port: number, allowProxyOrigin: boolean): boolean {
+  if (isAllowedOrigin(req.headers.origin, port)) return true;
+  if (!allowProxyOrigin || !isAllowedFetchSite(req.headers["sec-fetch-site"])) return false;
+  const origin = req.headers.origin;
+  if (!origin || req.headers["sec-fetch-site"] !== "same-origin") return false;
+  try {
+    const parsed = new URL(origin);
+    return (parsed.protocol === "https:" || parsed.protocol === "http:")
+      && parsed.origin === origin;
+  } catch {
+    return false;
+  }
 }
 
 function isAllowedHost(host: string | undefined, port: number): boolean {
@@ -463,6 +506,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       useLocal: useLocal ?? opts.defaultUseLocal ?? false,
       id,
       persistence: false,
+      ...(opts.allowSharedSettings
+        ? { roleInstructions: readRoleInstructions(roleInstructionsPath(opts)) }
+        : {}),
     });
     volatileSessions.set(id, session);
     if (volatileSessions.size > maxVolatileSessions) {
@@ -516,7 +562,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
       if (opts.chatOnly && pathname.startsWith("/api/")) {
         res.setHeader("Cache-Control", "no-store");
-        if (!isChatOnlyApiRoute(pathname, req.method)) {
+        if (!isChatOnlyApiRoute(opts, pathname, req.method)) {
           sendJson(res, 404, { error: "not available in chat-only mode" });
           return;
         }
@@ -998,7 +1044,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       if (pathname === "/api/role-instructions" && req.method === "GET") {
         const path = roleInstructionsPath(opts);
         sendJson(res, 200, {
-          path,
+          ...(opts.chatOnly && opts.allowSharedSettings ? {} : { path }),
           instructions: readRoleInstructions(path),
           defaults: defaultRoleInstructions(),
         });
@@ -1011,7 +1057,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           sendJson(res, 415, { error: "Content-Type must be application/json" });
           return;
         }
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
+        if (!isAllowedSettingsOrigin(req, port, opts.chatOnly === true && opts.allowSharedSettings === true)) {
           sendJson(res, 403, { error: "cross-origin writes are not allowed" });
           return;
         }
@@ -1023,7 +1069,12 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         }
         const path = roleInstructionsPath(opts);
         const instructions = writeRoleInstructions(path, parsed.instructions ?? parsed);
-        sendJson(res, 200, { path, instructions, defaults: defaultRoleInstructions() });
+        if (opts.chatOnly) volatileSessions.clear();
+        sendJson(res, 200, {
+          ...(opts.chatOnly && opts.allowSharedSettings ? {} : { path }),
+          instructions,
+          defaults: defaultRoleInstructions(),
+        });
         return;
       }
 
@@ -1055,7 +1106,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           sendJson(res, 415, { error: "Content-Type must be application/json" });
           return;
         }
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
+        if (!isAllowedSettingsOrigin(req, port, opts.chatOnly === true && opts.allowSharedSettings === true)) {
           sendJson(res, 403, { error: "cross-origin writes are not allowed" });
           return;
         }
@@ -1149,7 +1200,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           sendJson(res, 415, { error: "Content-Type must be application/json" });
           return;
         }
-        if (!isAllowedOrigin(req.headers["origin"], port)) {
+        if (!isAllowedSettingsOrigin(req, port, opts.chatOnly === true && opts.allowSharedSettings === true)) {
           sendJson(res, 403, { error: "cross-origin writes are not allowed" });
           return;
         }

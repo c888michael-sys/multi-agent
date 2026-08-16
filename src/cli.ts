@@ -762,11 +762,12 @@ async function cmdServe(
       cloudResolver,
       defaultUseLocal: local,
       chatOnly: true,
+      allowSharedSettings: true,
       host: "127.0.0.1",
       port: shareChatPort,
       projectRoot,
     });
-    console.log(`chat-only share target live at ${shareUrl}`);
+    console.log(`chat + non-file settings share target live at ${shareUrl}`);
     console.log(`proxy port ${shareChatPort} with Tailscale; keep port ${port} for this PC only`);
   }
   console.log(`open it in a browser. Ctrl+C to stop.`);
@@ -901,13 +902,14 @@ Flags for 'serve':
                                   artifacts, goals, saved sessions, and settings;
                                   keep conversation history in memory only
   --share-chat-port=<n>           also start a separate loopback-only, memory-only
-                                  chat listener for Tailscale (for example 7422),
-                                  while the main port keeps the full local UI
+                                  chat + non-file-settings listener for Tailscale
+                                  (for example 7422), while the main port keeps
+                                  the full local UI
   --project=<name|id>             activate the named project before starting the server
                                   (sets it as the global active project)
   --local                         default the web UI into hybrid local-model mode
-                                  (Qwen 3.5 9B for reasoning, Qwen 2.5 Coder 14B for
-                                  action-code via Ollama at localhost:11434). The web
+                                  (configured reasoning + action-code models via
+                                  Ollama at localhost:11434). The web
                                   UI can still toggle modes per request; this flag
                                   only sets the initial default.
 
