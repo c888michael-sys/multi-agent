@@ -422,6 +422,9 @@ describe("web server", () => {
     expect(body).toContain("SHOW_NON_FILE_CONTROLS");
     expect(body).toContain("SHARED CHAT");
     expect(body).toContain("allowBuilder={!CHAT_ONLY}");
+    expect(body.indexOf('<span className="mm-settings-name">Routing</span>')).toBeLessThan(
+      body.indexOf('<span className="mm-settings-name">Appearance</span>'),
+    );
   });
 
   it("serves Phase A polish CSS and template starters", async () => {

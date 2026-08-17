@@ -1037,6 +1037,22 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
           <button className="mm-settings-close" onClick={onClose} aria-label="Close settings">×</button>
         </div>
         <div className="mm-settings-body">
+          <div className="mm-settings-row mm-settings-row-select">
+            <span className="mm-settings-name">Routing</span>
+            <select
+              className="mm-settings-select"
+              value={routingValue}
+              onChange={onRoutingChange}
+            >
+              {ROUTING_OPTIONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+            <span className="mm-settings-hint">
+              <code>auto</code>: orchestrator picks the shortest useful route. <code>multi-agent</code>: plan, research/action, check/repair when needed, then format (default). <code>brainstorming</code>: multiple model perspectives in parallel. Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
+            </span>
+          </div>
+
           <div className="mm-settings-row">
             <span className="mm-settings-name">Appearance</span>
             <div className="mm-theme-segment" role="group" aria-label="Theme">
@@ -1117,21 +1133,6 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
                 <span className="mm-settings-hint">Gemini uses native grounding; perception fallbacks get Brave/DuckDuckGo context (CLI: <code>--search</code>)</span>
               </span>
             </label>
-          </div>
-          <div className="mm-settings-row mm-settings-row-select">
-            <span className="mm-settings-name">Routing</span>
-            <select
-              className="mm-settings-select"
-              value={routingValue}
-              onChange={onRoutingChange}
-            >
-              {ROUTING_OPTIONS.map((r) => (
-                <option key={r.value} value={r.value}>{r.label}</option>
-              ))}
-            </select>
-            <span className="mm-settings-hint">
-              <code>auto</code>: orchestrator picks the shortest useful route. <code>multi-agent</code>: plan, research/action, check/repair when needed, then format (default). <code>brainstorming</code>: multiple model perspectives in parallel. Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
-            </span>
           </div>
           <div className="mm-settings-row mm-settings-row-instructions">
             <span className="mm-settings-name">Long-term role instructions</span>
