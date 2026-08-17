@@ -38,7 +38,8 @@ export interface Provider {
   /**
    * Optional provider-specific router timeout. Local models can need much
    * longer cold-load/generation windows than cloud APIs, while cloud calls
-   * should keep the router's shorter default guardrail.
+   * should keep the router's shorter default guardrail. Use `Infinity` to
+   * disable the fixed deadline while retaining caller-driven cancellation.
    */
   readonly requestTimeoutMs?: number;
   complete(prompt: string, opts?: CompleteOptions): Promise<string>;

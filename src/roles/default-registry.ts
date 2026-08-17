@@ -50,11 +50,12 @@ const GEMMA_FALLBACK = [
  * prepended to the matching role's chain so they win when registered.
  *
  *   reasoning      → ollama:qwen3.5-9b    (Qwen 3.5 9B by default, locally hosted)
+ *   vision         → ollama:qwen3.5-9b    (same configured multimodal reasoner)
  *   action-code    → ollama:qwen2.5-coder (Qwen 2.5 Coder, locally hosted)
  *
- * Cloud candidates remain in the chain as fallback if the local daemon
- * is unreachable or the model isn't pulled. All other roles are
- * unchanged in local mode.
+ * Cloud candidates remain after the local candidates for normal resolver
+ * failover. The web UI separately checks daemon/model availability before it
+ * enables hybrid mode. All other roles are unchanged in local mode.
  */
 const LOCAL_REASONING = { providerId: "ollama:qwen3.5-9b" };
 const LOCAL_ACTION_CODE = { providerId: "ollama:qwen2.5-coder" };
@@ -89,7 +90,7 @@ const QUALITY_TEXT_FALLBACK = [
 
 /**
  * Build the role registry. With `local: true`, prepend the local Ollama
- * candidates to the reasoning and action-code chains. In every mode, put
+ * candidates to the reasoning, vision, and action-code chains. In every mode, put
  * Gemini Flash at the front of mindmap-categorize so the mindmap burst
  * never depends on local Ollama availability.
  *
@@ -105,6 +106,8 @@ export function buildDefaultRoles(opts?: { local?: boolean; toolCapable?: boolea
   if (opts?.local) {
     const reasoning = roles.find((r) => r.name === "reasoning");
     if (reasoning) reasoning.candidates.unshift(LOCAL_REASONING);
+    const vision = roles.find((r) => r.name === "vision");
+    if (vision) vision.candidates.unshift(LOCAL_REASONING);
     const actionCode = roles.find((r) => r.name === "action-code");
     if (actionCode) actionCode.candidates.unshift(LOCAL_ACTION_CODE);
   }
@@ -268,11 +271,10 @@ export const DEFAULT_ROLES: RoleConfig[] = [
   },
   {
     // Internal multimodal role: chat turns that include pasted/attached images
-    // are auto-forced here (see ChatSession.send). Pinned to Gemini Flash, the
-    // one fully-wired multimodal provider. NOT user-selectable and NOT offered
-    // to the orchestrator planner (excluded from rosterDescription), so it only
-    // ever serves image turns. Gemini-only on purpose — Gemma/text fallbacks
-    // can't see images, so there is no safety-net slot here.
+    // are auto-forced here (see ChatSession.send). Hybrid mode prepends the
+    // local reasoning model; Gemini remains the multimodal fallback. This role
+    // is not user-selectable or offered to the orchestrator planner (excluded
+    // from rosterDescription), so it only serves image turns.
     name: "vision",
     description:
       "Answer questions about attached images. Multimodal; used automatically when a turn includes images.",

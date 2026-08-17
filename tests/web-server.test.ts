@@ -44,6 +44,9 @@ function makeResolver(
     runRole: (name: string, prompt: string) => handler(name, prompt),
     runRoleChat: (name: string, history: ConversationPart[]) =>
       handler(name, JSON.stringify(history)),
+    runRoleChatStream: async function* (name: string, history: ConversationPart[]) {
+      yield await handler(name, JSON.stringify(history));
+    },
     runRoleWithTools: (name: string, history: ConversationPart[], tools: unknown[]) => (
       toolHandler ? toolHandler(name, history, tools) : Promise.resolve({ kind: "text", text: "no tool work" })
     ),
@@ -115,6 +118,9 @@ describe("web server", () => {
     handler?: (name: string, prompt: string) => Promise<string>;
     toolHandler?: (name: string, history: ConversationPart[], tools: unknown[]) => Promise<unknown>;
     modelFetchImpl?: typeof fetch;
+    chatOnly?: boolean;
+    allowSharedSettings?: boolean;
+    projectRoot?: string;
   } = {}) {
     const port = pickPort();
     const router = makeRouter(opts.snap ?? [
@@ -128,6 +134,9 @@ describe("web server", () => {
       port,
       sessionStorageDir: sessionDir,
       roleInstructionsPath,
+      chatOnly: opts.chatOnly,
+      allowSharedSettings: opts.allowSharedSettings,
+      projectRoot: opts.projectRoot,
       ...(opts.modelFetchImpl ? { modelFetchImpl: opts.modelFetchImpl } : {}),
     });
     handles.push(handle);
@@ -144,6 +153,134 @@ describe("web server", () => {
     return fetch(url, { ...init, headers });
   }
 
+  it("binds to loopback by default", async () => {
+    const port = pickPort();
+    const handle = startWebServer({
+      router: makeRouter([]),
+      resolver: makeResolver(async () => ""),
+      port,
+      sessionStorageDir: sessionDir,
+      roleInstructionsPath,
+    });
+    handles.push(handle);
+
+    expect(handle.url).toBe(`http://127.0.0.1:${port}/`);
+    const response = await fetch(handle.url);
+    expect(response.status).toBe(200);
+  });
+
+  it("can run a full local listener beside a shared chat-and-settings listener", async () => {
+    const projectRoot = join(sessionDir, "host-project");
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(join(projectRoot, "local-only.txt"), "owner can read this", "utf8");
+    const router = makeRouter([]);
+    const sharedPrompts: string[] = [];
+    const resolver = makeResolver(async (_name, prompt) => {
+      sharedPrompts.push(prompt);
+      return `reply:${prompt}`;
+    });
+    const localPort = pickPort();
+    let sharePort = pickPort();
+    while (sharePort === localPort) sharePort = pickPort();
+    const common = {
+      router,
+      resolver,
+      sessionStorageDir: sessionDir,
+      roleInstructionsPath,
+      projectRoot,
+    };
+    const local = startWebServer({ ...common, port: localPort });
+    const shared = startWebServer({
+      ...common,
+      port: sharePort,
+      chatOnly: true,
+      allowSharedSettings: true,
+    });
+    handles.push(local, shared);
+
+    const localFile = await fetch(`${local.url}api/files/read?path=local-only.txt`);
+    expect(localFile.status).toBe(200);
+    expect((await localFile.json() as { content?: string }).content).toBe("owner can read this");
+    expect((await fetch(`${local.url}api/role-instructions`)).status).toBe(200);
+
+    const sharedFile = await fetch(`${shared.url}api/files/read?path=local-only.txt`);
+    expect(sharedFile.status).toBe(404);
+    const sharedInstructions = await fetch(`${shared.url}api/role-instructions`);
+    expect(sharedInstructions.status).toBe(200);
+    expect(await sharedInstructions.json()).not.toHaveProperty("path");
+    expect((await fetch(`${shared.url}api/usage.json`)).status).toBe(200);
+    expect((await fetch(`${shared.url}api/usage`)).status).toBe(200);
+    expect((await fetch(`${shared.url}api/providers`)).status).toBe(200);
+    expect((await fetch(`${shared.url}api/role-models`)).status).toBe(400);
+    expect((await fetch(`${shared.url}api/role-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })).status).toBe(400);
+    expect((await fetch(`${shared.url}api/reasoning-model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })).status).toBe(400);
+
+    const sharedOrigin = "https://friend-node.example.ts.net";
+    const savedInstructions = await fetch(`${shared.url}api/role-instructions`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Host": "friend-node.example.ts.net",
+        "Origin": sharedOrigin,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ instructions: { global: "shared preference", roles: {} } }),
+    });
+    expect(savedInstructions.status).toBe(200);
+    expect(await savedInstructions.json()).not.toHaveProperty("path");
+
+    const sharedTurn = await fetch(`${shared.url}api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "shared-settings-turn",
+        message: "hello",
+        forceRole: "orchestration",
+      }),
+    });
+    expect(sharedTurn.status).toBe(200);
+    expect(sharedPrompts.some((prompt) => prompt.includes("shared preference"))).toBe(true);
+
+    const crossOriginWrite = await fetch(`${shared.url}api/role-instructions`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Host": "friend-node.example.ts.net",
+        "Origin": "https://evil.example",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ instructions: { global: "evil", roles: {} } }),
+    });
+    expect(crossOriginWrite.status).toBe(403);
+
+    for (const path of [
+      "/api/security/context",
+      "/api/projects",
+      "/api/sessions",
+      "/api/goals",
+      "/api/artifacts/proposals",
+    ]) {
+      expect((await fetch(`${shared.url}${path}`)).status, path).toBe(404);
+    }
+
+    const [localShell, sharedShell] = await Promise.all([
+      fetch(local.url).then((response) => response.text()),
+      fetch(shared.url).then((response) => response.text()),
+    ]);
+    expect(localShell).toContain('"chatOnly":false');
+    expect(sharedShell).toContain('"chatOnly":true');
+    expect(sharedShell).toContain('"allowSharedSettings":true');
+    expect(sharedShell).not.toContain(roleInstructionsPath);
+  });
+
   it("serves the SPA shell at /", async () => {
     const { url } = spawn();
     const r = await fetch(`${url}/`);
@@ -153,6 +290,117 @@ describe("web server", () => {
     expect(body).toContain("HeroMindmap");
     expect(body).toContain("Lattice — multi-agent");
     expect(body).toContain("id=\"favicon\"");
+  });
+
+  it("enforces chat-only mode server-side and keeps chat history off disk", async () => {
+    const projectRoot = join(sessionDir, "private-project");
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(join(projectRoot, "host-secret.txt"), "must remain unreachable", "utf8");
+    writeFileSync(roleInstructionsPath, JSON.stringify({
+      version: 1,
+      global: "HOST_INSTRUCTION_MARKER",
+      roles: { orchestration: "HOST_ROLE_MARKER" },
+    }), "utf8");
+
+    const prompts: string[] = [];
+    let toolCalls = 0;
+    const { url } = spawn({
+      chatOnly: true,
+      projectRoot,
+      handler: async (_role, prompt) => {
+        prompts.push(prompt);
+        return "// host-secret.txt\nreplacement content";
+      },
+      toolHandler: async () => {
+        toolCalls += 1;
+        return { kind: "text", text: "tool should not run" };
+      },
+    });
+
+    const shell = await fetch(`${url}/`);
+    expect(shell.status).toBe(200);
+    const shellBody = await shell.text();
+    expect(shellBody).toContain('"chatOnly":true');
+    expect(shellBody).toContain('"localModels":[]');
+
+    const completion = await fetch(`${url}/api/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "categorise this", role: "mindmap-categorize" }),
+    });
+    expect(completion.status).toBe(200);
+
+    for (const [path, method] of [
+      ["/api/security/context", "GET"],
+      ["/api/usage", "GET"],
+      ["/api/usage.json", "GET"],
+      ["/api/ollama-health", "GET"],
+      ["/api/projects", "GET"],
+      ["/api/files/read?path=host-secret.txt", "GET"],
+      ["/api/sessions", "GET"],
+      ["/api/role-instructions", "GET"],
+      ["/api/reasoning-models", "GET"],
+      ["/api/providers", "GET"],
+      ["/api/role-models", "GET"],
+      ["/api/goals", "GET"],
+      ["/api/task", "POST"],
+      ["/api/files/write", "POST"],
+      ["/api/artifacts/proposals", "POST"],
+      ["/api/goal", "POST"],
+      ["/api/role-instructions", "PUT"],
+      ["/api/sessions", "DELETE"],
+    ] as const) {
+      const response = await fetch(`${url}${path}`, {
+        method,
+        ...(method === "POST" || method === "PUT"
+          ? { headers: { "Content-Type": "application/json" }, body: "{}" }
+          : {}),
+      });
+      expect(response.status, `${method} ${path}`).toBe(404);
+      expect(await response.json()).toEqual({ error: "not available in chat-only mode" });
+    }
+
+    const send = (message: string) => fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "friend-chat",
+        message,
+        forceRole: "orchestration",
+        builder: true,
+      }),
+    });
+    const first = await send("hello");
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as { artifact?: unknown; turns?: number };
+    expect(firstBody.artifact).toBeNull();
+    expect(firstBody.turns).toBe(1);
+
+    const streamed = await fetch(`${url}/api/chat-stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "friend-stream",
+        message: "stream this",
+        forceRole: "orchestration",
+        builder: true,
+      }),
+    });
+    expect(streamed.status).toBe(200);
+    expect(streamed.headers.get("content-type")).toContain("text/event-stream");
+    expect(await streamed.text()).toContain('"kind":"done"');
+
+    const second = await send("do you remember me?");
+    expect(second.status).toBe(200);
+    expect((await second.json() as { turns?: number }).turns).toBe(2);
+    expect(toolCalls).toBe(0);
+    expect(prompts.some((prompt) => prompt.includes("HOST_INSTRUCTION_MARKER"))).toBe(false);
+    expect(prompts.some((prompt) => prompt.includes("HOST_ROLE_MARKER"))).toBe(false);
+    expect(prompts.at(-1)).toContain("do you remember me?");
+    expect(prompts.at(-1)).toContain("replacement content");
+    expect(existsSync(join(sessionDir, "friend-chat.json"))).toBe(false);
+    expect(existsSync(join(sessionDir, "friend-stream.json"))).toBe(false);
+    expect(readFileSync(join(projectRoot, "host-secret.txt"), "utf8")).toBe("must remain unreachable");
   });
 
   it("serves /app.jsx with the conversation manager entry point", async () => {
@@ -171,6 +419,12 @@ describe("web server", () => {
     expect(body).toContain("mm-empty");
     expect(body).toContain("onPointerDown={() => loadModels(role, provider, true, true)}");
     expect(body).toContain("Model catalogue through");
+    expect(body).toContain("SHOW_NON_FILE_CONTROLS");
+    expect(body).toContain("SHARED CHAT");
+    expect(body).toContain("allowBuilder={!CHAT_ONLY}");
+    expect(body.indexOf('<span className="mm-settings-name">Routing</span>')).toBeLessThan(
+      body.indexOf('<span className="mm-settings-name">Appearance</span>'),
+    );
   });
 
   it("serves Phase A polish CSS and template starters", async () => {

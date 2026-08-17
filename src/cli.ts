@@ -712,7 +712,14 @@ async function cmdChat(
   await repl.run();
 }
 
-async function cmdServe(port: number, local: boolean, projectRoot?: string): Promise<void> {
+async function cmdServe(
+  port: number,
+  local: boolean,
+  projectRoot?: string,
+  host = "127.0.0.1",
+  chatOnly = false,
+  shareChatPort?: number,
+): Promise<void> {
   // Always register Ollama providers at boot so the web UI's per-request
   // `useLocal` toggle has something to route to. If the local daemon
   // isn't running, calls just fail with a fetch error — same shape as
@@ -738,10 +745,31 @@ async function cmdServe(port: number, local: boolean, projectRoot?: string): Pro
     localResolver,
     cloudResolver,
     defaultUseLocal: local,
+    chatOnly,
+    host,
     port,
     projectRoot,
   });
   console.log(`multi-agent web UI live at ${url}`);
+  if (chatOnly) {
+    console.log("chat-only mode: local files/tools/settings are blocked; sessions are memory-only");
+  }
+  if (shareChatPort !== undefined) {
+    const { url: shareUrl } = startWebServer({
+      router,
+      resolver,
+      localResolver,
+      cloudResolver,
+      defaultUseLocal: local,
+      chatOnly: true,
+      allowSharedSettings: true,
+      host: "127.0.0.1",
+      port: shareChatPort,
+      projectRoot,
+    });
+    console.log(`chat + non-file settings share target live at ${shareUrl}`);
+    console.log(`proxy port ${shareChatPort} with Tailscale; keep port ${port} for this PC only`);
+  }
   console.log(`open it in a browser. Ctrl+C to stop.`);
   // Keep the process alive — server holds the event loop. Wait forever.
   await new Promise<void>(() => {});
@@ -812,7 +840,7 @@ Commands:
   chat <session-name>      interactive multi-turn REPL with persistent history
                            (multi-agent mode by default)
   sessions                 list saved chat session names
-  serve                    start the local web UI on http://localhost:<port>
+  serve                    start the local web UI on http://127.0.0.1:<port>
                            (default 7421). Also exposed as: npm run web
   usage                    print router state (counts, cooldowns, % remaining)
   doctor                   print env/provider diagnostics without secret values
@@ -867,12 +895,21 @@ Flags for 'diagnose-routing':
                                   Omit for a cheap config-only diagnostic.
 
 Flags for 'serve':
+  --host=<address>                interface to bind (default 127.0.0.1). Keep the
+                                  default when proxying privately with Tailscale Serve.
   --port=<n>                      port to bind (default 7421)
+  --chat-only                     expose chat only: block projects, files, tools,
+                                  artifacts, goals, saved sessions, and settings;
+                                  keep conversation history in memory only
+  --share-chat-port=<n>           also start a separate loopback-only, memory-only
+                                  chat + non-file-settings listener for Tailscale
+                                  (for example 7422), while the main port keeps
+                                  the full local UI
   --project=<name|id>             activate the named project before starting the server
                                   (sets it as the global active project)
   --local                         default the web UI into hybrid local-model mode
-                                  (Qwen 3.5 9B for reasoning, Qwen 2.5 Coder 14B for
-                                  action-code via Ollama at localhost:11434). The web
+                                  (configured reasoning + action-code models via
+                                  Ollama at localhost:11434). The web
                                   UI can still toggle modes per request; this flag
                                   only sets the initial default.
 
@@ -1127,8 +1164,11 @@ async function main(): Promise<void> {
     const { values: sv } = parseArgs({
       args: argv.slice(1),
       options: {
+        host: { type: "string", default: "127.0.0.1" },
         port: { type: "string", default: "7421" },
         local: { type: "boolean", default: false },
+        "chat-only": { type: "boolean", default: false },
+        "share-chat-port": { type: "string" },
         project: { type: "string" },
       },
       allowPositionals: false,
@@ -1137,6 +1177,30 @@ async function main(): Promise<void> {
     const port = Number(sv.port);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
       console.error(`Error: --port must be a valid port number (got: ${sv.port})`);
+      process.exit(2);
+    }
+    const host = String(sv.host).trim();
+    if (!host) {
+      console.error("Error: --host must not be empty");
+      process.exit(2);
+    }
+    const shareChatPort = sv["share-chat-port"] === undefined
+      ? undefined
+      : Number(sv["share-chat-port"]);
+    if (shareChatPort !== undefined && (!Number.isFinite(shareChatPort) || shareChatPort < 1 || shareChatPort > 65535)) {
+      console.error(`Error: --share-chat-port must be a valid port number (got: ${sv["share-chat-port"]})`);
+      process.exit(2);
+    }
+    if (shareChatPort === port) {
+      console.error("Error: --share-chat-port must differ from --port");
+      process.exit(2);
+    }
+    if (shareChatPort !== undefined && Boolean(sv["chat-only"])) {
+      console.error("Error: use either --chat-only or --share-chat-port, not both");
+      process.exit(2);
+    }
+    if (shareChatPort !== undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+      console.error("Error: --share-chat-port requires the full UI to stay on a loopback --host");
       process.exit(2);
     }
     let serveRoot: string | undefined;
@@ -1152,7 +1216,14 @@ async function main(): Promise<void> {
     } else {
       serveRoot = getActiveProject().root;
     }
-    await cmdServe(port, Boolean(sv.local), serveRoot);
+    await cmdServe(
+      port,
+      Boolean(sv.local),
+      serveRoot,
+      host,
+      Boolean(sv["chat-only"]),
+      shareChatPort,
+    );
     return;
   }
 

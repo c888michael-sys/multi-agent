@@ -610,7 +610,7 @@ const ROLE_ROUTING_LABELS = {
 // Per-role provider + model routing. Each customisable role can be pointed at
 // any configured provider, then a model within it; clearing reverts to the
 // default chain. Mirrors the CLI `models set/clear` and /api/role-model.
-function ModelRoutingSection({ open }) {
+function ModelRoutingSection({ open, sharedAccess = false }) {
   const [providers, setProviders] = React.useState([]);
   const [roles, setRoles] = React.useState([]);
   const [overrides, setOverrides] = React.useState({});
@@ -747,6 +747,7 @@ function ModelRoutingSection({ open }) {
         <strong>API provider</strong> is where the request is sent; <strong>model</strong> is the model
         selected inside that provider's catalogue. Leave a role on <em>Default</em> to use its built-in
         fallback chain. Live model lists per provider (CLI: <code>models set</code>).
+        {sharedAccess ? ' Changes here are global and affect new calls for everyone using this server.' : ''}
       </span>
       <div className="mm-role-routing">
         {roles.map((role) => {
@@ -873,7 +874,13 @@ function ModelRoutingSection({ open }) {
   );
 }
 
-function SettingsDrawer({ open, onClose, settings, onChange }) {
+function runtimeLocalModelSummary() {
+  const models = window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.localModels;
+  if (!Array.isArray(models) || models.length === 0) return 'the configured local Ollama models';
+  return models.map((entry) => `${entry.role} → ${entry.model}`).join(' and ');
+}
+
+function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true, sharedAccess = false }) {
   const drawerRef = React.useRef(null);
   const scrimRef = React.useRef(null);
   // Hybrid-mode health gate. When the user toggles 'Hybrid local models'
@@ -939,7 +946,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
       const res = await fetch('/api/ollama-health');
       const health = res.ok ? await res.json() : { reachable: false, reason: `HTTP ${res.status}` };
       if (!health.reachable) {
-        setHybridError(`Local Ollama daemon not detected at ${health.baseUrl || 'localhost:11434'}${health.reason ? ' — ' + health.reason : ''}. Install Ollama and pull the required models, or leave hybrid mode off.`);
+        setHybridError(`The server host's Ollama daemon was not detected at ${health.baseUrl || 'localhost:11434'}${health.reason ? ' — ' + health.reason : ''}. Start Ollama and pull the required models on the host, or leave hybrid mode off.`);
         onChange({ ...settings, useLocal: false });
       } else if (health.missing && health.missing.length > 0) {
         setHybridError(`Ollama is running, but these required models are missing: ${health.missing.join(', ')}. Run \`ollama pull <model>\` for each, then try again.`);
@@ -1030,6 +1037,22 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
           <button className="mm-settings-close" onClick={onClose} aria-label="Close settings">×</button>
         </div>
         <div className="mm-settings-body">
+          <div className="mm-settings-row mm-settings-row-select">
+            <span className="mm-settings-name">Routing</span>
+            <select
+              className="mm-settings-select"
+              value={routingValue}
+              onChange={onRoutingChange}
+            >
+              {ROUTING_OPTIONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+            <span className="mm-settings-hint">
+              <code>auto</code>: orchestrator picks the shortest useful route. <code>multi-agent</code>: plan, research/action, check/repair when needed, then format (default). <code>brainstorming</code>: multiple model perspectives in parallel. Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
+            </span>
+          </div>
+
           <div className="mm-settings-row">
             <span className="mm-settings-name">Appearance</span>
             <div className="mm-theme-segment" role="group" aria-label="Theme">
@@ -1064,15 +1087,15 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                   Hybrid local models
                   {hybridChecking ? <span className="mm-settings-hint" style={{ marginLeft: 8 }}>checking…</span> : null}
                 </span>
-                <span className="mm-settings-hint">route reasoning → Qwen 3.5 9B and action-code → Qwen 2.5 Coder 14B on your local Ollama daemon. Other roles unchanged. (CLI: <code>--local</code>)</span>
+                <span className="mm-settings-hint">route {runtimeLocalModelSummary()} through the host's local Ollama daemon. Other roles are unchanged. (CLI: <code>--local</code>)</span>
                 {hybridError ? (
                   <span className="mm-settings-error" role="alert">{hybridError}</span>
                 ) : null}
               </span>
             </label>
           </div>
-          <ModelRoutingSection open={open} />
-          <div className="mm-settings-row">
+          <ModelRoutingSection open={open} sharedAccess={sharedAccess} />
+          {allowBuilder ? <div className="mm-settings-row">
             <label className="mm-settings-label">
               <select value={settings.builderMode} onChange={(e) => onChange({ ...settings, builderMode: e.target.value })}>
                 <option value="auto">auto</option>
@@ -1084,7 +1107,7 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
                 <span className="mm-settings-hint">auto detects file-producing requests; always forces the staged-file workflow. Files are staged for review and never written directly to the project.</span>
               </span>
             </label>
-          </div>
+          </div> : null}
           <div className="mm-settings-row">
             <label className="mm-settings-label">
               <input
@@ -1111,25 +1134,13 @@ function SettingsDrawer({ open, onClose, settings, onChange }) {
               </span>
             </label>
           </div>
-          <div className="mm-settings-row mm-settings-row-select">
-            <span className="mm-settings-name">Routing</span>
-            <select
-              className="mm-settings-select"
-              value={routingValue}
-              onChange={onRoutingChange}
-            >
-              {ROUTING_OPTIONS.map((r) => (
-                <option key={r.value} value={r.value}>{r.label}</option>
-              ))}
-            </select>
-            <span className="mm-settings-hint">
-              <code>auto</code>: orchestrator picks the shortest useful route. <code>multi-agent</code>: plan, research/action, check/repair when needed, then format (default). <code>brainstorming</code>: multiple model perspectives in parallel. Pick a specific role to pin every turn to that role's chain (CLI: <code>--role=&lt;name&gt;</code>).
-            </span>
-          </div>
           <div className="mm-settings-row mm-settings-row-instructions">
             <span className="mm-settings-name">Long-term role instructions</span>
             <span className="mm-settings-hint">
-              Web-only local memory. Saved to <code>{roleInstructionsPath || '~/.multi-agent/role-instructions.json'}</code>; you can edit the file directly too. Global text goes to every role, and each role box only goes to that specialist. The built-in recommended preset can always be restored.
+              {sharedAccess
+                ? 'Shared role behaviour. Changes are global and affect new turns for everyone using this server; no host file path is exposed. '
+                : <>Web-only local memory. Saved to <code>{roleInstructionsPath || '~/.multi-agent/role-instructions.json'}</code>; you can edit the file directly too. </>}
+              Global text goes to every role, and each role box only goes to that specialist. The built-in recommended preset can always be restored.
             </span>
             {roleInstructions ? (
               <div className="mm-role-instructions-editor">
@@ -3800,7 +3811,22 @@ function runtimeDefaultUseLocal() {
   return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.defaultUseLocal === true;
 }
 
+function runtimeChatOnly() {
+  return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.chatOnly === true;
+}
+
+function runtimeAllowSharedSettings() {
+  return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.allowSharedSettings === true;
+}
+
+const CHAT_ONLY = runtimeChatOnly();
+const SHARED_SETTINGS = CHAT_ONLY && runtimeAllowSharedSettings();
+const SHOW_NON_FILE_CONTROLS = !CHAT_ONLY || SHARED_SETTINGS;
+
 function loadSettings() {
+  if (CHAT_ONLY && !SHARED_SETTINGS) {
+    return { ...DEFAULT_SETTINGS, builderMode: 'off', useLocal: runtimeDefaultUseLocal() };
+  }
   try {
     const raw = localStorage.getItem(SETTINGS_LS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS, useLocal: runtimeDefaultUseLocal() };
@@ -3808,9 +3834,11 @@ function loadSettings() {
     return {
       serious: typeof parsed.serious === 'boolean' ? parsed.serious : false,
       search:  typeof parsed.search  === 'boolean' ? parsed.search  : false,
-      builderMode: ['auto', 'always', 'off'].includes(parsed.builderMode) ? parsed.builderMode : (parsed.builder === true ? 'always' : 'auto'),
+      builderMode: CHAT_ONLY
+        ? 'off'
+        : (['auto', 'always', 'off'].includes(parsed.builderMode) ? parsed.builderMode : (parsed.builder === true ? 'always' : 'auto')),
       forceRole: VALID_FORCE_ROLES.has(parsed.forceRole) ? parsed.forceRole : 'auto',
-      useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : false,
+      useLocal: typeof parsed.useLocal === 'boolean' ? parsed.useLocal : runtimeDefaultUseLocal(),
       routingMode: VALID_ROUTING_MODES.has(parsed.routingMode) ? parsed.routingMode : DEFAULT_SETTINGS.routingMode,
       theme: VALID_THEMES.has(parsed.theme) ? parsed.theme : DEFAULT_SETTINGS.theme,
     };
@@ -5051,14 +5079,13 @@ function HeroMindmap() {
   const [hybridAutoOff, setHybridAutoOff] = React.useState(null);
 
   // On mount, if the persisted setting wants hybrid mode but the local
-  // Ollama daemon isn't actually running on this device (e.g., the user
-  // saved the setting on another machine and is now on one without local
-  // models), turn the toggle back off so chat traffic stays on the cloud
+  // Ollama daemon isn't actually running on the server host, turn the toggle
+  // back off so chat traffic stays on the cloud
   // chain. Without this, every reasoning/action-code turn would silently
   // fall through to the cloud fallback while the UI still suggested
   // local-first routing.
   React.useEffect(() => {
-    if (!settings.useLocal) return;
+    if ((CHAT_ONLY && !SHARED_SETTINGS) || !settings.useLocal) return;
     let cancelled = false;
     (async () => {
       try {
@@ -5069,7 +5096,7 @@ function HeroMindmap() {
           setSettings({ ...settings, useLocal: false });
           setHybridAutoOff(
             !health.reachable
-              ? `Hybrid local models disabled — Ollama daemon not detected on this device.`
+              ? `Hybrid local models disabled — Ollama daemon not detected on the server host.`
               : `Hybrid local models disabled — missing models: ${health.missing.join(', ')}.`,
           );
           setTimeout(() => setHybridAutoOff(null), 6000);
@@ -5077,7 +5104,7 @@ function HeroMindmap() {
       } catch {
         if (!cancelled) {
           setSettings({ ...settings, useLocal: false });
-          setHybridAutoOff('Hybrid local models disabled - could not verify Ollama on this device.');
+          setHybridAutoOff('Hybrid local models disabled - could not verify Ollama on the server host.');
           setTimeout(() => setHybridAutoOff(null), 6000);
         }
       }
@@ -5157,7 +5184,7 @@ function HeroMindmap() {
     if (!q && (!turnAttachments || turnAttachments.length === 0) && imgs.length === 0) return;
 
     // /goal <description> — start an autonomous goal loop instead of a chat turn
-    if (q.startsWith('/goal ') || q === '/goal') {
+    if (!CHAT_ONLY && (q.startsWith('/goal ') || q === '/goal')) {
       const description = q.slice('/goal'.length).trim();
       if (!description) return;
       setDraft('');
@@ -5730,6 +5757,29 @@ function HeroMindmap() {
           Lattice
         </div>
         <div className="mm-nav-right">
+          {CHAT_ONLY ? (
+            <>
+              {SHARED_SETTINGS ? <SystemStatus useLocal={settings.useLocal} /> : null}
+              <span className="mm-status local" title="Workspace files, projects, tools, goals, artifacts, tasks, and saved host sessions are disabled">
+                <i />{SHARED_SETTINGS ? 'SHARED CHAT' : 'CHAT ONLY'}
+              </span>
+              {SHARED_SETTINGS ? (
+                <button
+                  className={'mm-nav-settings' + (settingsOpen ? ' open' : '') + (activeSettingsCount > 0 ? ' active' : '')}
+                  onClick={() => setSettingsOpen(true)}
+                  title="Open chat, model, and routing settings"
+                  aria-label="Open settings"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                  {activeSettingsCount > 0 && <span className="mm-nav-settings-badge">{activeSettingsCount}</span>}
+                </button>
+              ) : null}
+            </>
+          ) : (
+          <>
           <SystemStatus useLocal={settings.useLocal} />
           <button
             className={'mm-nav-sessions' + (sessionsOpen ? ' open' : '')}
@@ -5767,9 +5817,12 @@ function HeroMindmap() {
             </svg>
             {activeSettingsCount > 0 && <span className="mm-nav-settings-badge">{activeSettingsCount}</span>}
           </button>
+          </>
+          )}
         </div>
       </nav>
 
+      {SHOW_NON_FILE_CONTROLS && <>
       <Sidebar phase={phase} latestResponse={newest} open={sidebarOpen} useLocal={settings.useLocal} />
       {/* Mobile-only quota/stats toggle. Hidden via media query >880px. */}
       <button
@@ -5785,8 +5838,13 @@ function HeroMindmap() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         onChange={setSettings}
+        allowBuilder={!CHAT_ONLY}
+        sharedAccess={CHAT_ONLY}
       />
 
+      </>}
+
+      {!CHAT_ONLY && <>
       <ConversationDrawer
         open={sessionsOpen}
         sessions={sessionList}
@@ -5842,6 +5900,7 @@ function HeroMindmap() {
         onStartGoal={onStartGoalCommand}
         onOpenSession={openSession}
       />
+      </>}
 
       <div
         ref={stageRef}
@@ -5856,7 +5915,7 @@ function HeroMindmap() {
           Lives inside the stage so it overlays content without
           taking layout space when hidden.
         */}
-        <QuotaBanner phase={phase} useLocal={settings.useLocal} />
+        {SHOW_NON_FILE_CONTROLS && <QuotaBanner phase={phase} useLocal={settings.useLocal} />}
         {hybridAutoOff ? (
           <div className="mm-quota-banner mm-quota-warn" role="status" aria-live="polite">
             <span className="mm-quota-banner-dot" />
@@ -5885,10 +5944,10 @@ function HeroMindmap() {
               liveTurn={liveTurn}
               attachments={attachments} setAttachments={setAttachments}
               burstError={burstError}
-              onApplyEdit={openFileForEdit}
-              onReviewArtifact={setArtifactReview}
-              onUndoArtifact={undoArtifact}
-              onOpenArtifactFiles={openArtifactFiles}
+              onApplyEdit={CHAT_ONLY ? null : openFileForEdit}
+              onReviewArtifact={CHAT_ONLY ? null : setArtifactReview}
+              onUndoArtifact={CHAT_ONLY ? null : undoArtifact}
+              onOpenArtifactFiles={CHAT_ONLY ? null : openArtifactFiles}
               onRetryTurn={(entry, automatic) => submit(entry.images || [], entry.prompt, { automatic })}
               retryDisabled={streaming}
               settings={settings}

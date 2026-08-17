@@ -23,11 +23,9 @@ export interface OllamaProviderOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   /**
-   * Per-request timeout in milliseconds. Defaults to 180_000 (3 min) —
-   * generous enough that a cold 32B model loading from disk on a slow
-   * machine still gets through, but bounded so a wedged daemon can't
-   * hang the categorize-prefetch pipeline indefinitely. Override per
-   * test or per-deploy.
+   * Optional fixed request deadline in milliseconds. Local generation has no
+   * fixed deadline by default because model loading and long reasoning can be
+   * slow. A caller AbortSignal still cancels the underlying Ollama request.
    */
   requestTimeoutMs?: number;
   /**
@@ -44,6 +42,8 @@ export interface OllamaProviderOptions {
 interface OllamaMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  /** Base64 image payloads accepted by Ollama's multimodal chat endpoint. */
+  images?: string[];
   /** Present on assistant turns that requested tool calls. */
   tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
 }
@@ -52,7 +52,13 @@ function historyToOllamaMessages(history: ConversationPart[]): OllamaMessage[] {
   const messages: OllamaMessage[] = [];
   for (const part of history) {
     if (part.kind === "user_text") {
-      messages.push({ role: "user", content: part.text });
+      messages.push({
+        role: "user",
+        content: part.text,
+        ...(part.images?.length
+          ? { images: part.images.map((image) => image.dataBase64) }
+          : {}),
+      });
     } else if (part.kind === "model_text") {
       messages.push({ role: "assistant", content: part.text });
     } else if (part.kind === "model_calls") {
@@ -167,23 +173,31 @@ export class OllamaProvider implements Provider {
     this.model = opts.model;
     this.resolvedModel = opts.model;
     this.baseUrl = opts.baseUrl ?? "http://localhost:11434";
-    this.requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? Number.POSITIVE_INFINITY;
     this.numCtx = opts.numCtx ?? 8192;
     if (opts.fetchImpl) this.fetchImpl = opts.fetchImpl;
   }
 
-  /**
-   * Run a fetch with an AbortController-backed timeout. Without this,
-   * a stalled Ollama daemon (model still loading, GPU contention) would
-   * keep the call pending forever and leave the higher-level prefetch
-   * promise unresolved.
-   */
+  /** Run a fetch with caller cancellation and an optional fixed deadline. */
   private fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
     const fetchImpl = this.fetchImpl ?? fetch;
+    if (!Number.isFinite(this.requestTimeoutMs) || this.requestTimeoutMs <= 0) {
+      return fetchImpl(url, init);
+    }
+
     const controller = new AbortController();
+    const parentSignal = init.signal;
+    const abortFromParent = () => controller.abort();
+    if (parentSignal) {
+      if (parentSignal.aborted) controller.abort();
+      else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+    }
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     return fetchImpl(url, { ...init, signal: controller.signal })
-      .finally(() => clearTimeout(timer));
+      .finally(() => {
+        clearTimeout(timer);
+        parentSignal?.removeEventListener("abort", abortFromParent);
+      });
   }
 
   async complete(prompt: string, opts?: CompleteOptions): Promise<string> {
@@ -201,10 +215,11 @@ export class OllamaProvider implements Provider {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!res.ok) {
       const text = await res.text();
-      const alias = await this.resolveInstalledAlias(res.status, text);
+      const alias = await this.resolveInstalledAlias(res.status, text, opts?.signal);
       if (alias) {
         this.resolvedModel = alias;
         body = { ...body, model: alias };
@@ -212,6 +227,7 @@ export class OllamaProvider implements Provider {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          ...(opts?.signal ? { signal: opts.signal } : {}),
         });
         if (res.ok) {
           const json = (await res.json()) as { message?: { content?: string } };
@@ -241,10 +257,11 @@ export class OllamaProvider implements Provider {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!res.ok || !res.body) {
       const text = res.body ? await res.text() : "";
-      const alias = await this.resolveInstalledAlias(res.status, text);
+      const alias = await this.resolveInstalledAlias(res.status, text, opts?.signal);
       if (alias) {
         this.resolvedModel = alias;
         body = { ...body, model: alias };
@@ -252,6 +269,7 @@ export class OllamaProvider implements Provider {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          ...(opts?.signal ? { signal: opts.signal } : {}),
         });
         if (res.ok && res.body) {
           return this.readStreamResponse(res, onToken);
@@ -334,6 +352,7 @@ export class OllamaProvider implements Provider {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -400,17 +419,25 @@ export class OllamaProvider implements Provider {
     return o;
   }
 
-  private async resolveInstalledAlias(status: number, bodyText: string): Promise<string | null> {
+  private async resolveInstalledAlias(
+    status: number,
+    bodyText: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
     if (status !== 404 || !/not found/i.test(bodyText)) return null;
     try {
-      const res = await this.fetchWithTimeout(`${this.baseUrl}/api/tags`, { method: "GET" });
+      const res = await this.fetchWithTimeout(`${this.baseUrl}/api/tags`, {
+        method: "GET",
+        ...(signal ? { signal } : {}),
+      });
       if (!res.ok) return null;
       const json = (await res.json()) as { models?: Array<{ name?: string }> };
       const installed = (json.models ?? []).map((m) => String(m.name ?? "")).filter(Boolean);
       const exact = installed.find((name) => name === this.model);
       if (exact) return exact;
       return installed.find((name) => name.startsWith(`${this.model}-`)) ?? null;
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) throw err;
       return null;
     }
   }

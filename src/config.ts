@@ -133,16 +133,16 @@ import {
  * can opt up to larger models with OLLAMA_REASONING_MODEL /
  * OLLAMA_CODER_MODEL and tune memory with per-role *_NUM_CTX vars.
  *
- * `requestTimeoutMs` is intentionally long for local 32B models: a
- * cold model load can be slow, and waiting is better than skipping
- * local reasoning just because it took a few minutes.
+ * Local generations have no fixed deadline by default: cold model loads and
+ * long reasoning can take many minutes. Explicit Stop/disconnect cancellation
+ * remains active, and OLLAMA_REQUEST_TIMEOUT_MS can opt into a finite cutoff.
  */
 export const LOCAL_OLLAMA_MODELS = {
   reasoning: {
     providerId: "ollama:qwen3.5-9b",
     model: "qwen3.5:9b",
     numCtx: 32_768,
-    requestTimeoutMs: 15 * 60_000,
+    requestTimeoutMs: Number.POSITIVE_INFINITY,
     modelEnv: "OLLAMA_REASONING_MODEL",
     numCtxEnv: "OLLAMA_REASONING_NUM_CTX",
   },
@@ -150,7 +150,7 @@ export const LOCAL_OLLAMA_MODELS = {
     providerId: "ollama:qwen2.5-coder",
     model: "qwen2.5-coder:14b",
     numCtx: 32_768,
-    requestTimeoutMs: 10 * 60_000,
+    requestTimeoutMs: Number.POSITIVE_INFINITY,
     modelEnv: "OLLAMA_CODER_MODEL",
     numCtxEnv: "OLLAMA_CODER_NUM_CTX",
   },
@@ -548,7 +548,7 @@ export function buildDelegateProvider(
         model: m,
         baseUrl,
         numCtx: 32_768,
-        requestTimeoutMs: 10 * 60_000,
+        requestTimeoutMs: Number.POSITIVE_INFINITY,
       });
     }
     default:

@@ -261,7 +261,7 @@ describe("default role registry", () => {
     ]);
   });
 
-  it("override slot is first; hybrid mode then prepends Ollama to reasoning and action-code", () => {
+  it("hybrid mode prepends Ollama to reasoning, vision, and action-code", () => {
     // Customisable roles get the override slot at index 0 (inactive by default,
     // skipped by the resolver), then the local-prepend, then the cloud chain.
     expect(candidateIds("reasoning", true).slice(0, 2)).toEqual([
@@ -272,6 +272,12 @@ describe("default role registry", () => {
       "override:action-code",
       "ollama:qwen2.5-coder",
     ]);
+    expect(candidateIds("vision", true)).toEqual([
+      "ollama:qwen3.5-9b",
+      "gemini:1",
+      "gemini:2",
+    ]);
+    expect(candidateIds("vision", false)).toEqual(["gemini:1", "gemini:2"]);
     expect(candidateIds("reasoning", false).slice(0, 2)).toEqual([
       "override:reasoning",
       "openrouter:reasoning",
