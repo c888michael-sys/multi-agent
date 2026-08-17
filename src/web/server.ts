@@ -25,6 +25,14 @@ import type { BuilderQualitySnapshot } from "./builder-quality.js";
 import { ArtifactService } from "./artifact-service.js";
 import { parseArtifactCandidates, type ArtifactCandidate } from "./artifact-parser.js";
 import { fileURLToPath } from "node:url";
+import {
+  PublicAccessError,
+  PublicAccessManager,
+  clearPublicSessionCookie,
+  cookieValue,
+  publicSessionCookie,
+  type PublicSession,
+} from "./public-access.js";
 import type { Router } from "../router.js";
 import type { RoleResolver } from "../roles/resolver.js";
 import type { RoleName } from "../roles/types.js";
@@ -262,6 +270,14 @@ export interface ServerOptions {
    * project, tool, goal, artifact, task, and saved-session APIs stay blocked.
    */
   allowSharedSettings?: boolean;
+  /** Require a redeemed one-use invite before any restricted-listener API call. */
+  publicAccess?: PublicAccessManager;
+  /** Owner-only control plane for issuing and revoking public access. */
+  publicAccessAdmin?: PublicAccessManager;
+  /** HTTPS Funnel origin used when the owner issues an invite. */
+  publicBaseUrl?: string;
+  /** Build a resolver whose candidates have been filtered for public billing policy. */
+  publicResolverFactory?: (useLocal: boolean) => RoleResolver;
 }
 
 /** Upper bound for any JSON request handled by the web server. */
@@ -273,6 +289,7 @@ export const MAX_REQUEST_BODY_BYTES = 3 * 1024 * 1024;
  * `localResolver` not supplied), falls back to the default `resolver`.
  */
 function resolverFor(opts: ServerOptions, useLocal: boolean | undefined): RoleResolver {
+  if (opts.publicAccess && opts.publicResolverFactory) return opts.publicResolverFactory(useLocal === true);
   if (useLocal === true && opts.localResolver) return opts.localResolver;
   if (useLocal === false && opts.cloudResolver) return opts.cloudResolver;
   return opts.resolver;
@@ -282,12 +299,16 @@ function runtimeConfig(opts: ServerOptions): {
   defaultUseLocal: boolean;
   chatOnly: boolean;
   allowSharedSettings: boolean;
+  publicAccess: boolean;
+  publicAccessAdmin: boolean;
   localModels: Array<{ role: string; providerId: string; model: string }>;
 } {
   return {
     defaultUseLocal: opts.defaultUseLocal === true,
     chatOnly: opts.chatOnly === true,
     allowSharedSettings: opts.chatOnly === true && opts.allowSharedSettings === true,
+    publicAccess: Boolean(opts.publicAccess),
+    publicAccessAdmin: Boolean(opts.publicAccessAdmin),
     localModels: opts.chatOnly && !opts.allowSharedSettings
       ? []
       : Object.entries(LOCAL_OLLAMA_MODELS).map(([role, model]) => ({
@@ -317,9 +338,23 @@ const SHARED_SETTINGS_API_ROUTES: ReadonlyMap<string, ReadonlySet<string>> = new
 ]);
 
 function isChatOnlyApiRoute(opts: ServerOptions, pathname: string, method: string | undefined): boolean {
+  if (opts.publicAccess && pathname === "/api/role-instructions") return false;
   if (CHAT_ONLY_API_ROUTES.get(pathname)?.has(method ?? "") === true) return true;
   return opts.allowSharedSettings === true
     && SHARED_SETTINGS_API_ROUTES.get(pathname)?.has(method ?? "") === true;
+}
+
+function publicMutationError(req: IncomingMessage, session: PublicSession): string | null {
+  if (!isJsonRequest(req)) return "Content-Type must be application/json";
+  if (!isAllowedFetchSite(req.headers["sec-fetch-site"])) return "cross-site writes are not allowed";
+  if (!matchesCsrfToken(req.headers["x-csrf-token"], session.csrfToken)) return "valid X-CSRF-Token required";
+  return null;
+}
+
+function sendPublicAccessError(res: ServerResponse, error: PublicAccessError): void {
+  const status = error.code === "PAUSED" ? 503 : error.code === "INVALID_INVITE" ? 401 : 429;
+  if (error.retryAfterMs > 0) res.setHeader("Retry-After", String(Math.max(1, Math.ceil(error.retryAfterMs / 1000))));
+  sendJson(res, status, { error: error.message, code: error.code });
 }
 
 /** Allowed Origin values for state-changing file endpoints (localhost only). */
@@ -493,28 +528,34 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
   const volatileSessions = new Map<string, ChatSession>();
   const maxVolatileSessions = 64;
 
-  function sessionForChat(id: string, useLocal?: boolean, tools?: Tool[]): ChatSession {
+  function sessionForChat(id: string, useLocal?: boolean, tools?: Tool[], publicSessionId?: string): ChatSession {
     if (!opts.chatOnly) return createChatSession(opts, id, useLocal, tools);
 
-    const existing = volatileSessions.get(id);
+    const volatileId = publicSessionId
+      ? `${publicSessionId}:${opts.publicAccess?.policyVersion() ?? 0}:${id}`
+      : id;
+
+    const existing = volatileSessions.get(volatileId);
     if (existing) {
       existing.setUseLocal(useLocal ?? opts.defaultUseLocal ?? false);
-      volatileSessions.delete(id);
-      volatileSessions.set(id, existing);
+      volatileSessions.delete(volatileId);
+      volatileSessions.set(volatileId, existing);
       return existing;
     }
 
     const session = new ChatSession({
-      resolver: opts.cloudResolver ?? opts.resolver,
-      ...(opts.localResolver ? { localResolver: opts.localResolver } : {}),
+      resolver: opts.publicResolverFactory ? opts.publicResolverFactory(false) : (opts.cloudResolver ?? opts.resolver),
+      ...(opts.publicResolverFactory
+        ? { localResolver: opts.publicResolverFactory(true) }
+        : opts.localResolver ? { localResolver: opts.localResolver } : {}),
       useLocal: useLocal ?? opts.defaultUseLocal ?? false,
-      id,
+      id: volatileId,
       persistence: false,
-      ...(opts.allowSharedSettings
+      ...(opts.allowSharedSettings && !opts.publicAccess
         ? { roleInstructions: readRoleInstructions(roleInstructionsPath(opts)) }
         : {}),
     });
-    volatileSessions.set(id, session);
+    volatileSessions.set(volatileId, session);
     if (volatileSessions.size > maxVolatileSessions) {
       const oldestId = volatileSessions.keys().next().value as string | undefined;
       if (oldestId) volatileSessions.delete(oldestId);
@@ -550,6 +591,13 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
 
   const server = createServer(async (req, res) => {
     try {
+      if (opts.publicAccess) {
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("X-Frame-Options", "DENY");
+        res.setHeader("Referrer-Policy", "no-referrer");
+        res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+      }
       if (opts.cors) {
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
@@ -564,6 +612,70 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       const url = new URL(req.url ?? "/", `http://localhost:${port}`);
       const pathname = url.pathname;
 
+      let publicSession: PublicSession | null = null;
+      if (opts.publicAccess && pathname.startsWith("/api/")) {
+        const manager = opts.publicAccess;
+        const sessionToken = cookieValue(req.headers.cookie);
+
+        if (pathname === "/api/auth/status" && req.method === "GET") {
+          publicSession = manager.authenticate(sessionToken);
+          sendJson(res, 200, {
+            ...manager.status(),
+            authenticated: Boolean(publicSession),
+            csrfToken: publicSession?.csrfToken ?? null,
+            expiresAt: publicSession?.expiresAt ?? null,
+          });
+          return;
+        }
+        if (pathname === "/api/auth/redeem" && req.method === "POST") {
+          if (!isJsonRequest(req)) {
+            sendJson(res, 415, { error: "Content-Type must be application/json" });
+            return;
+          }
+          const parsed = safeJsonParse(await readBody(req)) as { token?: unknown } | null;
+          if (typeof parsed?.token !== "string" || !parsed.token) {
+            sendJson(res, 400, { error: "invite token required" });
+            return;
+          }
+          try {
+            const redeemed = manager.redeem(parsed.token, req.socket.remoteAddress ?? "unknown");
+            res.setHeader("Set-Cookie", publicSessionCookie(redeemed.sessionToken));
+            sendJson(res, 200, {
+              authenticated: true,
+              csrfToken: redeemed.session.csrfToken,
+              expiresAt: redeemed.session.expiresAt,
+            });
+          } catch (error) {
+            if (error instanceof PublicAccessError) sendPublicAccessError(res, error);
+            else throw error;
+          }
+          return;
+        }
+        if (pathname === "/api/auth/logout" && req.method === "POST") {
+          manager.logout(sessionToken);
+          res.setHeader("Set-Cookie", clearPublicSessionCookie());
+          sendJson(res, 200, { authenticated: false });
+          return;
+        }
+
+        publicSession = manager.authenticate(sessionToken);
+        if (!manager.status().enabled) {
+          sendJson(res, 503, { error: "public access is paused", code: "PAUSED" });
+          return;
+        }
+        if (!publicSession) {
+          sendJson(res, 401, { error: "valid public session required" });
+          return;
+        }
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          const guardError = publicMutationError(req, publicSession);
+          if (guardError) {
+            sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+            return;
+          }
+        }
+      }
+
       if (opts.chatOnly && pathname.startsWith("/api/")) {
         res.setHeader("Cache-Control", "no-store");
         if (!isChatOnlyApiRoute(opts, pathname, req.method)) {
@@ -573,6 +685,39 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
       }
 
       // --- API routes ---
+      if (opts.publicAccessAdmin && pathname === "/api/public/status" && req.method === "GET") {
+        sendJson(res, 200, opts.publicAccessAdmin.status());
+        return;
+      }
+
+      if (opts.publicAccessAdmin && pathname === "/api/public/invite" && req.method === "POST") {
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+          return;
+        }
+        const invite = opts.publicAccessAdmin.issueInvite();
+        const baseUrl = (opts.publicBaseUrl ?? "").replace(/\/$/, "");
+        sendJson(res, 200, {
+          expiresAt: invite.expiresAt,
+          token: invite.token,
+          url: baseUrl ? `${baseUrl}/#invite=${encodeURIComponent(invite.token)}` : null,
+        });
+        return;
+      }
+
+      if (opts.publicAccessAdmin && pathname === "/api/public/pause" && req.method === "POST") {
+        const guardError = mutationRequestError(req, port, csrfToken);
+        if (guardError) {
+          sendJson(res, guardError.startsWith("Content-Type") ? 415 : 403, { error: guardError });
+          return;
+        }
+        opts.publicAccessAdmin.pause();
+        volatileSessions.clear();
+        sendJson(res, 200, opts.publicAccessAdmin.status());
+        return;
+      }
+
       if (pathname === "/api/security/context" && req.method === "GET") {
         res.setHeader("Cache-Control", "no-store");
         const active = getActiveProject(projectsPath);
@@ -1121,7 +1266,10 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         if (parsed.model === null || parsed.model === DEFAULT_OPENROUTER_REASONING_MODEL) {
-          sendJson(res, 200, { selected: resetReasoningModelOverride() });
+          const selected = resetReasoningModelOverride();
+          opts.publicAccess?.modelPolicyChanged();
+          opts.publicAccessAdmin?.modelPolicyChanged();
+          sendJson(res, 200, { selected });
           return;
         }
         if (typeof parsed.model !== "string" || !parsed.model.trim()) {
@@ -1142,6 +1290,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             contextLength: option.contextLength,
             reasoningCapable: option.reasoningCapable,
           });
+          opts.publicAccess?.modelPolicyChanged();
+          opts.publicAccessAdmin?.modelPolicyChanged();
           sendJson(res, 200, { selected });
         } catch (err) {
           sendJson(res, 502, { error: (err as Error).message });
@@ -1157,6 +1307,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             id,
             label: PROVIDER_LABELS[id] ?? id,
             configured: isOverrideProviderConfigured(id),
+            publicAccess: Boolean(opts.publicAccess),
           })),
           roles: CUSTOMISABLE_ROLES,
           overrides: readAllRoleModelOverrides(),
@@ -1188,6 +1339,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             selected: readRoleModelOverride(role),
             defaultPrimary: defaultPrimaryFor(role),
             models: result.models,
+            publicFreeOnly: Boolean(opts.publicAccess),
             source: result.source,
             fetchedAt: result.fetchedAt,
             stale: result.stale,
@@ -1220,6 +1372,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
         // Clearing: provider or model null/empty reverts to the default chain.
         if (!parsed.provider || !parsed.model) {
           clearRoleModelOverride(role);
+          opts.publicAccess?.modelPolicyChanged();
+          opts.publicAccessAdmin?.modelPolicyChanged();
           sendJson(res, 200, { selected: null, role });
           return;
         }
@@ -1251,6 +1405,13 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             });
             return;
           }
+          if (opts.publicAccess && !option.billing.publicEligible) {
+            sendJson(res, 403, {
+              error: `model '${parsed.model}' is not approved for public use (${option.billing.class})`,
+              billing: option.billing,
+            });
+            return;
+          }
           const selected = writeRoleModelOverride(role, {
             provider,
             model: option.id,
@@ -1260,6 +1421,8 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
               ? { reasoningCapable: option.reasoningCapable }
               : {}),
           });
+          opts.publicAccess?.modelPolicyChanged();
+          opts.publicAccessAdmin?.modelPolicyChanged();
           sendJson(res, 200, { selected, role });
         } catch (err) {
           sendJson(res, 502, { error: (err as Error).message });
@@ -1274,7 +1437,9 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           sendJson(res, 400, { error: "prompt (non-empty string) required" });
           return;
         }
+        let releaseGeneration: (() => void) | undefined;
         try {
+          if (publicSession && opts.publicAccess) releaseGeneration = opts.publicAccess.beginGeneration(publicSession.id);
           // Single-shot completion through the requested role (default
           // orchestration). The mindmap pre-fetch uses the dedicated
           // mindmap-categorize role and passes useLocal:false so a burst
@@ -1288,7 +1453,10 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           const reply = await r.runRole(role, parsed.prompt);
           sendJson(res, 200, { reply });
         } catch (err) {
-          sendJson(res, 500, { error: (err as Error).message });
+          if (err instanceof PublicAccessError) sendPublicAccessError(res, err);
+          else sendJson(res, 500, { error: (err as Error).message });
+        } finally {
+          releaseGeneration?.();
         }
         return;
       }
@@ -1354,8 +1522,10 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           ? new BuilderStage(fileService, { qualityProfile: builderDecision.qualityProfile })
           : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
-        const session = sessionForChat(parsed.sessionId, parsed.useLocal, builder?.toolset());
+        const session = sessionForChat(parsed.sessionId, parsed.useLocal, builder?.toolset(), publicSession?.id);
+        let releaseGeneration: (() => void) | undefined;
         try {
+          if (publicSession && opts.publicAccess) releaseGeneration = opts.publicAccess.beginGeneration(publicSession.id);
           const routing = builder ? { ...chatOpts.routing, forceRole: "action-code" as RoleName } : chatOpts.routing;
           const result = await session.send(parsed.message, chatOpts.opts, undefined, routing, imagesResult.images, builder
             ? {
@@ -1383,7 +1553,10 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             execution: builder ? { mode: "builder", source: builderDecision.source, historyScope: builderDecision.historyScope, requiresStagedFile: builderDecision.requiresStagedFile, qualityProfile: builderDecision.qualityProfile, quality: builder.qualitySnapshot() } : undefined,
           });
         } catch (err) {
-          sendJson(res, 500, { error: (err as Error).message });
+          if (err instanceof PublicAccessError) sendPublicAccessError(res, err);
+          else sendJson(res, 500, { error: (err as Error).message });
+        } finally {
+          releaseGeneration?.();
         }
         return;
       }
@@ -1421,6 +1594,14 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           return;
         }
         const chatOpts = buildChatOpts(parsed);
+        let releaseGeneration: (() => void) | undefined;
+        try {
+          if (publicSession && opts.publicAccess) releaseGeneration = opts.publicAccess.beginGeneration(publicSession.id);
+        } catch (err) {
+          if (err instanceof PublicAccessError) sendPublicAccessError(res, err);
+          else throw err;
+          return;
+        }
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -1461,7 +1642,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
           ? new BuilderStage(fileService, { qualityProfile: builderDecision.qualityProfile })
           : null;
         const builderContext = builder ? artifactProjectContext(getActiveProject(projectsPath).id) : undefined;
-        const session = sessionForChat(parsed.sessionId, parsed.useLocal, builder?.toolset());
+        const session = sessionForChat(parsed.sessionId, parsed.useLocal, builder?.toolset(), publicSession?.id);
         try {
           const routing = builder ? { ...chatOpts.routing, forceRole: "action-code" as RoleName } : chatOpts.routing;
           if (builder) {
@@ -1507,6 +1688,7 @@ export function startWebServer(opts: ServerOptions): { close: () => void; url: s
             });
           }
         } finally {
+          releaseGeneration?.();
           clearInterval(heartbeat);
           req.off("aborted", abortStream);
           res.off("close", abortStream);

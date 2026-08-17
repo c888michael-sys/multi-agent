@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { listModelsForProvider } from "../src/models/provider-models.js";
+import { classifyModelBilling } from "../src/models/model-billing.js";
 
 function jsonFetch(payload: unknown, capture?: (url: string) => void) {
   return async (url: string | URL | Request): Promise<Response> => {
@@ -133,5 +134,12 @@ describe("listModelsForProvider", () => {
 
     expect(result.source).toBe("live");
     expect(result.models[0]!.id).toBe("fresh-model");
+  });
+
+  it("labels local and known free models while failing closed for unknown pricing", () => {
+    expect(classifyModelBilling("ollama", "qwen3.8:latest")).toMatchObject({ class: "local", publicEligible: true });
+    expect(classifyModelBilling("openrouter", "qwen/model:free")).toMatchObject({ class: "free", publicEligible: true });
+    expect(classifyModelBilling("groq", "llama-3.3-70b-versatile")).toMatchObject({ class: "free-tier", publicEligible: true });
+    expect(classifyModelBilling("mistral", "mistral-large-latest")).toMatchObject({ class: "unknown", publicEligible: false });
   });
 });

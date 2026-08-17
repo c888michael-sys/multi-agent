@@ -62,6 +62,7 @@ import {
 } from "./index.js";
 import { listOpenRouterFreeTextModels } from "./models/openrouter-models.js";
 import { listModelsForProvider } from "./models/provider-models.js";
+import { classifyModelBilling } from "./models/model-billing.js";
 import {
   DEFAULT_OPENROUTER_REASONING_MODEL,
   readReasoningModelOverride,
@@ -77,6 +78,7 @@ import {
   type OverrideProviderName,
 } from "./models/reasoning-model-overrides.js";
 import { apiKeyForOverrideProvider, isOverrideProviderConfigured } from "./config.js";
+import { PublicAccessManager } from "./web/public-access.js";
 
 /** Stderr warning printer for role-resolution events. */
 function printRoleEvent(e: RoleEvent): void {
@@ -719,6 +721,9 @@ async function cmdServe(
   host = "127.0.0.1",
   chatOnly = false,
   shareChatPort?: number,
+  publicChatPort?: number,
+  publicBaseUrl?: string,
+  issuePublicInvite = false,
 ): Promise<void> {
   // Always register Ollama providers at boot so the web UI's per-request
   // `useLocal` toggle has something to route to. If the local daemon
@@ -739,6 +744,27 @@ async function cmdServe(
   const cloudResolver = local
     ? new RoleResolver(router, buildWebRoles(false), { onEvent: printRoleEvent })
     : resolver;
+  const publicAccess = publicChatPort !== undefined ? new PublicAccessManager() : undefined;
+  const publicResolverFactory = publicAccess
+    ? (useLocal: boolean) => {
+        const snapshots = new Map(router.snapshot().map((entry) => [entry.id, entry]));
+        const roles = buildWebRoles(useLocal).map((role) => ({
+          ...role,
+          candidates: role.candidates.filter((candidate) => {
+            if (candidate.providerId.startsWith("override:")) {
+              const selected = readRoleModelOverride(role.name as CustomisableRole);
+              return Boolean(selected && classifyModelBilling(selected.provider, selected.model).publicEligible);
+            }
+            const prefix = candidate.providerId.split(":", 1)[0] as OverrideProviderName | "gemma";
+            const provider = prefix === "gemma" ? "gemini" : prefix;
+            if (!["openrouter", "groq", "gemini", "ollama"].includes(provider)) return false;
+            const model = snapshots.get(candidate.providerId)?.model ?? "";
+            return classifyModelBilling(provider as OverrideProviderName, model).publicEligible;
+          }),
+        }));
+        return new RoleResolver(router, roles, { onEvent: printRoleEvent });
+      }
+    : undefined;
   const { url } = startWebServer({
     router,
     resolver,
@@ -749,6 +775,7 @@ async function cmdServe(
     host,
     port,
     projectRoot,
+    ...(publicAccess ? { publicAccessAdmin: publicAccess, publicBaseUrl } : {}),
   });
   console.log(`multi-agent web UI live at ${url}`);
   if (chatOnly) {
@@ -769,6 +796,30 @@ async function cmdServe(
     });
     console.log(`chat + non-file settings share target live at ${shareUrl}`);
     console.log(`proxy port ${shareChatPort} with Tailscale; keep port ${port} for this PC only`);
+  }
+  if (publicChatPort !== undefined && publicAccess) {
+    const { url: publicUrl } = startWebServer({
+      router,
+      resolver,
+      localResolver,
+      cloudResolver,
+      defaultUseLocal: local,
+      chatOnly: true,
+      allowSharedSettings: true,
+      publicAccess,
+      publicResolverFactory,
+      host: "127.0.0.1",
+      port: publicChatPort,
+      projectRoot,
+    });
+    console.log(`restricted public target live at ${publicUrl} (paused until an invite is issued)`);
+    console.log(`Funnel may expose port ${publicChatPort}; keep port ${port} for this PC only`);
+    if (issuePublicInvite) {
+      const invite = publicAccess.issueInvite();
+      const base = (publicBaseUrl ?? "").replace(/\/$/, "");
+      console.log(`ONE-TIME PUBLIC LINK: ${base ? `${base}/#invite=${encodeURIComponent(invite.token)}` : `#invite=${encodeURIComponent(invite.token)}`}`);
+      console.log(`invite must be redeemed before ${new Date(invite.expiresAt).toISOString()}`);
+    }
   }
   console.log(`open it in a browser. Ctrl+C to stop.`);
   // Keep the process alive — server holds the event loop. Wait forever.
@@ -905,6 +956,11 @@ Flags for 'serve':
                                   chat + non-file-settings listener for Tailscale
                                   (for example 7422), while the main port keeps
                                   the full local UI
+  --public-chat-port=<n>          start a restricted listener protected by a one-use
+                                  invite and browser session (for Tailscale Funnel)
+  --public-base-url=<https://...> public Funnel origin used to print invite links
+  --issue-public-invite           issue one invite at startup; access otherwise
+                                  starts paused and fails closed
   --project=<name|id>             activate the named project before starting the server
                                   (sets it as the global active project)
   --local                         default the web UI into hybrid local-model mode
@@ -1169,6 +1225,9 @@ async function main(): Promise<void> {
         local: { type: "boolean", default: false },
         "chat-only": { type: "boolean", default: false },
         "share-chat-port": { type: "string" },
+        "public-chat-port": { type: "string" },
+        "public-base-url": { type: "string" },
+        "issue-public-invite": { type: "boolean", default: false },
         project: { type: "string" },
       },
       allowPositionals: false,
@@ -1187,6 +1246,9 @@ async function main(): Promise<void> {
     const shareChatPort = sv["share-chat-port"] === undefined
       ? undefined
       : Number(sv["share-chat-port"]);
+    const publicChatPort = sv["public-chat-port"] === undefined
+      ? undefined
+      : Number(sv["public-chat-port"]);
     if (shareChatPort !== undefined && (!Number.isFinite(shareChatPort) || shareChatPort < 1 || shareChatPort > 65535)) {
       console.error(`Error: --share-chat-port must be a valid port number (got: ${sv["share-chat-port"]})`);
       process.exit(2);
@@ -1195,12 +1257,37 @@ async function main(): Promise<void> {
       console.error("Error: --share-chat-port must differ from --port");
       process.exit(2);
     }
+    if (publicChatPort !== undefined && (!Number.isFinite(publicChatPort) || publicChatPort < 1 || publicChatPort > 65535)) {
+      console.error(`Error: --public-chat-port must be a valid port number (got: ${sv["public-chat-port"]})`);
+      process.exit(2);
+    }
+    if (publicChatPort === port || (publicChatPort !== undefined && publicChatPort === shareChatPort)) {
+      console.error("Error: public, shared, and owner ports must be different");
+      process.exit(2);
+    }
+    if (publicChatPort !== undefined && shareChatPort !== undefined) {
+      console.error("Error: use either --share-chat-port or --public-chat-port, not both");
+      process.exit(2);
+    }
     if (shareChatPort !== undefined && Boolean(sv["chat-only"])) {
       console.error("Error: use either --chat-only or --share-chat-port, not both");
       process.exit(2);
     }
     if (shareChatPort !== undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
       console.error("Error: --share-chat-port requires the full UI to stay on a loopback --host");
+      process.exit(2);
+    }
+    if (publicChatPort !== undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+      console.error("Error: --public-chat-port requires the full UI to stay on a loopback --host");
+      process.exit(2);
+    }
+    const publicBaseUrl = sv["public-base-url"] === undefined ? undefined : String(sv["public-base-url"]).replace(/\/$/, "");
+    if (publicBaseUrl && !publicBaseUrl.startsWith("https://")) {
+      console.error("Error: --public-base-url must be an https:// URL");
+      process.exit(2);
+    }
+    if (Boolean(sv["issue-public-invite"]) && publicChatPort === undefined) {
+      console.error("Error: --issue-public-invite requires --public-chat-port");
       process.exit(2);
     }
     let serveRoot: string | undefined;
@@ -1223,6 +1310,9 @@ async function main(): Promise<void> {
       host,
       Boolean(sv["chat-only"]),
       shareChatPort,
+      publicChatPort,
+      publicBaseUrl,
+      Boolean(sv["issue-public-invite"]),
     );
     return;
   }

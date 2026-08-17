@@ -41,8 +41,8 @@
     // defer the actual render until both component files have registered their
     // globals.
     function tryMount() {
-      if (typeof HeroMindmap === 'function') {
-        ReactDOM.createRoot(document.getElementById('root')).render(<HeroMindmap />);
+      if (typeof LatticeRoot === 'function') {
+        ReactDOM.createRoot(document.getElementById('root')).render(<LatticeRoot />);
       } else {
         setTimeout(tryMount, 30);
       }

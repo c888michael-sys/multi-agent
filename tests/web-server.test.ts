@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MAX_REQUEST_BODY_BYTES, startWebServer } from "../src/web/server.js";
+import { PublicAccessManager } from "../src/web/public-access.js";
 import type { CompleteOptions } from "../src/provider.js";
 import type { ConversationPart } from "../src/tools/types.js";
 
@@ -79,8 +80,8 @@ async function startTestServer(routerSnap: Snap[], handler?: (name: string, prom
 // We don't have port 0 trickery (default is 7421); just pick high random ports
 // per test to avoid collisions with a possibly-running dev server.
 function pickPort(): number {
-  // 50000-59999 range — leaves room and stays out of common dev-server territory
-  return 50000 + Math.floor(Math.random() * 10000);
+  // Stay below Windows' commonly reserved Hyper-V / dynamic-port ranges.
+  return 30000 + Math.floor(Math.random() * 10000);
 }
 
 describe("web server", () => {
@@ -281,13 +282,95 @@ describe("web server", () => {
     expect(sharedShell).not.toContain(roleInstructionsPath);
   });
 
+  it("protects the public listener with a one-use invite and owner pause control", async () => {
+    const manager = new PublicAccessManager();
+    const router = makeRouter([]);
+    const resolver = makeResolver(async (_name, prompt) => `public:${prompt}`);
+    const ownerPort = pickPort();
+    let publicPort = pickPort();
+    while (publicPort === ownerPort) publicPort = pickPort();
+    const common = { router, resolver, sessionStorageDir: sessionDir, roleInstructionsPath };
+    const owner = startWebServer({
+      ...common,
+      port: ownerPort,
+      publicAccessAdmin: manager,
+      publicBaseUrl: "https://example.ts.net",
+    });
+    const publicServer = startWebServer({
+      ...common,
+      port: publicPort,
+      chatOnly: true,
+      allowSharedSettings: true,
+      publicAccess: manager,
+    });
+    handles.push(owner, publicServer);
+
+    expect((await fetch(`${publicServer.url}api/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status).toBe(503);
+
+    const inviteResponse = await localMutationFetch(`${owner.url}api/public/invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(inviteResponse.status).toBe(200);
+    const invite = await inviteResponse.json() as { token: string; url: string };
+    expect(invite.url).toContain("/#invite=");
+
+    const redeem = await fetch(`${publicServer.url}api/auth/redeem`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: invite.token }),
+    });
+    expect(redeem.status).toBe(200);
+    const auth = await redeem.json() as { csrfToken: string };
+    const cookie = (redeem.headers.get("set-cookie") ?? "").split(";", 1)[0]!;
+    expect(cookie).toContain("__Host-lattice_session=");
+
+    const reused = await fetch(`${publicServer.url}api/auth/redeem`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: invite.token }),
+    });
+    expect(reused.status).toBe(401);
+
+    const authHeaders = {
+      Cookie: cookie,
+      "Content-Type": "application/json",
+      "X-CSRF-Token": auth.csrfToken,
+    };
+    expect((await fetch(`${publicServer.url}api/role-instructions`, { headers: { Cookie: cookie } })).status).toBe(404);
+    expect((await fetch(`${publicServer.url}api/files/read?path=secret`, { headers: { Cookie: cookie } })).status).toBe(404);
+    expect((await fetch(`${publicServer.url}api/usage.json`, { headers: { Cookie: cookie } })).status).toBe(200);
+
+    const noCsrf = await fetch(`${publicServer.url}api/chat`, {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "public", message: "hello", forceRole: "orchestration" }),
+    });
+    expect(noCsrf.status).toBe(403);
+    const chat = await fetch(`${publicServer.url}api/chat`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ sessionId: "public", message: "hello", forceRole: "orchestration" }),
+    });
+    expect(chat.status).toBe(200);
+
+    const paused = await localMutationFetch(`${owner.url}api/public/pause`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(paused.status).toBe(200);
+    expect((await fetch(`${publicServer.url}api/auth/status`, { headers: { Cookie: cookie } }).then((r) => r.json()))).toMatchObject({ paused: true, authenticated: false });
+  });
+
   it("serves the SPA shell at /", async () => {
     const { url } = spawn();
     const r = await fetch(`${url}/`);
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toMatch(/text\/html/);
     const body = await r.text();
-    expect(body).toContain("HeroMindmap");
+    expect(body).toContain("LatticeRoot");
     expect(body).toContain("Lattice — multi-agent");
     expect(body).toContain("id=\"favicon\"");
   });
@@ -1211,7 +1294,7 @@ describe("web server", () => {
     process.env.MULTI_AGENT_PROVIDER_MODELS_CACHE = dir;
     writeFileSync(
       join(dir, `${provider}.json`),
-      `${JSON.stringify({ version: 1, fetchedAt: Date.now(), models }, null, 2)}\n`,
+      `${JSON.stringify({ version: 2, fetchedAt: Date.now(), models }, null, 2)}\n`,
       "utf8",
     );
   }

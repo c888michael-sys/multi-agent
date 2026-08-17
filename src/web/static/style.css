@@ -4653,3 +4653,40 @@
     animation-iteration-count: infinite !important;
   }
 }
+/* One-use public invite gate. Static assets may load before authentication,
+   but the server blocks every restricted API until this screen redeems one. */
+.public-access-root {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: #f4f0e8;
+  background:
+    radial-gradient(circle at 50% 15%, rgba(201, 161, 95, .16), transparent 36%),
+    #0a0a0c;
+}
+.public-access-card {
+  width: min(480px, calc(100vw - 48px));
+  padding: 42px;
+  border: 1px solid rgba(201, 161, 95, .28);
+  border-radius: 22px;
+  background: rgba(22, 20, 20, .92);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
+  text-align: center;
+}
+.public-access-mark {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 18px;
+  border-radius: 14px;
+  color: #17120c;
+  background: #c9a15f;
+  font: 700 22px/1 'Bricolage Grotesque', sans-serif;
+}
+.public-access-kicker { color: #c9a15f; font: 600 12px/1.2 'Geist Mono', monospace; letter-spacing: .14em; text-transform: uppercase; }
+.public-access-card h1 { margin: 14px 0 10px; font: 600 30px/1.12 'Bricolage Grotesque', sans-serif; }
+.public-access-card p { margin: 0; color: rgba(244, 240, 232, .66); line-height: 1.6; }
+.public-access-loader { width: 22px; height: 22px; margin: 24px auto 0; border: 2px solid rgba(201,161,95,.25); border-top-color: #c9a15f; border-radius: 50%; animation: public-access-spin .8s linear infinite; }
+@keyframes public-access-spin { to { transform: rotate(360deg); } }

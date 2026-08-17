@@ -9,6 +9,7 @@ dist/
 *.tsbuildinfo
 coverage/
 .vitest-cache/
+.public-web.*.log
 
 # Editors / OS
 .vscode/

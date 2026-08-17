@@ -6,6 +6,7 @@ import {
   listOpenRouterFreeTextModels,
   type OpenRouterFreeModelOption,
 } from "./openrouter-models.js";
+import { classifyModelBilling, type ModelBilling } from "./model-billing.js";
 
 /** A model the user can pick for a role, normalized across providers. */
 export interface ProviderModelOption {
@@ -14,6 +15,7 @@ export interface ProviderModelOption {
   contextLength?: number;
   reasoningCapable?: boolean;
   created?: number;
+  billing: ModelBilling;
 }
 
 export interface ListModelsResult {
@@ -23,7 +25,7 @@ export interface ListModelsResult {
   stale: boolean;
 }
 
-export const PROVIDER_MODELS_CACHE_VERSION = 1;
+export const PROVIDER_MODELS_CACHE_VERSION = 2;
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
 function cacheDir(override?: string): string {
@@ -42,7 +44,7 @@ function numeric(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function normalizeOption(input: unknown): ProviderModelOption | null {
+function normalizeOption(input: unknown, provider: OverrideProviderName): ProviderModelOption | null {
   if (!input || typeof input !== "object") return null;
   const raw = input as Record<string, unknown>;
   if (typeof raw.id !== "string" || !raw.id.trim()) return null;
@@ -54,6 +56,7 @@ function normalizeOption(input: unknown): ProviderModelOption | null {
     ...(ctx !== undefined ? { contextLength: ctx } : {}),
     ...(raw.reasoningCapable === true ? { reasoningCapable: true } : {}),
     ...(created !== undefined ? { created } : {}),
+    billing: classifyModelBilling(provider, raw.id),
   };
 }
 
@@ -79,7 +82,7 @@ function readCache(
     const models = Array.isArray(parsed.models)
       ? sortOptions(
           parsed.models
-            .map((m) => normalizeOption(m))
+            .map((m) => normalizeOption(m, provider))
             .filter((m): m is ProviderModelOption => Boolean(m)),
         )
       : [];
@@ -116,6 +119,7 @@ const OPENAI_COMPAT_MODELS_URL: Partial<Record<OverrideProviderName, string>> = 
 
 /** GET /v1/models on an OpenAI-compatible provider → `{ data: [{ id, … }] }`. */
 async function fetchOpenAICompatModels(
+  provider: OverrideProviderName,
   url: string,
   apiKey: string | undefined,
   fetchImpl: typeof fetch,
@@ -137,6 +141,7 @@ async function fetchOpenAICompatModels(
       name: typeof m.name === "string" && m.name.trim() ? m.name : m.id,
       ...(ctx !== undefined ? { contextLength: ctx } : {}),
       ...(numeric(m.created) !== undefined ? { created: numeric(m.created)! } : {}),
+      billing: classifyModelBilling(provider, m.id),
     });
   }
   return sortOptions(out);
@@ -169,6 +174,7 @@ async function fetchGeminiModels(
       id,
       name: typeof m.displayName === "string" && m.displayName.trim() ? m.displayName : id,
       ...(ctx !== undefined ? { contextLength: ctx } : {}),
+      billing: classifyModelBilling("gemini", id),
     });
   }
   return sortOptions(out);
@@ -183,7 +189,7 @@ async function fetchOllamaModels(fetchImpl: typeof fetch): Promise<ProviderModel
   const out: ProviderModelOption[] = [];
   for (const m of json.models ?? []) {
     const name = typeof m?.name === "string" ? m.name : "";
-    if (name) out.push({ id: name, name });
+    if (name) out.push({ id: name, name, billing: classifyModelBilling("ollama", name) });
   }
   return sortOptions(out);
 }
@@ -195,6 +201,7 @@ function fromOpenRouter(models: OpenRouterFreeModelOption[]): ProviderModelOptio
     contextLength: m.contextLength,
     reasoningCapable: m.reasoningCapable,
     created: m.created,
+    billing: classifyModelBilling("openrouter", m.id),
   }));
 }
 
@@ -244,7 +251,7 @@ export async function listModelsForProvider(
     } else {
       const url = OPENAI_COMPAT_MODELS_URL[provider];
       if (!url) return { models: [], source: "empty", fetchedAt: null, stale: false };
-      models = await fetchOpenAICompatModels(url, opts?.apiKey, fetchImpl);
+      models = await fetchOpenAICompatModels(provider, url, opts?.apiKey, fetchImpl);
     }
   } catch (err) {
     if (cached) return { ...cached, source: "cache" };

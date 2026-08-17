@@ -22,6 +22,17 @@
 // theme. Each color sits on the same lightness band so they read as
 // peer agents, distinguished by hue (amber → sage → mauve → olive →
 // terracotta) without going neon.
+const latticeRawFetch = window.fetch.bind(window);
+
+function apiFetch(url, init = {}) {
+  const method = String(init.method || 'GET').toUpperCase();
+  const headers = new Headers(init.headers || {});
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && window.__LATTICE_PUBLIC_CSRF__) {
+    headers.set('X-CSRF-Token', window.__LATTICE_PUBLIC_CSRF__);
+  }
+  return latticeRawFetch(url, { ...init, headers, credentials: 'same-origin' });
+}
+
 const MM_AGENTS = [
   { id: 'orchestration',     name: 'Orchestrator', color: 'oklch(0.80 0.11 65)',  quota: 128000 },
   { id: 'perception',        name: 'Perception',   color: 'oklch(0.78 0.08 165)', quota: 128000 },
@@ -594,9 +605,12 @@ function roleInstructionPayloadsEqual(a, b) {
 
 function modelLabel(model) {
   if (!model) return 'unknown';
+  const billing = model.billing && model.billing.class
+    ? ` · [${String(model.billing.class).replace('-', ' ').toUpperCase()}]`
+    : ' · [UNKNOWN]';
   const ctx = model.contextLength ? ` · ${CompactNumber(model.contextLength)} ctx` : '';
   const tag = model.reasoningCapable ? ' · reasoning' : '';
-  return `${model.name || model.id}${tag}${ctx}`;
+  return `${model.name || model.id}${billing}${tag}${ctx}`;
 }
 
 const ROLE_ROUTING_LABELS = {
@@ -640,7 +654,7 @@ function ModelRoutingSection({ open, sharedAccess = false }) {
     }
     if (!background) setLoading(role, true);
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/role-models?role=${encodeURIComponent(role)}&provider=${encodeURIComponent(provider)}${refresh ? '&refresh=1' : ''}`,
       );
       const payload = res.ok ? await res.json() : null;
@@ -652,6 +666,7 @@ function ModelRoutingSection({ open, sharedAccess = false }) {
         source: payload.source || 'empty',
         fetchedAt: typeof payload.fetchedAt === 'number' ? payload.fetchedAt : null,
         stale: !!payload.stale,
+        publicFreeOnly: !!payload.publicFreeOnly,
         refreshFailed: refresh && payload.source === 'cache',
         syncing: false,
       };
@@ -680,7 +695,7 @@ function ModelRoutingSection({ open, sharedAccess = false }) {
     if (!open) return undefined;
     let cancelled = false;
     setStatus('');
-    fetch('/api/providers')
+    apiFetch('/api/providers')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -710,7 +725,7 @@ function ModelRoutingSection({ open, sharedAccess = false }) {
     setLoading(role, true);
     setStatus(provider && model ? 'saving...' : 'reverting...');
     try {
-      const res = await fetch('/api/role-model', {
+      const res = await apiFetch('/api/role-model', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role, provider, model }),
@@ -838,7 +853,7 @@ function ModelRoutingSection({ open, sharedAccess = false }) {
                       </option>
                     ) : null}
                     {models.map((m) => (
-                      <option key={m.id} value={m.id}>{modelLabel(m)}</option>
+                      <option key={m.id} value={m.id} disabled={!!modelMeta?.publicFreeOnly && !m.billing?.publicEligible}>{modelLabel(m)}</option>
                     ))}
                   </select>
                   <span
@@ -880,6 +895,66 @@ function runtimeLocalModelSummary() {
   return models.map((entry) => `${entry.role} → ${entry.model}`).join(' and ');
 }
 
+function PublicAccessControls({ open }) {
+  const [status, setStatus] = React.useState(null);
+  const [message, setMessage] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  const refresh = React.useCallback(() => {
+    if (!open) return;
+    apiFetch('/api/public/status')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(setStatus)
+      .catch((error) => setMessage(error?.message || String(error)));
+  }, [open]);
+
+  React.useEffect(refresh, [refresh]);
+
+  const issue = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const response = await secureMutationFetch('/api/public/invite', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      if (body.url && navigator.clipboard?.writeText) await navigator.clipboard.writeText(body.url);
+      setMessage(body.url ? 'New one-time link copied. The previous unused link is now invalid.' : 'Invite issued; configure --public-base-url to copy a complete link.');
+      refresh();
+    } catch (error) { setMessage(error?.message || String(error)); }
+    finally { setBusy(false); }
+  };
+
+  const pause = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const response = await secureMutationFetch('/api/public/pause', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      setMessage('Public app access paused and all browser sessions revoked. Run the Funnel pause command too to remove the public route.');
+      setStatus(body);
+    } catch (error) { setMessage(error?.message || String(error)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mm-settings-row">
+      <span className="mm-settings-name">Public access</span>
+      <span className="mm-settings-hint">One-use invites unlock only chat, quota, routing, model selection, and non-file settings. Restarting or pausing revokes access.</span>
+      <div className="mm-role-instructions-actions">
+        <button className="mm-settings-reset" onClick={issue} disabled={busy}>new one-time link</button>
+        <button className="mm-settings-reset" onClick={pause} disabled={busy || status?.paused}>pause public access</button>
+      </div>
+      <span className="mm-settings-hint" role="status">
+        {status ? `${status.paused ? 'Paused' : 'Active'} · ${status.sessions || 0} browser session(s) · ${status.pendingInvites || 0} unused invite(s)` : 'Checking…'}
+        {message ? ` — ${message}` : ''}
+      </span>
+    </div>
+  );
+}
+
 function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true, sharedAccess = false }) {
   const drawerRef = React.useRef(null);
   const scrimRef = React.useRef(null);
@@ -913,7 +988,8 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
     if (!open) return;
     let cancelled = false;
     setRoleInstructionsStatus('');
-    fetch('/api/role-instructions')
+    if (PUBLIC_ACCESS) return undefined;
+    apiFetch('/api/role-instructions')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -943,7 +1019,7 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
     setHybridChecking(true);
     setHybridError(null);
     try {
-      const res = await fetch('/api/ollama-health');
+      const res = await apiFetch('/api/ollama-health');
       const health = res.ok ? await res.json() : { reachable: false, reason: `HTTP ${res.status}` };
       if (!health.reachable) {
         setHybridError(`The server host's Ollama daemon was not detected at ${health.baseUrl || 'localhost:11434'}${health.reason ? ' — ' + health.reason : ''}. Start Ollama and pull the required models on the host, or leave hybrid mode off.`);
@@ -979,7 +1055,7 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
     setRoleInstructionsSaving(true);
     setRoleInstructionsStatus('saving...');
     try {
-      const res = await fetch('/api/role-instructions', {
+      const res = await apiFetch('/api/role-instructions', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ instructions }),
@@ -1037,6 +1113,7 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
           <button className="mm-settings-close" onClick={onClose} aria-label="Close settings">×</button>
         </div>
         <div className="mm-settings-body">
+          {PUBLIC_ACCESS_ADMIN ? <PublicAccessControls open={open} /> : null}
           <div className="mm-settings-row mm-settings-row-select">
             <span className="mm-settings-name">Routing</span>
             <select
@@ -1134,7 +1211,7 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
               </span>
             </label>
           </div>
-          <div className="mm-settings-row mm-settings-row-instructions">
+          {!PUBLIC_ACCESS && <div className="mm-settings-row mm-settings-row-instructions">
             <span className="mm-settings-name">Long-term role instructions</span>
             <span className="mm-settings-hint">
               {sharedAccess
@@ -1195,7 +1272,7 @@ function SettingsDrawer({ open, onClose, settings, onChange, allowBuilder = true
             ) : (
               <span className="mm-settings-hint">loading role instructions...</span>
             )}
-          </div>
+          </div>}
           <div className="mm-settings-foot">
             <button
               className="mm-settings-reset"
@@ -3819,8 +3896,18 @@ function runtimeAllowSharedSettings() {
   return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.allowSharedSettings === true;
 }
 
+function runtimePublicAccess() {
+  return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.publicAccess === true;
+}
+
+function runtimePublicAccessAdmin() {
+  return window.__MULTI_AGENT_RUNTIME__ && window.__MULTI_AGENT_RUNTIME__.publicAccessAdmin === true;
+}
+
 const CHAT_ONLY = runtimeChatOnly();
 const SHARED_SETTINGS = CHAT_ONLY && runtimeAllowSharedSettings();
+const PUBLIC_ACCESS = runtimePublicAccess();
+const PUBLIC_ACCESS_ADMIN = runtimePublicAccessAdmin();
 const SHOW_NON_FILE_CONTROLS = !CHAT_ONLY || SHARED_SETTINGS;
 
 function loadSettings() {
@@ -3891,7 +3978,7 @@ function sanitizeGeneratedTitle(value) {
 
 async function generateSessionTitle(sessionId, prompt, reply) {
   try {
-    const response = await fetch('/api/complete', {
+    const response = await apiFetch('/api/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -5089,7 +5176,7 @@ function HeroMindmap() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/ollama-health');
+      const res = await apiFetch('/api/ollama-health');
         if (cancelled) return;
         const health = res.ok ? await res.json() : { reachable: false };
         if (!health.reachable || (health.missing && health.missing.length > 0)) {
@@ -5258,7 +5345,7 @@ function HeroMindmap() {
       body.useLocal = settings.useLocal === true;
       if (settings.routingMode && settings.routingMode !== 'smart') body.routingMode = settings.routingMode;
       if (imgs.length) body.images = imgs;
-      const res = await fetch('/api/chat-stream', {
+      const res = await apiFetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -5438,7 +5525,7 @@ function HeroMindmap() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CATEGORIZE_TIMEOUT_MS);
     try {
-      const res = await fetch('/api/complete', {
+      const res = await apiFetch('/api/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, role, useLocal: false }),
@@ -5777,6 +5864,19 @@ function HeroMindmap() {
                   {activeSettingsCount > 0 && <span className="mm-nav-settings-badge">{activeSettingsCount}</span>}
                 </button>
               ) : null}
+              {PUBLIC_ACCESS ? (
+                <button
+                  className="mm-nav-sessions"
+                  onClick={async () => {
+                    try { await apiFetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch {}
+                    window.__LATTICE_PUBLIC_CSRF__ = '';
+                    window.location.reload();
+                  }}
+                  title="End this public browser session"
+                >
+                  log out
+                </button>
+              ) : null}
             </>
           ) : (
           <>
@@ -5998,4 +6098,66 @@ function HeroMindmap() {
   );
 }
 
+function PublicAccessScreen({ state, message }) {
+  return (
+    <div className="public-access-root">
+      <div className="public-access-card">
+        <div className="public-access-mark">L</div>
+        <div className="public-access-kicker">Lattice shared chat</div>
+        <h1>{state === 'checking' ? 'Checking invite…' : state === 'paused' ? 'Public access is paused' : 'This invite cannot be used'}</h1>
+        <p>{message || (state === 'paused'
+          ? 'The host has stopped public access. Ask them for a new one-time link when they are ready.'
+          : 'The link may have expired or already been redeemed. Ask the host for a fresh one-time link.')}</p>
+        {state === 'checking' ? <div className="public-access-loader" aria-label="Checking access" /> : null}
+      </div>
+    </div>
+  );
+}
+
+function LatticeRoot() {
+  const [access, setAccess] = React.useState(() => PUBLIC_ACCESS
+    ? { state: 'checking', message: '' }
+    : { state: 'authenticated', message: '' });
+
+  React.useEffect(() => {
+    if (!PUBLIC_ACCESS) return undefined;
+    let cancelled = false;
+    const run = async () => {
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const invite = hash.get('invite');
+      if (invite) window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      try {
+        const response = invite
+          ? await latticeRawFetch('/api/auth/redeem', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ token: invite }),
+            })
+          : await latticeRawFetch('/api/auth/status', { credentials: 'same-origin' });
+        const body = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (response.ok && body.authenticated) {
+          window.__LATTICE_PUBLIC_CSRF__ = body.csrfToken || '';
+          setAccess({ state: 'authenticated', message: '' });
+        } else {
+          setAccess({
+            state: body.code === 'PAUSED' || body.paused ? 'paused' : 'invalid',
+            message: body.error || '',
+          });
+        }
+      } catch (error) {
+        if (!cancelled) setAccess({ state: 'invalid', message: error?.message || 'Could not reach the host.' });
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, []);
+
+  return access.state === 'authenticated'
+    ? <HeroMindmap />
+    : <PublicAccessScreen state={access.state} message={access.message} />;
+}
+
 window.HeroMindmap = HeroMindmap;
+window.LatticeRoot = LatticeRoot;
